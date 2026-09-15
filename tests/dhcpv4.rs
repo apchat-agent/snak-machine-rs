@@ -312,3 +312,121 @@ fn s06_offer_table_is_bounded_and_retries_cover_rng_extremes() {
         assert_eq!(c.offer_count(), 8);
     }
 }
+
+#[test]
+fn s06_dhcp_timeout_acquires_ipv4ll_without_a_default_and_keeps_trying_dhcp() {
+    let mut rng = ScriptedRandom::new([]);
+    let mut c = Client::new(MAC, 0, &mut rng).unwrap();
+    let mut probes = 0;
+    let mut discover = 0;
+    for now in (0..=75000).step_by(100) {
+        for o in c.poll(now, &mut rng).unwrap() {
+            if o.kind == OutputKind::Arp {
+                if o.packet[28..32] == [0; 4] {
+                    probes += 1;
+                }
+            } else {
+                assert_eq!(client_kind(&o), 1);
+                discover += 1;
+            }
+        }
+    }
+    let config = c
+        .configuration()
+        .expect("DHCP timeout must fall back to conflict-checked IPv4LL");
+    assert_eq!(config.address, ip("169.254.1.0"));
+    assert!(config.routes.is_empty());
+    assert!(c.lease().is_none());
+    assert_eq!(probes, 3);
+    assert!(discover >= 4);
+    offer(&mut c, 2, 75001, &mut rng);
+    c.poll(76001, &mut rng).unwrap();
+    offer(&mut c, 5, 76002, &mut rng);
+    assert_eq!(c.configuration().unwrap().address, ip("169.254.1.0"));
+    for now in (76100..=85000).step_by(100) {
+        c.poll(now, &mut rng).unwrap();
+    }
+    assert_eq!(c.configuration().unwrap().address, ip("192.0.2.10"));
+}
+
+fn conflict(address: Ipv4Addr, probe: bool) -> Vec<u8> {
+    let mut b = vec![255; 6];
+    b.extend([2, 0, 0, 0, 0, 99]);
+    b.extend([8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
+    b.extend([2, 0, 0, 0, 0, 99]);
+    b.extend(
+        if probe {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            address
+        }
+        .octets(),
+    );
+    b.extend([0; 6]);
+    b.extend(address.octets());
+    b
+}
+#[test]
+fn s06_ipv4ll_endpoints_defense_conflicts_and_backoff() {
+    struct High;
+    impl RandomSource for High {
+        fn fill(&mut self, b: &mut [u8]) -> std::io::Result<()> {
+            b.fill(1);
+            Ok(())
+        }
+        fn sample(&mut self, max: u64) -> std::io::Result<u64> {
+            Ok(max)
+        }
+    }
+    let mut r = High;
+    let mut c = Client::new(MAC, 0, &mut r).unwrap();
+    for now in (0..=75000).step_by(100) {
+        c.poll(now, &mut r).unwrap();
+    }
+    let a = ip("169.254.254.255");
+    assert_eq!(c.configuration().unwrap().address, a);
+    let defend = c.receive_arp(&conflict(a, false), 75001, &mut r).unwrap();
+    assert_eq!(defend.len(), 1);
+    assert_eq!(&defend[0].packet[28..32], &a.octets());
+    c.receive_arp(&conflict(a, false), 75002, &mut r).unwrap();
+    assert!(c.configuration().is_none());
+    // Every proposed address conflicts. After ten, proposals are at least a minute apart.
+    let mut last = 0;
+    let mut conflicts = 0;
+    for now in (75100..=800000).step_by(100) {
+        for o in c.poll(now, &mut r).unwrap() {
+            if o.kind == OutputKind::Arp && o.packet[28..32] == [0; 4] {
+                let address = Ipv4Addr::new(o.packet[38], o.packet[39], o.packet[40], o.packet[41]);
+                if conflicts >= 10 {
+                    assert!(now - last >= 60000);
+                }
+                last = now;
+                conflicts += 1;
+                c.receive_arp(&conflict(address, true), now, &mut r)
+                    .unwrap();
+            }
+        }
+    }
+    assert!(conflicts >= 11);
+    assert!(c.configuration().is_none());
+    c.set_link(false, 800001, &mut r).unwrap();
+    assert!(c.poll(900000, &mut r).unwrap().is_empty());
+    c.set_link(true, 900001, &mut r).unwrap();
+    assert!(c.configuration().is_none());
+}
+#[test]
+fn s06_dhcp_conflict_sends_decline_and_waits_before_retry() {
+    let mut r = ScriptedRandom::new([]);
+    let mut c = Client::new(MAC, 0, &mut r).unwrap();
+    c.poll(1000, &mut r).unwrap();
+    offer(&mut c, 2, 1001, &mut r);
+    c.poll(2001, &mut r).unwrap();
+    offer(&mut c, 5, 2002, &mut r);
+    let out = c
+        .receive_arp(&conflict(ip("192.0.2.10"), false), 2003, &mut r)
+        .unwrap();
+    assert_eq!(client_kind(&out[0]), 4);
+    assert!(c.configuration().is_none());
+    assert!(c.poll(12002, &mut r).unwrap().is_empty());
+    assert_eq!(client_kind(&c.poll(12003, &mut r).unwrap()[0]), 1);
+}
