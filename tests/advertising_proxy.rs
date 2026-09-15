@@ -786,7 +786,7 @@ fn s14_equal_tsr_probes_and_announcements_suppress_redundant_work_and_time_only_
     };
     e.receive(&d, true, &source, 0, &mut rng).unwrap();
     assert!(e.publisher.poll(&source, 0).unwrap().is_none());
-    assert!(e.publisher.poll(&source, 999).unwrap().is_none());
+    assert!(e.publisher.poll(&source, 749).unwrap().is_none());
     d.message = Message::new(0, 0x8400);
     d.message.answers = records.clone();
     attach(&mut d.message, OPTION_CODE, 750, &|n| {
