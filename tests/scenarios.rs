@@ -494,3 +494,79 @@ fn stub_peers_converge_and_retain_retiring_osnr() {
     }
     assert_eq!(high.snapshot(Link::Stub, 13000).pios[0].preferred, 0);
 }
+
+use snac_rs::router::DadState;
+fn ns(source: &str, target: &str, destination: &str) -> Vec<u8> {
+    let mut b = vec![135, 0, 0, 0, 0, 0, 0, 0];
+    b.extend(ip(target).octets());
+    if source != "::" {
+        b.extend([1, 1, 2, 0, 0, 0, 0, 77]);
+    }
+    nd_packet(source, destination, b)
+}
+#[test]
+fn dad_and_neighbor_answers_only_claim_owned_addresses() {
+    let mut r = router(4);
+    let mut rng = ScriptedRandom::new([11, 22, 33]);
+    let own = r.identity.link_local(Link::Ail);
+    let group = snac_rs::wire::solicited_node(own);
+    let tx = r.begin_dad(Link::Ail, own, 0);
+    assert_eq!(tx.packet[40], 135);
+    assert_eq!(&tx.packet[8..24], &[0; 16]);
+    assert_eq!(tx.packet.len(), 64);
+    assert!(r.memberships(Link::Ail).contains(&group));
+    assert_eq!(r.owned[&(Link::Ail, own)].state, DadState::Tentative);
+    r.tick(999, &mut rng).unwrap();
+    assert_eq!(r.owned[&(Link::Ail, own)].state, DadState::Tentative);
+    r.tick(1000, &mut rng).unwrap();
+    assert_eq!(r.owned[&(Link::Ail, own)].state, DadState::Ready);
+    let reply = r
+        .receive(
+            Link::Ail,
+            &ns("fe80::77", &own.to_string(), &group.to_string()),
+            1100,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].packet[40], 136);
+    assert_eq!(reply[0].packet[44], 0xe0);
+    assert_eq!(&reply[0].packet[48..64], &own.octets());
+    let reply = r
+        .receive(
+            Link::Ail,
+            &ns("::", &own.to_string(), &group.to_string()),
+            1200,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(reply[0].packet[44], 0xa0);
+    assert_eq!(&reply[0].packet[24..40], &ip("ff02::1").octets());
+    assert!(r
+        .receive(
+            Link::Ail,
+            &ns("fe80::77", "fd00::abcd", "ff02::1:ff00:abcd"),
+            1300,
+            &mut rng
+        )
+        .unwrap()
+        .is_empty());
+    let mut target = own;
+    r.begin_dad(Link::Ail, target, 2000);
+    for attempt in 0..3 {
+        let p = ns(
+            "::",
+            &target.to_string(),
+            &snac_rs::wire::solicited_node(target).to_string(),
+        );
+        let result = r.receive(Link::Ail, &p, 2001 + attempt, &mut rng);
+        if attempt < 2 {
+            let tx = result.unwrap();
+            assert!(tx.iter().all(|x| x.packet[40] == 135));
+            target = r.identity.link_local(Link::Ail);
+            assert_ne!(target, own);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
