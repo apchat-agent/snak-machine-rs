@@ -625,3 +625,214 @@ fn s13_nsec_next_name_is_ignored_and_duplicate_question_compares_known_record_me
         "a one-second TTL difference does not change known-answer membership"
     );
 }
+
+fn published() -> Vec<Record> {
+    vec![
+        a_record("lamp.local.", 2, 120, true),
+        Record {
+            name: "_light._tcp.local.".parse().unwrap(),
+            kind: 12,
+            class: 1,
+            ttl: 120,
+            data: Rdata::Name("Lamp._light._tcp.local.".parse().unwrap()),
+        },
+    ]
+}
+#[test]
+fn s13_publication_probes_three_times_then_announces_twice_and_only_success_advances() {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let data = published();
+    let source = |_: u64, _: u64| data.clone();
+    p.replace(1, &[], &data, 0, &mut rng).unwrap();
+    let b = p.poll(&source, 0).unwrap().unwrap();
+    assert_eq!(b.messages[0].flags, 0);
+    assert_eq!(
+        b.messages[0].questions[0],
+        Question {
+            name: "lamp.local.".parse().unwrap(),
+            kind: 255,
+            class: 0x8001
+        }
+    );
+    assert!(b
+        .messages
+        .iter()
+        .all(|m| m.authority.iter().all(|r| r.class == 1)));
+    p.sent(b.token, false, 0);
+    assert!(!p.ready(1));
+    assert!(p.poll(&source, 99).unwrap().is_none());
+    for at in [100, 350, 600] {
+        let b = p.poll(&source, at).unwrap().unwrap();
+        assert!(b
+            .messages
+            .iter()
+            .all(|m| m.flags == 0 && !m.authority.is_empty()));
+        p.sent(b.token, true, at);
+        assert!(!p.ready(1));
+    }
+    assert!(p.poll(&source, 849).unwrap().is_none());
+    for at in [850, 1850] {
+        let b = p.poll(&source, at).unwrap().unwrap();
+        assert!(b
+            .messages
+            .iter()
+            .all(|m| m.id == 0 && m.flags == 0x8400 && m.questions.is_empty()));
+        let records: Vec<_> = b.messages.iter().flat_map(|m| &m.answers).collect();
+        assert!(records.iter().any(|r| r.kind == 1 && r.class == 0x8001));
+        assert!(records.iter().any(|r| r.kind == 12 && r.class == 1));
+        assert!(records.iter().any(|r| r.kind == 47));
+        p.sent(b.token, true, at);
+        assert!(p.ready(1));
+    }
+    assert!(
+        p.poll(&source, 5000).unwrap().is_none(),
+        "no periodic unsolicited announcements"
+    );
+}
+#[test]
+fn s13_probe_tiebreak_unsigned_rdata_and_live_conflicts_reprobe_or_request_rename() {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let data = vec![a_record("lamp.local.", 50, 120, true)];
+    let source = |_: u64, _: u64| data.clone();
+    p.replace(1, &[], &data, 0, &mut rng).unwrap();
+    let mut d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: response(vec![a_record("lamp.local.", 200, 120, true)]),
+    };
+    p.receive(&d, &source, 0, &mut rng).unwrap();
+    assert_eq!(p.take_conflict(), None, "pre-probe stale response ignored");
+    let b = p.poll(&source, 0).unwrap().unwrap();
+    p.sent(b.token, true, 0);
+    d.message.flags = 0;
+    d.message.questions.push(Question {
+        name: data[0].name.clone(),
+        kind: 255,
+        class: 0x8001,
+    });
+    d.message.authority = d.message.answers.clone();
+    d.message.answers.clear();
+    p.receive(&d, &source, 100, &mut rng).unwrap();
+    assert!(
+        p.poll(&source, 1099).unwrap().is_none(),
+        "loser waits one second before retrying"
+    );
+    let b = p.poll(&source, 1100).unwrap().unwrap();
+    p.sent(b.token, true, 1100);
+    d.message = response(vec![a_record("lamp.local.", 200, 120, true)]);
+    p.receive(&d, &source, 1101, &mut rng).unwrap();
+    assert_eq!(p.take_conflict(), Some(1));
+    assert_eq!(p.take_conflict(), None);
+    let renamed = vec![a_record("lamp-2.local.", 50, 120, true)];
+    p.replace(1, &data, &renamed, 1101, &mut rng).unwrap();
+    let source2 = |_: u64, _: u64| renamed.clone();
+    assert!(
+        p.poll(&source2, 6100).unwrap().is_none(),
+        "failed-probe backoff cannot be bypassed by rename"
+    );
+    for at in [6101, 6351, 6601, 6851, 7851] {
+        let b = p.poll(&source2, at).unwrap().unwrap();
+        p.sent(b.token, true, at);
+    }
+    d.message = response(vec![a_record("lamp-2.local.", 200, 120, true)]);
+    p.receive(&d, &source2, 8000, &mut rng).unwrap();
+    assert!(!p.ready(1));
+    assert_eq!(
+        p.take_conflict(),
+        None,
+        "established conflict first re-probes per section 9"
+    );
+    assert_eq!(
+        p.poll(&source2, 8000).unwrap().unwrap().messages[0].flags,
+        0
+    );
+}
+#[test]
+fn s13_publication_update_goodbye_withdrawal_and_reconnect_are_derived_and_bounded() {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let old = published();
+    let source = |_: u64, _: u64| old.clone();
+    p.replace(1, &[], &old, 0, &mut rng).unwrap();
+    for at in [0, 250, 500, 750, 1750] {
+        let b = p.poll(&source, at).unwrap().unwrap();
+        p.sent(b.token, true, at);
+    }
+    let mut new = old.clone();
+    new[0].data = Rdata::A([192, 0, 2, 3]);
+    new[1].data = Rdata::Name("Lamp-renamed._light._tcp.local.".parse().unwrap());
+    p.replace(1, &old, &new, 3000, &mut rng).unwrap();
+    let source2 = |_: u64, _: u64| new.clone();
+    let b = p.poll(&source2, 3000).unwrap().unwrap();
+    assert_eq!(b.messages.iter().flat_map(|m| &m.answers).count(), 1);
+    assert_eq!(b.messages[0].answers[0].kind, 12);
+    assert_eq!(b.messages[0].answers[0].ttl, 0);
+    p.sent(b.token, true, 3000);
+    let b = p.poll(&source2, 3000).unwrap().unwrap();
+    assert_eq!(
+        b.messages[0].flags, 0x8400,
+        "data-only updates announce without probing again"
+    );
+    p.sent(b.token, true, 3000);
+    p.available(false, 3500, &mut rng).unwrap();
+    assert!(p.poll(&source2, 4500).unwrap().is_none());
+    p.available(true, 5000, &mut rng).unwrap();
+    let b = p.poll(&source2, 5000).unwrap().unwrap();
+    assert_eq!(b.messages[0].flags, 0);
+    assert!(!p.ready(1));
+    p.sent(b.token, true, 5000);
+    for at in [5250, 5500, 5750, 6750] {
+        let b = p.poll(&source2, at).unwrap().unwrap();
+        p.sent(b.token, true, at);
+    }
+    p.replace(1, &new, &[], 8000, &mut rng).unwrap();
+    let b = p.poll(&|_, _| vec![], 8000).unwrap().unwrap();
+    assert!(b
+        .messages
+        .iter()
+        .flat_map(|m| &m.answers)
+        .all(|r| r.ttl == 0));
+    p.sent(b.token, true, 8000);
+    assert_eq!(p.counts(), (0, 0, 0));
+    for i in 0..128 {
+        p.replace(
+            i,
+            &[],
+            &[a_record(&format!("p{i}.local."), 1, 120, true)],
+            9000,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    let before = p.counts();
+    assert!(p.replace(129, &[], &published(), 9000, &mut rng).is_err());
+    assert_eq!(p.counts(), before);
+    let mut p = Publisher::default();
+    let records: Vec<_> = (0u16..4096)
+        .map(|i| Record {
+            name: "shared.local.".parse().unwrap(),
+            kind: 16,
+            class: 1,
+            ttl: 120,
+            data: Rdata::Txt(vec![i.to_be_bytes().to_vec()]),
+        })
+        .collect();
+    p.replace(1, &[], &records, 0, &mut rng).unwrap();
+    assert_eq!(p.counts().1, 4096);
+    assert!(p
+        .replace(
+            2,
+            &[],
+            &[a_record("extra.local.", 1, 120, false)],
+            0,
+            &mut rng
+        )
+        .is_err());
+    assert_eq!(p.counts().1, 4096);
+    assert!(p.counts().2 <= 4 * 1024 * 1024);
+}
