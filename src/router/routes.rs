@@ -119,7 +119,7 @@ impl Router {
                     .or_insert(lifetime);
             }
         }
-        for ((l, p), _) in &self.withdrawals {
+        for (l, p) in self.withdrawals.keys() {
             if *l == Link::Stub {
                 routes.entry(*p).or_insert(0);
             }

@@ -92,8 +92,11 @@ fn run() -> io::Result<()> {
     }
     // SAFETY: handlers only set a lock-free atomic; no allocation or non-signal-safe I/O.
     unsafe {
-        libc::signal(libc::SIGINT, signal_stop as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, signal_stop as libc::sighandler_t);
+        libc::signal(libc::SIGINT, signal_stop as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            signal_stop as *const () as libc::sighandler_t,
+        );
     }
     let mut driver = Driver::new(router, backend)?;
     let clock = Instant::now();
