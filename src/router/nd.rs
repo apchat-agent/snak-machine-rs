@@ -9,13 +9,18 @@ pub enum NeighborState {
     Failed,
 }
 #[derive(Clone, Debug)]
+pub enum Pending {
+    Transit(Tx),
+    Output(Tx),
+}
+#[derive(Clone, Debug)]
 pub struct Neighbor {
     pub mac: Option<[u8; 6]>,
     pub state: NeighborState,
     pub deadline: Option<Time>,
     pub probes_sent: u8,
     pub is_router: bool,
-    pub pending: Option<Tx>,
+    pub pending: Option<Pending>,
 }
 impl Router {
     pub fn reachable(&self, key: RouterKey, now: Time) -> bool {
@@ -128,8 +133,13 @@ impl Router {
             };
             if self.reachable(key, now) {
                 if let Some(pending) = self.neighbors.get_mut(&key).and_then(|n| n.pending.take()) {
-                    if let Ok(e) = envelope(FrameKind::RawIpv6, &pending.packet) {
-                        return self.forward(pending.link, &e, now);
+                    match pending {
+                        Pending::Output(tx) => return Ok(vec![tx]),
+                        Pending::Transit(tx) => {
+                            if let Ok(e) = envelope(FrameKind::RawIpv6, &tx.packet) {
+                                return self.forward(tx.link, &e, now);
+                            }
+                        }
                     }
                 }
             }
@@ -159,7 +169,7 @@ impl Router {
             if n.probes_sent >= 3 {
                 n.state = NeighborState::Failed;
                 n.deadline = None;
-                if let Some(pending) = n.pending.take() {
+                if let Some(Pending::Transit(pending)) = n.pending.take() {
                     if let Ok(e) = envelope(FrameKind::RawIpv6, &pending.packet) {
                         out.extend(self.icmp_error(pending.link, &e, 1, 3, 0, now));
                     }

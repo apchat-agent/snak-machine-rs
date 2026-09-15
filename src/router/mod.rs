@@ -15,7 +15,7 @@ use crate::{
     wire::*,
     Link,
 };
-pub use nd::{Neighbor, NeighborState};
+pub use nd::{Neighbor, NeighborState, Pending};
 use std::{collections::BTreeMap, io, net::Ipv6Addr};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AilState {

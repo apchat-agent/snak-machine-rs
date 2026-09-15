@@ -78,7 +78,11 @@ impl<I: PacketIo> Driver<I> {
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         self.sync_groups()?;
+        let mut ready = vec![];
         for t in tx {
+            ready.extend(self.router.resolve_output(t, now)?);
+        }
+        for t in ready {
             if !self.router.links[t.link.index()].up {
                 continue;
             }
@@ -88,6 +92,12 @@ impl<I: PacketIo> Driver<I> {
                 .and_then(|b| self.io.send(t.link, &b));
             self.router.transmitted(&t, now, result.is_ok(), rng)?;
             if let Err(e) = result {
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
                 eprintln!("{now}ms {:?} transmit failed: {e}", t.link);
                 self.router.set_link(t.link, false, now, rng)?;
             }

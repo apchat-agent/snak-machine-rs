@@ -187,32 +187,14 @@ impl Router {
             {
                 return Ok(self.icmp_error(link, e, 1, 3, 0, now));
             }
-            if self.neighbors.keys().filter(|k| k.link == egress).count() >= 256
-                || self
-                    .neighbors
-                    .values()
-                    .filter(|n| n.pending.is_some())
-                    .count()
-                    >= 64
-            {
-                return Ok(self.icmp_error(link, e, 1, 3, 0, now));
-            }
-            let n = self.neighbors.entry(key).or_insert(Neighbor {
-                mac: None,
-                state: NeighborState::Incomplete,
-                deadline: None,
-                probes_sent: 0,
-                is_router: next != e.destination,
-                pending: None,
-            });
-            n.pending = Some(Tx {
-                link,
-                packet: e.packet.to_vec(),
-            });
-            if n.probes_sent == 0 {
-                return Ok(vec![self.probe(key, now)?]);
-            }
-            return Ok(vec![]);
+            return self.queue_neighbor(
+                key,
+                Pending::Transit(Tx {
+                    link,
+                    packet: e.packet.to_vec(),
+                }),
+                now,
+            );
         }
         if let Some(n) = self.neighbors.get_mut(&key) {
             if n.state == NeighborState::Stale {
@@ -227,6 +209,63 @@ impl Router {
             link: egress,
             packet,
         }])
+    }
+    // One datagram per unresolved next hop, 64 total. IPv6's 16-bit
+    // payload limit also bounds retained packet bytes to 64 * 65575.
+    fn queue_neighbor(
+        &mut self,
+        key: RouterKey,
+        pending: Pending,
+        now: Time,
+    ) -> io::Result<Vec<Tx>> {
+        if (!self.neighbors.contains_key(&key)
+            && self.neighbors.keys().filter(|k| k.link == key.link).count() >= 256)
+            || (self.neighbors.get(&key).is_none_or(|n| n.pending.is_none())
+                && self
+                    .neighbors
+                    .values()
+                    .filter(|n| n.pending.is_some())
+                    .count()
+                    >= 64)
+        {
+            return Ok(vec![]);
+        }
+        let n = self.neighbors.entry(key).or_insert(Neighbor {
+            mac: None,
+            state: NeighborState::Incomplete,
+            deadline: None,
+            probes_sent: 0,
+            is_router: false,
+            pending: None,
+        });
+        n.pending = Some(pending);
+        if n.probes_sent == 0 {
+            return Ok(vec![self.probe(key, now)?]);
+        }
+        Ok(vec![])
+    }
+    pub fn resolve_output(&mut self, tx: Tx, now: Time) -> io::Result<Vec<Tx>> {
+        let Ok(e) = envelope(FrameKind::RawIpv6, &tx.packet) else {
+            return Ok(vec![]);
+        };
+        if self.links[tx.link.index()].kind == FrameKind::RawIpv6 || e.destination.is_multicast() {
+            return Ok(vec![tx]);
+        }
+        let Some(next) = self.egress_next_hop(tx.link, e.destination, now) else {
+            return Ok(vec![]);
+        };
+        let key = RouterKey {
+            link: tx.link,
+            address: next,
+        };
+        if self
+            .neighbors
+            .get(&key)
+            .is_some_and(|n| n.mac.is_some() && n.state != NeighborState::Failed)
+        {
+            return Ok(vec![tx]);
+        }
+        self.queue_neighbor(key, Pending::Output(tx), now)
     }
     pub(super) fn icmp_error(
         &mut self,
