@@ -8,14 +8,35 @@ use std::{
     collections::VecDeque,
     net::{IpAddr, SocketAddr},
 };
+pub(super) type Source = Box<
+    dyn Fn(u64, Time, &Router, &crate::dns::resolver::Resolver) -> Vec<crate::dns::wire::Record>,
+>;
+#[derive(Clone, Copy)]
+enum Owner {
+    Query(u64),
+    Publication(u64),
+    Response(u64),
+}
 pub(super) struct Output {
-    id: u64,
+    owner: Owner,
+    destination: Option<SocketAddr>,
     messages: VecDeque<Message>,
     packets: VecDeque<Vec<u8>>,
     sources: Vec<IpAddr>,
     pub(super) retry: Time,
 }
 impl<I: PacketIo> Driver<I> {
+    /// Install the authoritative owner's projection function. Stored publications
+    /// must be synchronized with that owner before polling or receiving traffic.
+    pub fn set_mdns_source(
+        &mut self,
+        source: impl Fn(u64, Time, &Router, &crate::dns::resolver::Resolver) -> Vec<crate::dns::wire::Record>
+            + 'static,
+    ) {
+        self.mdns_source = Box::new(source);
+        self.mdns_output = None;
+    }
+
     fn mdns_sources(&self) -> Vec<IpAddr> {
         if !self.router.links[0].up
             || !matches!(
@@ -158,37 +179,123 @@ impl<I: PacketIo> Driver<I> {
         {
             return Ok(true);
         }
-        let _ = self.mdns.querier.receive(&d, on_link, now, rng)?;
+        let probe = self.mdns.publisher.expects_unicast(&d, now);
+        if self
+            .mdns
+            .querier
+            .receive_with_probe(&d, on_link, now, rng, probe)?
+        {
+            if rx.kind == FrameKind::Ethernet {
+                self.mdns.querier.remember_peer(
+                    d.source.ip(),
+                    rx.bytes[6..12].try_into().unwrap(),
+                    now,
+                );
+            }
+            let source = |id, at| (self.mdns_source)(id, at, &self.router, &self.dns);
+            self.mdns.publisher.receive(&d, &source, now, rng)?;
+            if let Err(e) = self.mdns.responder.receive(
+                &d,
+                on_link,
+                &mut self.mdns.publisher,
+                &source,
+                now,
+                rng,
+            ) {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    return Err(e);
+                }
+            }
+        }
         Ok(true)
+    }
+    fn mdns_complete(&mut self, owner: Owner, success: bool, now: Time) {
+        match owner {
+            Owner::Query(id) => self.mdns.querier.sent(id, success, now),
+            Owner::Publication(id) => self.mdns.publisher.sent(id, success, now),
+            Owner::Response(id) => {
+                self.mdns
+                    .responder
+                    .sent(id, success, &mut self.mdns.publisher, now)
+            }
+        }
+    }
+    fn mdns_current(&self, owner: Owner, now: Time) -> bool {
+        match owner {
+            Owner::Query(id) => self.mdns.querier.active(id, now),
+            Owner::Publication(id) => self.mdns.publisher.offered(id),
+            Owner::Response(id) => self.mdns.responder.offered(id, now),
+        }
+    }
+    fn mdns_next_output(&mut self, sources: &[IpAddr], now: Time) -> io::Result<Option<Output>> {
+        let source = |id, at| (self.mdns_source)(id, at, &self.router, &self.dns);
+        for _ in 0..3 {
+            let round = self.mdns_round;
+            self.mdns_round = (self.mdns_round + 1) % 3;
+            let (owner, destination, messages) = match round {
+                0 => {
+                    if let Some(b) = self.mdns.querier.poll(now)? {
+                        (Owner::Query(b.id), None, b.messages)
+                    } else {
+                        continue;
+                    }
+                }
+                1 => {
+                    if let Some(b) = self.mdns.publisher.poll(&source, now)? {
+                        (Owner::Publication(b.token), None, b.messages)
+                    } else {
+                        continue;
+                    }
+                }
+                _ => {
+                    if let Some(b) = self
+                        .mdns
+                        .responder
+                        .poll(&self.mdns.publisher, &source, now)?
+                    {
+                        (Owner::Response(b.token), Some(b.destination), b.messages)
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            return Ok(Some(Output {
+                owner,
+                destination,
+                messages: messages.into(),
+                packets: VecDeque::new(),
+                sources: sources.to_vec(),
+                retry: now,
+            }));
+        }
+        Ok(None)
     }
     pub(super) fn poll_mdns(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         let sources = self.mdns_sources();
         self.mdns.querier.available(!sources.is_empty(), now, rng)?;
+        self.mdns
+            .publisher
+            .available(!sources.is_empty(), now, rng)?;
         if sources.is_empty() {
             self.mdns_output = None;
+            self.mdns.responder.clear();
             return Ok(());
         }
         if self
             .mdns_output
             .as_ref()
-            .is_some_and(|o| o.sources != sources)
+            .is_some_and(|o| o.sources != sources || !self.mdns_current(o.owner, now))
         {
             if let Some(o) = self.mdns_output.take() {
-                self.mdns.querier.sent(o.id, false, now);
+                self.mdns_complete(o.owner, false, now);
             }
         }
         for _ in 0..32 {
             if self.mdns_output.is_none() {
-                let Some(batch) = self.mdns.querier.poll(now)? else {
+                self.mdns_output = self.mdns_next_output(&sources, now)?;
+                if self.mdns_output.is_none() {
                     break;
-                };
-                self.mdns_output = Some(Output {
-                    id: batch.id,
-                    messages: batch.messages.into(),
-                    packets: VecDeque::new(),
-                    sources: sources.clone(),
-                    retry: now,
-                });
+                }
             }
             let output = self.mdns_output.as_mut().unwrap();
             if output.retry > now {
@@ -196,17 +303,33 @@ impl<I: PacketIo> Driver<I> {
             }
             if output.packets.is_empty() {
                 let Some(message) = output.messages.pop_front() else {
-                    self.mdns.querier.sent(output.id, true, now);
+                    let owner = output.owner;
                     self.mdns_output = None;
+                    self.mdns_complete(owner, true, now);
                     continue;
                 };
                 for source in &output.sources {
-                    let destination = multicast(source.is_ipv6());
-                    let packet = encode(
-                        SocketAddr::new(*source, 5353),
-                        SocketAddr::new(destination, 5353),
-                        &message,
-                    )?;
+                    if output
+                        .destination
+                        .is_some_and(|d| d.is_ipv6() != source.is_ipv6())
+                    {
+                        continue;
+                    }
+                    let destination = output
+                        .destination
+                        .unwrap_or_else(|| SocketAddr::new(multicast(source.is_ipv6()), 5353));
+                    let mac = if destination.ip().is_multicast() {
+                        Some(multicast_mac(destination.ip()))
+                    } else {
+                        self.mdns.querier.peer(destination.ip(), now)
+                    };
+                    if self.io.info(Link::Ail).kind == FrameKind::Ethernet && mac.is_none() {
+                        let owner = output.owner;
+                        self.mdns_output = None;
+                        self.mdns_complete(owner, false, now);
+                        return Ok(());
+                    }
+                    let packet = encode(SocketAddr::new(*source, 5353), destination, &message)?;
                     let fragments = crate::ip_reassembly::fragment(
                         &packet,
                         self.io.info(Link::Ail).mtu as usize,
@@ -215,7 +338,7 @@ impl<I: PacketIo> Driver<I> {
                     self.mdns_fragment_id = self.mdns_fragment_id.wrapping_add(1);
                     for packet in fragments {
                         let frame = if self.io.info(Link::Ail).kind == FrameKind::Ethernet {
-                            let mut frame = multicast_mac(destination).to_vec();
+                            let mut frame = mac.unwrap().to_vec();
                             frame.extend(self.ipv4.mac);
                             frame.extend(if source.is_ipv6() {
                                 [0x86, 0xdd]
@@ -248,10 +371,13 @@ impl<I: PacketIo> Driver<I> {
                     break;
                 }
                 Err(_) => {
-                    self.mdns.querier.sent(output.id, false, now);
+                    let owner = output.owner;
                     self.mdns_output = None;
+                    self.mdns_complete(owner, false, now);
                     self.router.set_link(Link::Ail, false, now, rng)?;
                     self.mdns.querier.available(false, now, rng)?;
+                    self.mdns.publisher.available(false, now, rng)?;
+                    self.mdns.responder.clear();
                     break;
                 }
             }

@@ -289,6 +289,9 @@ impl Responder {
             messages,
         }))
     }
+    pub(crate) fn offered(&self, token: u64, now: Time) -> bool {
+        self.offered == Some(token) && self.pending.get(&token).is_some_and(|p| p.expires > now)
+    }
     pub fn sent(&mut self, token: u64, success: bool, publisher: &mut Publisher, now: Time) {
         if self.offered != Some(token) {
             return;

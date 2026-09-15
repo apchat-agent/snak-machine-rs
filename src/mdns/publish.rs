@@ -39,6 +39,7 @@ struct Publication {
     charge: usize,
     state: State,
     history: BTreeMap<Digest, Time>,
+    last_probe: Option<Time>,
 }
 struct Goodbye {
     records: Vec<Record>,
@@ -318,6 +319,7 @@ impl Publisher {
                     charge: new.charge,
                     state,
                     history,
+                    last_probe: None,
                 },
             );
         }
@@ -343,6 +345,7 @@ impl Publisher {
             self.goodbyes.clear();
             for p in self.publications.values_mut() {
                 p.history.clear();
+                p.last_probe = None;
                 p.state = if p.names.is_empty() {
                     State::Announce { sent: 0, next: now }
                 } else {
@@ -435,6 +438,7 @@ impl Publisher {
                         return;
                     }
                     if probe {
+                        p.last_probe = Some(now);
                         if let State::Probe { sent, .. } = p.state {
                             p.state = State::Probe {
                                 sent: sent + 1,
@@ -457,6 +461,19 @@ impl Publisher {
                 }
             }
         }
+    }
+    pub(crate) fn expects_unicast(&self, d: &Datagram, now: Time) -> bool {
+        self.publications.values().any(|p| {
+            p.last_probe.is_some_and(|t| now >= t && now - t <= 2000)
+                && d.message
+                    .answers
+                    .iter()
+                    .chain(&d.message.additional)
+                    .any(|r| p.names.contains(&(r.name.clone(), r.class & 0x7fff)))
+        })
+    }
+    pub(crate) fn offered(&self, token: u64) -> bool {
+        self.offered.as_ref().is_some_and(|(t, _)| *t == token)
     }
     pub(crate) fn all_ready(
         &self,

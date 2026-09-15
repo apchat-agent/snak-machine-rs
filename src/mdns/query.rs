@@ -23,10 +23,15 @@ pub struct Batch {
     pub id: u64,
     pub messages: Vec<Message>,
 }
+struct Rate {
+    start: Time,
+    count: u8,
+    peer: Option<([u8; 6], Time)>,
+}
 pub struct Querier {
     pub cache: Cache,
     questions: BTreeMap<u64, Active>,
-    rates: BTreeMap<IpAddr, (Time, u8)>,
+    rates: BTreeMap<IpAddr, Rate>,
     global: (Time, u16),
     next_id: u64,
     up: bool,
@@ -154,7 +159,8 @@ impl Querier {
     }
     fn expire(&mut self, now: Time) {
         self.questions.retain(|_, q| q.until > now);
-        self.rates.retain(|_, r| now.saturating_sub(r.0) < 60000);
+        self.rates
+            .retain(|_, r| now.saturating_sub(r.start) < 60000);
         self.cache.expire(now);
         self.reserve();
     }
@@ -225,19 +231,39 @@ impl Querier {
         }
         self.global.1 += 1;
         if !self.rates.contains_key(&source) && self.rates.len() >= 32 {
-            let oldest = *self.rates.iter().min_by_key(|(_, r)| r.0).unwrap().0;
+            let oldest = *self.rates.iter().min_by_key(|(_, r)| r.start).unwrap().0;
             self.rates.remove(&oldest);
         }
-        let r = self.rates.entry(source).or_insert((now, 0));
-        if now.saturating_sub(r.0) >= 1000 {
-            *r = (now, 0);
+        let r = self.rates.entry(source).or_insert(Rate {
+            start: now,
+            count: 0,
+            peer: None,
+        });
+        if now.saturating_sub(r.start) >= 1000 {
+            r.start = now;
+            r.count = 0;
         }
-        if r.1 >= 32 {
+        if r.count >= 32 {
             return false;
         }
-        r.1 += 1;
+        r.count += 1;
         self.reserve();
         true
+    }
+    pub(crate) fn remember_peer(&mut self, address: IpAddr, mac: [u8; 6], now: Time) {
+        if let Some(r) = self.rates.get_mut(&address) {
+            r.peer = Some((mac, now.saturating_add(2000)));
+        }
+    }
+    pub(crate) fn peer(&self, address: IpAddr, now: Time) -> Option<[u8; 6]> {
+        self.rates
+            .get(&address)?
+            .peer
+            .filter(|(_, until)| *until > now)
+            .map(|(mac, _)| mac)
+    }
+    pub(crate) fn active(&self, id: u64, now: Time) -> bool {
+        self.questions.get(&id).is_some_and(|q| q.until > now)
     }
     pub fn receive(
         &mut self,
@@ -246,6 +272,16 @@ impl Querier {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<bool> {
+        self.receive_with_probe(d, on_link, now, rng, false)
+    }
+    pub(crate) fn receive_with_probe(
+        &mut self,
+        d: &Datagram,
+        on_link: bool,
+        now: Time,
+        rng: &mut impl RandomSource,
+        probe: bool,
+    ) -> io::Result<bool> {
         if !self.up || d.destination.port() != 5353 || !self.admit(d.source.ip(), now) {
             return Ok(false);
         }
@@ -253,14 +289,15 @@ impl Querier {
         if m.flags & 0x8000 != 0 {
             if !d.destination.ip().is_multicast()
                 && (!on_link
-                    || !self.questions.values().any(|q| {
-                        q.qu.is_some_and(|t| now >= t && now - t <= 2000)
-                            && q.until > now
-                            && m.answers
-                                .iter()
-                                .chain(&m.additional)
-                                .any(|r| matches(&q.question, r))
-                    }))
+                    || (!probe
+                        && !self.questions.values().any(|q| {
+                            q.qu.is_some_and(|t| now >= t && now - t <= 2000)
+                                && q.until > now
+                                && m.answers
+                                    .iter()
+                                    .chain(&m.additional)
+                                    .any(|r| matches(&q.question, r))
+                        })))
             {
                 return Ok(false);
             }

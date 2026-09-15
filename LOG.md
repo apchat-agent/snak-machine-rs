@@ -985,3 +985,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   reception, MTU fragmentation and interoperability with external mDNS peers.
   The platform calls are already at the PacketIo edge; all logic above runs
   rootlessly using independent Ethernet/IP fixtures.
+- S13 live-publication RED `2a6c47b`: full `cargo test` confirms the missing
+  owner projection hook. GREEN passes **238 tests** and all-feature clippy.
+  The Driver now sends probes/announcements and QU replies through the actual
+  PacketIo edge, cycling fairly among questions, publications and responses.
+  A checked incoming source MAC is retained for two seconds within the existing
+  bounded 32-source rate table so direct replies need no speculative ARP/ND
+  learning. Stale owner projections fail before publishing stale records.
+- Successfully transmitted probe timestamps admit matching unicast defenses
+  for two seconds; an independent peer's defense triggers the expected name
+  conflict. Output cursors are cancelled when their owner is replaced, expires
+  or loses its link. The projection callback receives current Router/Resolver
+  owners, allowing the later AP to derive records without copying registry
+  state. These fields implement planned owner projections and sent provenance;
+  no dependency. Aggregate-budget and final hostile/failure fixtures follow.

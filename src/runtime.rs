@@ -15,6 +15,8 @@ pub struct Driver<I> {
     pub mdns: crate::mdns::Engine,
     mdns_output: Option<mdns::Output>,
     mdns_fragment_id: u32,
+    mdns_source: mdns::Source,
+    mdns_round: u8,
     pub dns_discovery: crate::dns::upstream::Discovery,
     dns_service: crate::dns::service::Service,
     dns_info: Option<crate::dns::upstream::InformationClient>,
@@ -49,6 +51,8 @@ impl<I: PacketIo> Driver<I> {
             mdns: Default::default(),
             mdns_output: None,
             mdns_fragment_id: 0,
+            mdns_source: Box::new(|_, _, _, _| vec![]),
+            mdns_round: 0,
             dns_service: Default::default(),
             dns_info: None,
             dhcp: None,
@@ -328,6 +332,8 @@ impl<I: PacketIo> Driver<I> {
         let mut next = self.router.next_deadline(now);
         for deadline in [
             self.mdns.querier.next_deadline(now),
+            self.mdns.publisher.next_deadline(),
+            self.mdns.responder.next_deadline(),
             self.mdns_output.as_ref().map(|o| o.retry),
             self.dns.next_deadline(),
             self.dns_discovery.next_deadline(),
