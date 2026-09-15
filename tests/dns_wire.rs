@@ -1,4 +1,4 @@
-use snac_rs::dns::wire::{Context, Message, Name, Rdata, TcpFrames};
+use snac_rs::dns::wire::{Context, Message, Name, Question, Rdata, Record, TcpFrames};
 fn query() -> Vec<u8> {
     b"\x12\x34\x01\x00\0\x01\0\0\0\0\0\0\x03WwW\x07example\x03com\0\0\x1c\0\x01".to_vec()
 }
