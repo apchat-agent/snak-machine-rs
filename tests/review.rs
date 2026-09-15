@@ -579,3 +579,21 @@ fn review_10_state_lock_filename_does_not_alias_lock_inode() {
     drop(first);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn review_11_router_churn_reclaims_expired_headers_but_keeps_zero_lifetime_mo() {
+    let mut r = router();
+    let zero = nd_packet("fe80::ffff", "ff02::1", ra(0x80, 0, &[]));
+    r.receive(Link::Ail, &zero, 0, &mut ScriptedRandom::new([]))
+        .unwrap();
+    for i in 1..=80 {
+        let now = i * 2000;
+        let packet = nd_packet(&format!("fe80::{i:x}"), "ff02::1", ra(0x40, 1, &[]));
+        r.receive(Link::Ail, &packet, now, &mut ScriptedRandom::new([]))
+            .unwrap();
+        r.tick(now + 1000, &mut ScriptedRandom::new([])).unwrap();
+        assert!(r.headers.len() <= 2);
+        assert_eq!(r.snapshot(Link::Ail, now + 1000).mo, 0x80);
+        assert_eq!(r.lifecycle, Lifecycle::Running);
+    }
+}
