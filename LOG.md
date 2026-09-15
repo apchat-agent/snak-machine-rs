@@ -18,3 +18,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 07 rs-coalescing GREEN — 7 passed; Same-link full snapshot emitted once; unspecified-source RS uses all-nodes multicast; existing earlier response never postponed.
 - 08 identity RED — 8 tests specified; cargo test failed for the new contract (see paired test commit).
 - 08 identity GREEN — 8 passed; Only planned exact pins added (libc/getrandom and optional libloading); atomic file and directory sync, exclusive lock, corrupt state and entropy errors explicit. getrandom default Error lacks std::error::Error; mapped its message. Attachment changes allocate a new identity.
+- 09 discovery RED — 9 tests specified; cargo test failed for the new contract (see paired test commit).
+- 09 discovery GREEN — 9 passed; Two normalized link machines with finite discovery windows; raw packet validation precedes supplier updates. Send failures do not advance advertising state.

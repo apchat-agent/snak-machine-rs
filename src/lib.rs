@@ -20,5 +20,6 @@ impl Link {
     }
 }
 pub mod persist;
+pub mod router;
 pub mod scheduler;
 pub mod time;
