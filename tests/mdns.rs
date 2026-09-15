@@ -379,3 +379,210 @@ fn s13_cache_passive_failure_observation_expires_stale_records() {
         "known-answer suppression explains missing response"
     );
 }
+
+#[test]
+fn s13_questions_retry_only_after_send_refresh_unique_records_and_cancel() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut e = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let q = question("lamp.local.", 1);
+    let id = e.start(q.clone(), 200000, 0, &mut rng).unwrap();
+    assert!(e.poll(19).unwrap().is_none());
+    let batch = e.poll(20).unwrap().unwrap();
+    assert_eq!(batch.id, id);
+    assert_eq!(batch.messages[0].questions[0].class, 0x8001);
+    e.sent(id, false, 20);
+    assert!(e.poll(21).unwrap().is_none());
+    e.poll(120).unwrap().unwrap();
+    e.sent(id, true, 120);
+    assert!(e.poll(1119).unwrap().is_none());
+    let batch = e.poll(1120).unwrap().unwrap();
+    assert_eq!(batch.messages[0].questions[0].class, 1);
+    e.sent(id, true, 1120);
+    assert!(e.poll(3119).unwrap().is_none());
+    e.poll(3120).unwrap().unwrap();
+    e.sent(id, true, 3120);
+    let d = Datagram::parse(
+        Link::Ail,
+        &packet(
+            true,
+            &response(vec![a_record("lamp.local.", 1, 100, true)]),
+            5353,
+            255,
+        ),
+    )
+    .unwrap();
+    assert!(e.receive(&d, true, 4000, &mut rng).unwrap());
+    assert!(e.poll(83999).unwrap().is_none());
+    for at in [84000, 89000, 94000, 99000] {
+        let b = e.poll(at).unwrap().unwrap();
+        assert!(
+            b.messages[0].answers.is_empty(),
+            "expiring records must not suppress refresh"
+        );
+        e.sent(id, true, at);
+        assert!(e.poll(at + 1).unwrap().is_none());
+    }
+    assert!(e.cache.answers(&q, 104000).is_empty());
+    e.stop(id);
+    assert!(e.poll(150000).unwrap().is_none());
+    assert_eq!(e.counts().0, 0);
+    // Uninterested records never cause maintenance queries.
+    e.cache.receive(&d.message, 150000, &mut rng).unwrap();
+    assert!(e.poll(230000).unwrap().is_none());
+}
+#[test]
+fn s13_unicast_answers_require_recent_successful_qu_and_onlink_source() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut e = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[fe80::1]:5353".parse().unwrap(),
+        message: response(vec![a_record("lamp.local.", 1, 120, true)]),
+    };
+    assert!(!e.receive(&d, true, 0, &mut rng).unwrap());
+    let id = e
+        .start(question("lamp.local.", 1), 10000, 0, &mut rng)
+        .unwrap();
+    e.poll(20).unwrap().unwrap();
+    e.sent(id, false, 20);
+    assert!(!e.receive(&d, true, 21, &mut rng).unwrap());
+    e.poll(120).unwrap().unwrap();
+    e.sent(id, true, 120);
+    assert!(!e.receive(&d, false, 121, &mut rng).unwrap());
+    assert!(e.receive(&d, true, 121, &mut rng).unwrap());
+    assert!(!e.receive(&d, true, 2121, &mut rng).unwrap());
+    d.destination = "[ff02::fb]:5353".parse().unwrap();
+    assert!(
+        e.receive(&d, false, 2122, &mut rng).unwrap(),
+        "multicast works across overlay subnets"
+    );
+    e.available(false, 2200, &mut rng).unwrap();
+    assert!(e
+        .cache
+        .answers(&question("lamp.local.", 1), 2200)
+        .is_empty());
+    assert!(!e.receive(&d, true, 2300, &mut rng).unwrap());
+    assert!(e.poll(3000).unwrap().is_none());
+    e.available(true, 4000, &mut rng).unwrap();
+    assert_eq!(
+        e.poll(4020).unwrap().unwrap().messages[0].questions[0].class,
+        0x8001
+    );
+}
+#[test]
+fn s13_known_answers_span_bounded_packets_and_duplicate_queries_are_safely_suppressed() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut e = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let q = question("_light._tcp.local.", 12);
+    let mut rrs = vec![];
+    for i in 0..100 {
+        rrs.push(Record {
+            name: q.name.clone(),
+            kind: 12,
+            class: 1,
+            ttl: 120,
+            data: Rdata::Name(
+                format!("long-printer-name-number-{i}._light._tcp.local.")
+                    .parse()
+                    .unwrap(),
+            ),
+        });
+    }
+    e.cache.receive(&response(rrs), 0, &mut rng).unwrap();
+    let id = e.start(q.clone(), 100000, 0, &mut rng).unwrap();
+    let batch = e.poll(20).unwrap().unwrap();
+    assert!(batch.messages.len() > 1);
+    let last = batch.messages.len() - 1;
+    assert_eq!(
+        batch
+            .messages
+            .iter()
+            .map(|m| m.answers.len())
+            .sum::<usize>(),
+        100
+    );
+    for (i, m) in batch.messages.iter().enumerate() {
+        assert_eq!(m.questions.len(), usize::from(i == 0));
+        assert_eq!(m.flags & 0x200 != 0, i != last);
+        assert!(m.answers.iter().all(|r| r.class == 1));
+        assert!(m.encode_context(Context::Mdns).unwrap().len() <= 1200);
+    }
+    e.sent(id, true, 20);
+    let mut m = Message::new(0, 0);
+    m.questions.push(q.clone());
+    let d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: m,
+    };
+    assert!(e.receive(&d, true, 1000, &mut rng).unwrap());
+    assert!(
+        e.poll(1020).unwrap().is_none(),
+        "peer QM replaces our redundant query"
+    );
+    let mut d = d;
+    d.message.answers.push(Record {
+        name: q.name.clone(),
+        kind: 12,
+        class: 1,
+        ttl: 120,
+        data: Rdata::Name("unknown._light._tcp.local.".parse().unwrap()),
+    });
+    e.receive(&d, true, 2999, &mut rng).unwrap();
+    assert!(
+        e.poll(3000).unwrap().is_some(),
+        "peer knowledge we lack cannot suppress our query"
+    );
+}
+#[test]
+fn s13_question_rate_caps_and_reconfirmation_make_progress_during_floods() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut e = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    for i in 0..128 {
+        e.start(question(&format!("q{i}.local."), 1), 10000, 0, &mut rng)
+            .unwrap();
+    }
+    assert!(e
+        .start(question("overflow.local.", 1), 10000, 0, &mut rng)
+        .is_err());
+    assert_eq!(e.counts().0, 128);
+    let mut accepted = 0;
+    for i in 0..500 {
+        let d = Datagram {
+            source: SocketAddr::new(format!("fe80::{:x}", i + 2).parse().unwrap(), 5353),
+            destination: "[ff02::fb]:5353".parse().unwrap(),
+            message: query(),
+        };
+        accepted += usize::from(e.receive(&d, true, 20, &mut rng).unwrap());
+        assert!(e.counts().1 <= 32);
+        assert!(e.cache.counts().2 <= 4 * 1024 * 1024);
+    }
+    assert_eq!(e.counts().1, 32);
+    assert!(accepted <= 128);
+    for _ in 0..128 {
+        let batch = e.poll(20).unwrap().unwrap();
+        e.sent(batch.id, true, 20);
+    }
+    assert!(e.poll(20).unwrap().is_none());
+    e.poll(10000).unwrap();
+    assert_eq!(e.counts().0, 0);
+    let q = question("stale.local.", 1);
+    e.cache
+        .receive(
+            &response(vec![a_record("stale.local.", 1, 120, true)]),
+            10000,
+            &mut rng,
+        )
+        .unwrap();
+    let id = e.reconfirm(q.clone(), 10000, &mut rng).unwrap();
+    e.poll(10020).unwrap().unwrap();
+    e.sent(id, true, 10020);
+    e.poll(11020).unwrap().unwrap();
+    e.sent(id, true, 11020);
+    assert_eq!(e.cache.answers(&q, 19999).len(), 1);
+    assert!(e.cache.answers(&q, 20000).is_empty());
+}
