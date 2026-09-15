@@ -167,6 +167,9 @@ impl Validator {
         budget: &mut CryptoBudget,
         lookup: impl Fn(&Name) -> Option<Key>,
     ) -> Result<Update, Error> {
+        if bytes.len() >= 10 && u16::from_be_bytes([bytes[8], bytes[9]]) > 256 {
+            return Err(Error::ServFail);
+        }
         let m = Message::parse(bytes, Context::Unicast).map_err(|_| Error::Format)?;
         if m.flags != 0x2800
             || m.questions.len() != 1
@@ -226,7 +229,15 @@ impl Validator {
         }
         let mut groups: BTreeMap<Name, Vec<&Record>> = BTreeMap::new();
         let mut discovery = vec![];
+        let mut ttls = BTreeMap::new();
         for r in &m.authority {
+            if r.class == 1
+                && ttls
+                    .insert((&r.name, r.kind), r.ttl)
+                    .is_some_and(|old| old != r.ttl)
+            {
+                return Err(Error::Refused);
+            }
             if !within(&r.name, zone) {
                 return Err(Error::NotZone);
             }
@@ -311,7 +322,7 @@ impl Validator {
                 deleted: srv == 0,
             });
         }
-        for r in discovery {
+        for (at, r) in discovery.iter().enumerate() {
             let Rdata::Name(target) = &r.data else {
                 return Err(Error::Refused);
             };
@@ -319,14 +330,19 @@ impl Validator {
                 .iter_mut()
                 .find(|s| s.name == *target)
                 .ok_or(Error::Refused)?;
+            // RFC 9665 3.2.5.5.2 permits paired delete/add of a PTR when
+            // replacing a service under the same instance name.
+            let replacement = discovery[at + 1..]
+                .iter()
+                .any(|next| next.class == 1 && next.name == r.name && next.data == r.data);
             if (r.class == 1 && s.deleted)
-                || (r.class == 254 && !s.deleted)
+                || (r.class == 254 && !s.deleted && !replacement)
                 || !discovery_owner(&r.name, target, zone)
             {
                 return Err(Error::Refused);
             }
             if r.class == 1 {
-                s.discovery.push(r.clone());
+                s.discovery.push((*r).clone());
             }
         }
         if *algorithm != key.algorithm || *key_tag != key.tag() {

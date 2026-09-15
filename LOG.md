@@ -768,3 +768,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   eight and per-update host/service groups at nine, matching registry capacity.
   TTL consistency, signed semantic mutations and live transport integration
   follow before S11 is declared complete.
+- S11 semantic RED `c8c50b6`: correctly signed inconsistent RRset TTLs were
+  accepted and a valid PTR delete/add service replacement was refused. GREEN
+  passes **196 tests** and all-feature clippy. It enforces RFC 9665 section 4
+  TTL consistency before crypto, preserves section 3.2.5.5.2 replacement
+  ordering, and caps each update at 256 instructions before decoding. This
+  extra input/work bound limits transient transaction state independently of
+  the 64 KiB wire limit; no new field or dependency.
+- Signed fixtures also cover prerequisites, multi-host adds, missing/duplicate
+  deletions, SRV/TXT relationships, implicit/explicit KEY mismatch, key lengths,
+  unsupported algorithms, lease lengths/duplicates and eight service groups
+  plus one. Structural rejections leave all eight crypto credits available.
