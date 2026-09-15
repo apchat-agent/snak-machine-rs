@@ -701,3 +701,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   the listening socket after acceptance. Current listeners retain the same
   8 KiB per direction; the TLS listener will reserve smaller rings so its
   record/framing buffers can share the required total connection budget.
+- S10 Driver RED `7cb9497`: `cargo test` confirms absent DoT activation and
+  transport budget seams. GREEN passes **184 tests** and all-feature clippy.
+  A real TLS client reaches port 853 through raw Ethernet, Driver/ND and the
+  userspace TCP stack, then pipelines ordinary queries, a 60 KiB DNS query,
+  and an unsigned UPDATE. Queries use the shared resolver; UPDATE reaches
+  its dedicated dispatch branch and returns a non-success response pending
+  S11/S12 verification/transactions. No signed success is claimed here.
+- TLS listeners reserve 4 KiB TCP rings per direction, retaining that size
+  after acceptance. Incremental reads consume only bytes accepted by rustls;
+  plaintext is drained before further records. DNS framing/output shares
+  remaining connection credit with TLS overhead; partial output buffers
+  release unused capacity. TLS handshake/idle deadlines join Driver scheduling.
+  Extra adapter fields retain the TLS channel/configuration and pending
+  plaintext count (rustls exposes that count after processing); these are
+  planned transport state. No dependency. Native startup wiring and remaining
+  exhaustion/renewal fixtures follow.

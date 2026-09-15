@@ -226,6 +226,19 @@ impl Resolver {
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Action>> {
         let m = Message::parse(bytes, Context::Unicast)?;
+        if m.flags & 0xf800 == 0x2800 && m.questions.len() == 1 {
+            // The SRP verifier/transaction owner is installed by S11/S12.
+            let mut response = Message::new(m.id, 0xa804);
+            response.questions = m.questions.clone();
+            return Ok(vec![deliver(
+                Waiter {
+                    limit: client_limit(&client, &m),
+                    client,
+                    id: m.id,
+                },
+                &response.encode()?,
+            )?]);
+        }
         if m.flags & 0xf800 != 0
             || m.questions.len() != 1
             || !m.answers.is_empty()
@@ -587,7 +600,10 @@ fn deliver(w: Waiter, b: &[u8]) -> io::Result<Action> {
         b.to_vec()
     };
     bytes[..2].copy_from_slice(&w.id.to_be_bytes());
-    bytes[3] = (bytes[3] | 0x80) & !0x20;
+    bytes[3] &= !0x20;
+    if bytes[2] & 0x78 == 0 {
+        bytes[3] |= 0x80;
+    }
     Ok(Action::Reply {
         client: w.client,
         bytes,

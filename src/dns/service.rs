@@ -17,8 +17,16 @@ pub struct Service {
     incoming: BTreeMap<usize, Stream>,
     outgoing: BTreeMap<u64, (usize, Stream)>,
     cursor: usize,
+    tls_config: Option<std::sync::Arc<rustls::ServerConfig>>,
 }
 impl Service {
+    pub fn enable_tls(&mut self, config: std::sync::Arc<rustls::ServerConfig>) {
+        self.tls_config = Some(config);
+    }
+    pub fn tls_enabled(&self) -> bool {
+        self.tls_config.is_some()
+    }
+
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.udp.len(), self.incoming.len(), self.outgoing.len())
     }
@@ -43,10 +51,15 @@ impl Service {
         }
     }
     pub fn next_deadline(&self, now: u64) -> Option<u64> {
-        (!self.replies.is_empty()
-            || self.incoming.values().any(|s| !s.tx.is_empty())
-            || self.outgoing.values().any(|(_, s)| !s.tx.is_empty()))
-        .then_some(now)
+        (!self.replies.is_empty())
+            .then_some(now)
+            .into_iter()
+            .chain(
+                self.incoming
+                    .values()
+                    .filter_map(|s| s.tls.as_ref().map(|t| t.deadline())),
+            )
+            .min()
     }
     pub fn poll(
         &mut self,
@@ -151,7 +164,7 @@ impl Service {
                 }
             }
         }
-        self.flush_tcp(r, stacks);
+        self.flush_tcp(r, stacks, now);
         Ok(())
     }
     fn poll_tcp(
@@ -172,10 +185,17 @@ impl Service {
             r.cancel_connection(id);
         }
         for id in stacks[1].connections() {
-            if stacks[1].endpoints(id).is_some_and(|(l, _)| l.port() == 53)
-                && self.incoming.len() < 64
-            {
-                self.incoming.entry(id).or_insert_with(Stream::new);
+            if let Some((local, _)) = stacks[1].endpoints(id) {
+                if self.incoming.len() < 64 && !self.incoming.contains_key(&id) {
+                    if local.port() == 53 {
+                        self.incoming.insert(id, Stream::new());
+                    } else if local.port() == 853 {
+                        if let Some(config) = &self.tls_config {
+                            self.incoming
+                                .insert(id, Stream::encrypted(config.clone(), now)?);
+                        }
+                    }
+                }
             }
         }
         let ids: Vec<_> = self.incoming.keys().copied().collect();
@@ -187,7 +207,7 @@ impl Service {
             let mut messages = vec![];
             {
                 let stream = self.incoming.get_mut(&id).unwrap();
-                stream.read(&mut stacks[1], id);
+                stream.read(&mut stacks[1], id, now);
                 for _ in 0..4 {
                     let Some(b) = stream.frames.pop() else {
                         break;
@@ -218,7 +238,7 @@ impl Service {
         let ids: Vec<_> = self.outgoing.keys().copied().collect();
         for exchange in ids {
             let (connection, stream) = self.outgoing.get_mut(&exchange).unwrap();
-            stream.read(&mut stacks[0], *connection);
+            stream.read(&mut stacks[0], *connection, now);
             if let Some(bytes) = stream.frames.pop() {
                 let query = r.queries().find(|q| q.exchange == exchange).cloned();
                 if let Some(q) = query {
@@ -250,22 +270,34 @@ impl Service {
         }
         Ok(())
     }
-    fn flush_tcp(&mut self, r: &mut Resolver, stacks: &mut [Stack; 2]) {
+    fn flush_tcp(&mut self, r: &mut Resolver, stacks: &mut [Stack; 2], now: u64) {
         for (id, stream) in &mut self.incoming {
-            stream.flush(&mut stacks[1], *id);
+            stream.flush(&mut stacks[1], *id, now);
             if stream.failed {
                 stacks[1].abort(*id);
                 r.cancel_connection(*id);
-            } else if stacks[1].tcp_eof(*id) && !r.connection_pending(*id) && stream.tx.is_empty() {
+            } else if stream
+                .tls
+                .as_ref()
+                .map_or_else(|| stacks[1].tcp_eof(*id), |t| t.peer_closed())
+                && !r.connection_pending(*id)
+                && stream.tx.is_empty()
+            {
                 if stream.frames.buffered() > 0 {
                     stacks[1].abort(*id);
                 } else {
-                    stacks[1].close(*id);
+                    if let Some(t) = &mut stream.tls {
+                        t.close_notify();
+                        stream.flush(&mut stacks[1], *id, now);
+                    }
+                    if stream.tls.as_ref().is_none_or(|t| !t.wants_write()) {
+                        stacks[1].close(*id);
+                    }
                 }
             }
         }
         for (id, stream) in self.outgoing.values_mut() {
-            stream.flush(&mut stacks[0], *id);
+            stream.flush(&mut stacks[0], *id, now);
             if stream.failed {
                 stacks[0].abort(*id);
             }
@@ -276,6 +308,7 @@ struct Stream {
     frames: TcpFrames,
     tx: VecDeque<u8>,
     failed: bool,
+    tls: Option<crate::service_io::tls::Session>,
 }
 impl Stream {
     fn new() -> Self {
@@ -283,11 +316,21 @@ impl Stream {
             frames: TcpFrames::new(65535).unwrap(),
             tx: VecDeque::new(),
             failed: false,
+            tls: None,
         }
+    }
+    fn encrypted(config: std::sync::Arc<rustls::ServerConfig>, now: u64) -> io::Result<Self> {
+        let mut s = Self::new();
+        s.tls = Some(crate::service_io::tls::Session::new(config, now)?);
+        Ok(s)
     }
     // Reserve 16 KiB for the TCP rings and 2 KiB for framing/index overhead.
     fn available(&self) -> usize {
-        (128 * 1024usize).saturating_sub(18 * 1024 + self.frames.buffered() + self.tx.len())
+        (128 * 1024usize).saturating_sub(
+            (if self.tls.is_some() { 62 } else { 18 }) * 1024
+                + self.frames.buffered()
+                + self.tx.capacity(),
+        )
     }
     fn enqueue(&mut self, b: &[u8]) {
         if b.len() + 2 > self.available() {
@@ -295,22 +338,69 @@ impl Stream {
             return;
         }
         match TcpFrames::frame(b) {
-            Ok(b) => self.tx.extend(b),
+            Ok(b) => {
+                self.tx.reserve_exact(b.len());
+                self.tx.extend(b);
+            }
             Err(_) => self.failed = true,
         }
     }
-    fn read(&mut self, s: &mut Stack, id: usize) {
-        let b = s.receive_tcp_limit(id, self.available().min(8192));
-        if self.frames.input(&b).is_err() {
+    fn read(&mut self, s: &mut Stack, id: usize, now: u64) {
+        if self.tls.is_none() {
+            let b = s.receive_tcp_limit(id, self.available().min(8192));
+            if self.frames.input(&b).is_err() {
+                self.failed = true;
+            }
+            return;
+        }
+        let available = self.available().min(2048);
+        let tls = self.tls.as_mut().unwrap();
+        match tls.plaintext(available) {
+            Ok(b) => {
+                if self.frames.input(&b).is_err() {
+                    self.failed = true;
+                }
+            }
+            Err(_) => self.failed = true,
+        }
+        s.receive_tcp_with(id, |bytes| match tls.input(bytes, now) {
+            Ok(n) => n,
+            Err(_) => {
+                self.failed = true;
+                bytes.len()
+            }
+        });
+        if s.tcp_eof(id) && tls.end_input().is_err() {
             self.failed = true;
         }
     }
-    fn flush(&mut self, s: &mut Stack, id: usize) {
-        if !self.tx.is_empty() {
-            let bytes = self.tx.make_contiguous();
-            match s.send_tcp(id, bytes) {
+    fn flush(&mut self, s: &mut Stack, id: usize, now: u64) {
+        if let Some(tls) = &mut self.tls {
+            if tls.tick(now).is_err() {
+                self.failed = true;
+                return;
+            }
+            if !self.tx.is_empty() && !tls.handshaking() {
+                match tls.send_plaintext(self.tx.make_contiguous(), now) {
+                    Ok(n) => {
+                        self.tx.drain(..n);
+                        self.tx.shrink_to_fit();
+                    }
+                    Err(e) => {
+                        if e.kind() != io::ErrorKind::WouldBlock {
+                            self.failed = true;
+                        }
+                    }
+                }
+            }
+            if tls.write_tls(&mut SocketWriter(s, id), now).is_err() {
+                self.failed = true;
+            }
+        } else if !self.tx.is_empty() {
+            match s.send_tcp(id, self.tx.make_contiguous()) {
                 Ok(n) => {
                     self.tx.drain(..n);
+                    self.tx.shrink_to_fit();
                 }
                 Err(_) => {
                     if s.established(id) {
@@ -339,4 +429,14 @@ fn source_address(stack: &Stack, dest: IpAddr) -> Option<IpAddr> {
         _ => false,
     });
     choices.into_iter().next()
+}
+
+struct SocketWriter<'a>(&'a mut Stack, usize);
+impl std::io::Write for SocketWriter<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.0.send_tcp(self.1, b)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }

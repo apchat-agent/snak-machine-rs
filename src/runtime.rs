@@ -50,6 +50,15 @@ impl<I: PacketIo> Driver<I> {
             mdns4: false,
         })
     }
+    pub fn enable_dot(&mut self, config: std::sync::Arc<rustls::ServerConfig>) -> io::Result<()> {
+        if let Some(stacks) = &mut self.stacks {
+            if !stacks[1].port_owned(6, 853) {
+                stacks[1].listen_tcp_buffered(853, 4096)?;
+            }
+        }
+        self.dns_service.enable_tls(config);
+        Ok(())
+    }
     pub fn send_ipv4(
         &mut self,
         packet: &[u8],
@@ -178,6 +187,9 @@ impl<I: PacketIo> Driver<I> {
         ]);
         self.stacks.as_mut().unwrap()[1].listen_udp(53)?;
         self.stacks.as_mut().unwrap()[1].listen_tcp(53)?;
+        if self.dns_service.tls_enabled() {
+            self.stacks.as_mut().unwrap()[1].listen_tcp_buffered(853, 4096)?;
+        }
         Ok(())
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {

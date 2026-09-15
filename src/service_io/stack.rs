@@ -127,21 +127,21 @@ impl Stack {
         self.sockets.add(s)
     }
     pub fn listen_tcp(&mut self, port: u16) -> io::Result<()> {
+        self.listen_tcp_buffered(port, TCP_BUFFER)
+    }
+    pub fn listen_tcp_buffered(&mut self, port: u16, buffer: usize) -> io::Result<()> {
+        if !(4096..=8192).contains(&buffer) {
+            return Err(capacity());
+        }
         if port == 0 || self.port_owned(6, port) || self.listeners.len() >= LISTENERS {
             return Err(capacity());
         }
-        let h = self.tcp_socket(TCP_BUFFER);
+        let h = self.tcp_socket(buffer);
         self.sockets
             .get_mut::<tcp::Socket>(h)
             .listen(port)
             .map_err(io::Error::other)?;
-        self.listeners.insert(
-            port,
-            Listener {
-                handle: h,
-                buffer: TCP_BUFFER,
-            },
-        );
+        self.listeners.insert(port, Listener { handle: h, buffer });
         Ok(())
     }
     pub fn listen_udp(&mut self, port: u16) -> io::Result<()> {
@@ -269,6 +269,27 @@ impl Stack {
             c.last_io = self.now;
         }
         b
+    }
+    pub fn tcp_buffer_bytes(&self, id: usize) -> usize {
+        self.connections.get(&id).map_or(0, |c| {
+            let s = self.sockets.get::<tcp::Socket>(c.handle);
+            s.recv_capacity() + s.send_capacity()
+        })
+    }
+    pub fn receive_tcp_with(&mut self, id: usize, mut receive: impl FnMut(&[u8]) -> usize) {
+        if let Some(c) = self.connections.get_mut(&id) {
+            let n = self
+                .sockets
+                .get_mut::<tcp::Socket>(c.handle)
+                .recv(|bytes| {
+                    let n = receive(bytes).min(bytes.len());
+                    (n, n)
+                })
+                .unwrap_or(0);
+            if n > 0 {
+                c.last_io = self.now;
+            }
+        }
     }
     pub fn receive_tcp_limit(&mut self, id: usize, limit: usize) -> Vec<u8> {
         let Some(c) = self.connections.get_mut(&id) else {

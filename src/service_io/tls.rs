@@ -81,6 +81,7 @@ pub struct Session {
     last: u64,
     phase: Phase,
     peer_closed: bool,
+    plaintext_pending: usize,
 }
 impl Session {
     pub fn new(config: Arc<rustls::ServerConfig>, now: u64) -> io::Result<Self> {
@@ -92,6 +93,7 @@ impl Session {
             last: now,
             phase: Phase::Open,
             peer_closed: false,
+            plaintext_pending: 0,
         })
     }
     pub fn handshaking(&self) -> bool {
@@ -122,16 +124,17 @@ impl Session {
     }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<usize> {
         self.tick(now)?;
-        if b.is_empty() {
+        if b.is_empty() || self.plaintext_pending > 0 {
             return Ok(0);
         }
         let result = (|| {
-            let n = self.connection.read_tls(&mut &b[..b.len().min(8192)])?;
+            let n = self.connection.read_tls(&mut &b[..b.len().min(4096)])?;
             let state = self
                 .connection
                 .process_new_packets()
                 .map_err(|_| invalid())?;
             self.peer_closed = state.peer_has_closed();
+            self.plaintext_pending = state.plaintext_bytes_to_read();
             if n > 0 {
                 self.last = now;
             }
@@ -149,6 +152,7 @@ impl Session {
         let mut b = vec![0; limit.min(16384)];
         match self.connection.reader().read(&mut b) {
             Ok(n) => {
+                self.plaintext_pending = self.plaintext_pending.saturating_sub(n);
                 b.truncate(n);
                 Ok(b)
             }
