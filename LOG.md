@@ -1037,3 +1037,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   capped at 128 and tested at/over capacity. Option code 65002 remains an
   experimental convention. PLAN2 ADDENDUM 5 documents the underspecified final
   checksum word for Ed448 and the tested trailing-zero convention. No dependency.
+- S14 mapping RED `b0bb71e`: full `cargo test` confirms the missing projection.
+  GREEN passes **250 tests** and all-feature clippy. Accepted SRP host/service
+  records are derived into a dataset-specific `.local.` suffix; browse/subtype
+  PTR owners use shared `.local.` names while their targets and SRV host names
+  use the dataset suffix (AP-06 section 2.1.2, method 2). KEY/SIG data stays out
+  of mDNS. Binary labels and TXT bytes remain unchanged; external embedded
+  names remain external. Overflowing rewritten names are refused.
+- Publication TTLs are capped by the remaining host and independent service
+  leases, with subsecond remnants omitted. Stub-origin link-local, unspecified,
+  loopback and multicast addresses are filtered (AP-06 section 2.2); usable ULA,
+  global IPv6 and IPv4 addresses remain. Conflict suffixes affect publication
+  names only. TSR owner stamps derive from the registry's existing reception
+  timestamps/public keys, and shared PTR owners have no TSR. Mapping fields
+  implement the planned dataset/conflict identity. No dependency.

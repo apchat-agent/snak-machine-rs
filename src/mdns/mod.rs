@@ -1,3 +1,4 @@
+pub mod advertise;
 pub mod cache;
 pub mod publish;
 pub mod query;
