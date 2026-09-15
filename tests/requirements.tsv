@@ -1,0 +1,114 @@
+id	status	code	tests	closure	note
+R001	N/A			baseline	N/A — this sentence defines document vocabulary, not router behavior, including its only REQUIRED occurrence.
+R002	DONE	src/wire.rs:421;src/router/budget.rs:14	tests/review.rs::review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export	baseline	DONE — `src/wire.rs:421`, `src/router/budget.rs:14`; `tests/review.rs:653`. S22 must preserve this with service options.
+R003	DONE	src/router/owned.rs:40;src/runtime.rs:35;src/platform/mod.rs:112	tests/scenarios.rs::lifecycle_loss_and_shutdown_do_not_leave_false_routes	baseline	DONE — `src/router/owned.rs:40`, `src/runtime.rs:35`, `src/platform/mod.rs:112`; `tests/scenarios.rs:1113`.
+R004	DONE	src/router/owned.rs:40;src/runtime.rs:36	tests/scenarios.rs::lifecycle_loss_and_shutdown_do_not_leave_false_routes	baseline	DONE — `src/router/owned.rs:40`, `src/runtime.rs:36`; `tests/scenarios.rs:1113`.
+R005	DONE	src/wire.rs:273;src/router/mod.rs:574	tests/wire.rs::pio_suitability_is_not_onlink_status;tests/review.rs::review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay	baseline	DONE — `src/wire.rs:273`, `src/router/mod.rs:574`; `tests/wire.rs:98`, `tests/review.rs:474`.
+R006	DONE	src/router/mod.rs:633;src/router/lifecycle.rs:34	tests/scenarios.rs::osnr_export_is_one_bounded_advertisement	baseline	DONE — `src/router/mod.rs:633`, `src/router/lifecycle.rs:34`; `tests/scenarios.rs:588`.
+R007	DONE	src/scheduler.rs:19;src/router/mod.rs:577	tests/review.rs::review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay;tests/review.rs::review_08_suitable_during_dad_arms_ra_delay_at_readiness	baseline	DONE — `src/scheduler.rs:19`, `src/router/mod.rs:577`; `tests/review.rs:474`, `tests/review.rs:921`.
+R008	DONE	src/router/mod.rs:574;src/router/mod.rs:689	tests/review.rs::review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay	baseline	DONE — `src/router/mod.rs:574`, `src/router/mod.rs:689`; `tests/review.rs:474`.
+R009	DONE	src/router/mod.rs:234;src/router/mod.rs:534;src/router/nd.rs:155	tests/scenarios.rs::unreachable_supplier_triggers_takeover;tests/scenarios.rs::stale_pio_cannot_be_kept_alive_by_other_options	baseline	DONE — `src/router/mod.rs:234`, `src/router/mod.rs:534`, `src/router/nd.rs:155`; `tests/scenarios.rs:269`, `tests/scenarios.rs:310`.
+R010	DONE	src/router/mod.rs:246;src/router/mod.rs:264;src/router/mod.rs:343	tests/scenarios.rs::stale_pio_cannot_be_kept_alive_by_other_options	baseline	DONE — `src/router/mod.rs:246`, `src/router/mod.rs:264`, `src/router/mod.rs:343`; `tests/scenarios.rs:310`.
+R011	DONE	src/router/mod.rs:534;src/router/nd.rs:206	tests/scenarios.rs::stale_pio_cannot_be_kept_alive_by_other_options	baseline	DONE — `src/router/mod.rs:534`, `src/router/nd.rs:206`; `tests/scenarios.rs:310`.
+R012	DONE	src/router/mod.rs:562	tests/scenarios.rs::stale_pio_cannot_be_kept_alive_by_other_options	baseline	DONE — `src/router/mod.rs:562`; `tests/scenarios.rs:310`.
+R013	DONE	src/router/nd.rs:119;src/router/nd.rs:155	tests/scenarios.rs::ra_is_not_nud_confirmation;tests/scenarios.rs::unreachable_supplier_triggers_takeover	baseline	DONE — `src/router/nd.rs:119`, `src/router/nd.rs:155`; `tests/scenarios.rs:239`, `tests/scenarios.rs:269`.
+R014	DONE	src/router/nd.rs:31;src/router/nd.rs:169	tests/scenarios.rs::unreachable_supplier_triggers_takeover;tests/review.rs::review_08_incoming_ra_during_dad_never_uses_tentative_source	baseline	DONE — `src/router/nd.rs:31`, `src/router/nd.rs:169`; `tests/scenarios.rs:269`, `tests/review.rs:519`.
+R015	DONE	src/router/mod.rs:234;src/router/owned.rs:40	tests/scenarios.rs::solicitations_coalesce_without_postponement	baseline	DONE — `src/router/mod.rs:234`, `src/router/owned.rs:40`; `tests/scenarios.rs:36`.
+R016	DONE	src/router/mod.rs:235	tests/scenarios.rs::unreachable_supplier_triggers_takeover	baseline	DONE — `src/router/mod.rs:235`; `tests/scenarios.rs:269`.
+R017	DONE	src/router/mod.rs:562	tests/scenarios.rs::unreachable_supplier_triggers_takeover	baseline	DONE — `src/router/mod.rs:562`; `tests/scenarios.rs:269`.
+R018	DONE	src/router/mod.rs:378	tests/wire.rs::initial_advertisements_match_golden_bytes	baseline	DONE — `src/router/mod.rs:378`; `tests/wire.rs:167`.
+R019	DONE	src/wire.rs:426	tests/wire.rs::initial_advertisements_match_golden_bytes	baseline	DONE — `src/wire.rs:426`; `tests/wire.rs:167`.
+R020	DONE	src/router/mod.rs:264;src/router/mod.rs:478	tests/scenarios.rs::mo_comes_from_latest_eligible_non_snac_ra	baseline	DONE — `src/router/mod.rs:264`, `src/router/mod.rs:478`; `tests/scenarios.rs:195`.
+R021	DONE	src/router/mod.rs:271;src/router/mod.rs:482	tests/scenarios.rs::mo_comes_from_latest_eligible_non_snac_ra;tests/review.rs::review_11_router_churn_reclaims_expired_headers_but_keeps_zero_lifetime_mo	baseline	DONE — `src/router/mod.rs:271`, `src/router/mod.rs:482`; `tests/scenarios.rs:195`, `tests/review.rs:585`.
+R022	DONE	src/router/mod.rs:485	tests/scenarios.rs::mo_comes_from_latest_eligible_non_snac_ra	baseline	DONE — `src/router/mod.rs:485`; `tests/scenarios.rs:195`.
+R023	DONE	src/router/mod.rs:402;src/router/budget.rs:14	tests/review.rs::review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export	baseline	DONE — `src/router/mod.rs:402`, `src/router/budget.rs:14`; `tests/review.rs:653`.
+R024	DONE	src/router/mod.rs:611;src/router/mod.rs:708;src/scheduler.rs:38	tests/scenarios.rs::ail_prefix_arbitration_follows_draft	baseline	DONE — `src/router/mod.rs:611`, `src/router/mod.rs:708`, `src/scheduler.rs:38`; `tests/scenarios.rs:358`.
+R025	DONE	src/router/mod.rs:385;src/router/mod.rs:611	tests/scenarios.rs::deprecation_counts_down_then_omits	baseline	DONE — `src/router/mod.rs:385`, `src/router/mod.rs:611`; `tests/scenarios.rs:402`.
+R026	DONE	src/router/mod.rs:562;src/router/mod.rs:378	tests/scenarios.rs::lost_replacement_restores_same_local_prefix	baseline	DONE — `src/router/mod.rs:562`, `src/router/mod.rs:378`; `tests/scenarios.rs:448`.
+R027	TODO			S02,S23	TODO — S02, S23: preserve supply and make flagged/unflagged received stub RAs follow the same prefix arbitration.
+R028	DONE	src/persist.rs:110	tests/scenarios.rs::ula_identity_is_random_distinct_and_persistent	baseline	DONE — `src/persist.rs:110`; `tests/scenarios.rs:81`.
+R029	DONE	src/persist.rs:135;src/persist.rs:145	tests/scenarios.rs::ula_identity_is_random_distinct_and_persistent	baseline	DONE — `src/persist.rs:135`, `src/persist.rs:145`; `tests/scenarios.rs:81`.
+R030	DONE	src/persist.rs:99;src/persist.rs:142;src/main.rs:45	tests/scenarios.rs::ula_identity_is_random_distinct_and_persistent;tests/review.rs::review_10_checkpoint_recovers_abandoned_temp_without_losing_identity	baseline	DONE — `src/persist.rs:99`, `src/persist.rs:142`, `src/main.rs:45`; `tests/scenarios.rs:81`, `tests/review.rs:546`. S03 extends advertisement continuity.
+R031	TODO	src/main.rs:47;src/main.rs:57		S02,S23	TODO — S02, S23: the baseline rotates on configured interface identity changes (`src/main.rs:47`, `src/main.rs:57`) but does not make a fixed-attachment policy explicit or handle detected movement on the same interface.
+R032	DONE	src/router/mod.rs:650;src/router/pd.rs:52	tests/scenarios.rs::pd_solicit_contains_stable_identity_and_64_hints	baseline	DONE — `src/router/mod.rs:650`, `src/router/pd.rs:52`; `tests/scenarios.rs:780`.
+R033	DONE	src/router/pd.rs:633	tests/scenarios.rs::pd_reply_selects_best_gua_and_ula;tests/review.rs::review_06_same_subnet_replacement_owns_lifetimes	baseline	DONE — `src/router/pd.rs:633`; `tests/scenarios.rs:902`, `tests/review.rs:406`.
+R034	DONE	src/router/pd.rs:120	tests/scenarios.rs::pd_solicit_contains_stable_identity_and_64_hints	baseline	DONE — `src/router/pd.rs:120`; `tests/scenarios.rs:780`.
+R035	DONE	src/router/pd.rs:194;src/router/pd.rs:303	tests/scenarios.rs::pd_reply_selects_best_gua_and_ula	baseline	DONE — `src/router/pd.rs:194`, `src/router/pd.rs:303`; `tests/scenarios.rs:902`.
+R036	DONE	src/router/mod.rs:596;src/router/pd.rs:612	tests/scenarios.rs::pd_offer_selection_rejects_short_lifetimes;tests/scenarios.rs::pd_timers_renew_rebind_fallback_and_expire	baseline	DONE — `src/router/mod.rs:596`, `src/router/pd.rs:612`; `tests/scenarios.rs:850`, `tests/scenarios.rs:984`.
+R037	DONE	src/router/pd.rs:293	tests/scenarios.rs::pd_reply_selects_best_gua_and_ula;tests/review.rs::review_06_same_subnet_replacement_owns_lifetimes	baseline	DONE — `src/router/pd.rs:293`; `tests/scenarios.rs:902`, `tests/review.rs:406`.
+R038	N/A			baseline	N/A — Ethernet/ND in this profile supports multiple OSNR prefixes and has no single-prefix constraint.
+R039	N/A			baseline	N/A — this profile uses the immediately following multiple-OSNR rule.
+R040	DONE	src/router/pd.rs:391;src/router/pd.rs:543;src/router/pd.rs:677	tests/scenarios.rs::pd_timers_renew_rebind_fallback_and_expire;tests/review.rs::review_06_same_subnet_replacement_owns_lifetimes	baseline	DONE — `src/router/pd.rs:391`, `src/router/pd.rs:543`, `src/router/pd.rs:677`; `tests/scenarios.rs:984`, `tests/review.rs:406`.
+R041	DONE	src/router/pd.rs:250;src/router/pd.rs:194	tests/scenarios.rs::pd_offer_selection_rejects_short_lifetimes	baseline	DONE — `src/router/pd.rs:250`, `src/router/pd.rs:194`; `tests/scenarios.rs:850`.
+R042	DONE	src/router/pd.rs:250;src/router/mod.rs:596	tests/scenarios.rs::pd_offer_selection_rejects_short_lifetimes	baseline	DONE — `src/router/pd.rs:250`, `src/router/mod.rs:596`; `tests/scenarios.rs:850`.
+R043	DONE	src/router/pd.rs:396;src/router/pd.rs:450;src/router/pd.rs:513	tests/review.rs::review_05_delegation_excludes_ail_subnets_in_offer_and_reply;tests/scenarios.rs::pd_reply_selects_best_gua_and_ula	baseline	DONE — `src/router/pd.rs:396`, `src/router/pd.rs:450`, `src/router/pd.rs:513`; `tests/review.rs:355`, `tests/scenarios.rs:902`.
+R044	DONE	src/router/pd.rs:360;src/router/pd.rs:594	tests/scenarios.rs::pd_timers_renew_rebind_fallback_and_expire;tests/review.rs::review_06_same_subnet_replacement_owns_lifetimes	baseline	DONE — `src/router/pd.rs:360`, `src/router/pd.rs:594`; `tests/scenarios.rs:984`, `tests/review.rs:406`.
+R045	N/A			baseline	N/A — this is a multiple-OSNR Ethernet/ND network.
+R046	DONE	src/router/pd.rs:588;src/router/pd.rs:655	tests/review.rs::review_06_same_subnet_replacement_owns_lifetimes	baseline	DONE — immediate deprecation selected at `src/router/pd.rs:588`, `src/router/pd.rs:655`; `tests/review.rs:406`.
+R047	DONE	src/router/pd.rs:594;src/router/pd.rs:612	tests/scenarios.rs::pd_timers_renew_rebind_fallback_and_expire	baseline	DONE — `src/router/pd.rs:594`, `src/router/pd.rs:612`; `tests/scenarios.rs:984`.
+R048	DONE	src/router/pd.rs:150;src/router/pd.rs:294;src/router/pd.rs:612	tests/scenarios.rs::pd_timers_renew_rebind_fallback_and_expire	baseline	DONE — `src/router/pd.rs:150`, `src/router/pd.rs:294`, `src/router/pd.rs:612`; `tests/scenarios.rs:984`.
+R049	DONE	src/router/restart.rs:61;src/router/mod.rs:503	tests/scenarios.rs::pd_reconnect_preserves_valid_binding_until_verdict	baseline	DONE — `src/router/restart.rs:61`, `src/router/mod.rs:503`; `tests/scenarios.rs:1034`.
+R050	DONE	src/router/mod.rs:402;src/wire.rs:449	tests/scenarios.rs::osnr_export_is_one_bounded_advertisement;tests/review.rs::review_04_stub_loss_withdraws_and_recovery_restores_osnrs	baseline	DONE — `src/router/mod.rs:402`, `src/wire.rs:449`; `tests/scenarios.rs:588`, `tests/review.rs:285`.
+R051	DONE	src/router/mod.rs:402	tests/scenarios.rs::stub_peers_converge_and_retain_retiring_osnr;tests/review.rs::review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export	baseline	DONE — `src/router/mod.rs:402`; `tests/scenarios.rs:488`, `tests/review.rs:653`.
+R052	DONE	src/router/mod.rs:416;src/router/budget.rs:14;src/router/mod.rs:620	tests/review.rs::review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export	baseline	DONE — `src/router/mod.rs:416`, `src/router/budget.rs:14`, `src/router/mod.rs:620`; `tests/review.rs:653`.
+R053	DONE	src/wire.rs:427	tests/wire.rs::initial_advertisements_match_golden_bytes	baseline	DONE — `src/wire.rs:427`; `tests/wire.rs:167`.
+R054	DONE	src/router/mod.rs:305;src/router/mod.rs:597;src/router/pd.rs:643	tests/review.rs::review_14_local_takeover_proactively_exports_new_osnr	baseline	DONE — always send: `src/router/mod.rs:305`, `src/router/mod.rs:597`, `src/router/pd.rs:643`; `tests/review.rs:719`.
+R055	DONE	src/router/routes.rs:74;src/router/mod.rs:486	tests/scenarios.rs::stub_default_never_outlives_infrastructure	baseline	DONE — `src/router/routes.rs:74`, `src/router/mod.rs:486`; `tests/scenarios.rs:632`.
+R056	DONE	src/config.rs:31;src/router/routes.rs:79	tests/scenarios.rs::stub_default_never_outlives_infrastructure;tests/scenarios.rs::cli_validates_backend_and_two_link_scope_without_opening_devices	baseline	DONE — administrative alternative chosen: `src/config.rs:31`, `src/router/routes.rs:79`; `tests/scenarios.rs:632`, `tests/scenarios.rs:1200`.
+R057	DONE	src/router/routes.rs:83	tests/scenarios.rs::stub_default_never_outlives_infrastructure	baseline	DONE — `src/router/routes.rs:83`; `tests/scenarios.rs:632`.
+R058	DONE	src/router/routes.rs:74;src/router/mod.rs:531;src/router/restart.rs:69	tests/scenarios.rs::stub_default_never_outlives_infrastructure;tests/scenarios.rs::lifecycle_loss_and_shutdown_do_not_leave_false_routes	baseline	DONE — `src/router/routes.rs:74`, `src/router/mod.rs:531`, `src/router/restart.rs:69`; `tests/scenarios.rs:632`, `tests/scenarios.rs:1113`.
+R059	DONE	src/router/routes.rs:104;src/router/mod.rs:426	tests/scenarios.rs::stub_default_never_outlives_infrastructure;tests/review.rs::review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export	baseline	DONE — `src/router/routes.rs:104`, `src/router/mod.rs:426`; `tests/scenarios.rs:632`, `tests/review.rs:653`.
+R060	DONE	src/config.rs:31;src/main.rs:61	tests/scenarios.rs::cli_validates_backend_and_two_link_scope_without_opening_devices	baseline	DONE — `src/config.rs:31`, `src/main.rs:61`; `tests/scenarios.rs:1200`.
+R061	DONE	src/config.rs:35;src/router/routes.rs:104	tests/scenarios.rs::stub_default_never_outlives_infrastructure	baseline	DONE — `src/config.rs:35`, `src/router/routes.rs:104`; `tests/scenarios.rs:632`.
+R062	DONE	src/router/routes.rs:30;src/router/routes.rs:111	tests/scenarios.rs::other_stub_routes_keep_independent_lifetimes	baseline	DONE — `src/router/routes.rs:30`, `src/router/routes.rs:111`; `tests/scenarios.rs:696`.
+R063	TODO			S08,S17,S23,S24	TODO — S08–S17, S23–S24; closure is the bidirectional discovery scenario.
+R064	TODO			S13,S14,S23	TODO — S13–S14, S23.
+R065	TODO			S07,S10,S16,S17,S23	TODO — S07–S10, S16–S17, S23.
+R066	TODO			S15,S16	TODO — S15–S16.
+R067	TODO			S13,S15	TODO — S13, S15.
+R068	TODO			S15,S16	TODO — S15–S16; preserve §8's complementary SRP use.
+R069	TODO			S11,S12,S16	TODO — S11–S12, S16.
+R070	TODO			S10,S16,S22	TODO — S10, S16, S22. Ethernet uses both DNS-SD service names.
+R071	TODO			S07,S10,S12,S16,S23	TODO — S07, S10–S12, S16, S23.
+R072	TODO			S04,S06,S18,S23	TODO — S04–S06, S18–S23.
+R073	N/A			baseline	N/A — this Ethernet/ND profile has no separate medium-specific NAT64 mechanism; R074 applies.
+R074	TODO			S18,S22	TODO — S18, S22.
+R075	TODO			S18,S22,S23	TODO — S18, S22–S23; enabled by default.
+R076	TODO			S18,S22,S23	TODO — S18, S22–S23.
+R077	TODO			S18,S22,S23	TODO — S18, S22–S23. Test this in enabled mode.
+R078	TODO			S18,S23	TODO — S18–S23.
+R079	TODO			S18,S23	TODO — S18–S23.
+R080	TODO			S18,S22	TODO — S18, S22: cover announcement admission failure as well as the ordinary unlimited-medium case.
+R081	N/A			baseline	N/A — RFC 8781 PREF64 has no preference field.
+R082	N/A			baseline	N/A — this profile has no NAT64 preference levels.
+R083	N/A			baseline	N/A — this sentence belongs to the preference-capable-media rules; PREF64 has no such field.
+R084	N/A			baseline	N/A — the enclosing preference rule explicitly excludes PREF64; administrative source selection still applies in S18.
+R085	TODO			S18,S22,S23	TODO — S18, S22–S23.
+R086	N/A			baseline	N/A — Ethernet/ND is not that constrained medium and PREF64 carries no preference.
+R087	TODO			S18,S22,S23	TODO — S18, S22–S23.
+R088	TODO			S04,S06,S19,S21,S23	TODO — S04–S06, S19–S21, S23.
+R089	TODO			S18,S23	TODO — S18–S23.
+R090	TODO			S18	TODO — S18.
+R091	TODO			S18	TODO — S18: subnet ffff, then 32 zero bits.
+R092	TODO			S18,S22	TODO — S18, S22.
+R093	TODO			S09,S15,S18	TODO — S09, S15, S18; include CNAME and error cases.
+R094	TODO			S09,S15	TODO — S09, S15. Never synthesize AAAA.
+R095	TODO			S09,S10,S22,S23	TODO — S09–S10, S22–S23.
+R096	DONE	src/lib.rs:1;src/router/mod.rs:164;src/wire.rs:426	tests/wire.rs::initial_advertisements_match_golden_bytes	baseline	DONE — absent server in `src/lib.rs:1`, only AIL client at `src/router/mod.rs:164`, stub M/O clear at `src/wire.rs:426`; `tests/wire.rs:167`.
+R097	N/A			baseline	N/A — this profile provides no stub DHCPv6 server; the AIL PD client is a different role.
+R098	TODO			S13,S15	TODO — S13, S15.
+R099	TODO			S11,S14,S23	TODO — S11–S14, S23.
+R100	TODO			S10,S12	TODO — S10–S12.
+R101	TODO			S16,S22	TODO — S16, S22.
+R102	TODO			S09,S16,S17	TODO — S09, S16–S17.
+R103	TODO			S17,S23	TODO — S17, S23.
+C01	TODO			S02,S04,S23,S24	Distinct links, Type C reachability, default constants, coexistence, old-prefix retention, reconnect and no AIL default. S02–S04, S23–S24.
+C02	TODO			S02,S22,S24	Exact prefix election, frozen deprecation countdown/206-second omission, stub SNAC flag disregarded during election, transmitted stub flag clear. S02, S22–S24.
+C03	TODO			S02,S03,S23	Zero-pad shorter PD to /64, bound PIOs by remaining lease, distinguish preferred/valid deadlines. Normalize IA/server state without changing this behavior. S02–S03, S23.
+C04	TODO			S10,S17,S22	default.service.arpa has both complementary SRP and Discovery Proxy roles, and remains accepted for SRP even with a configured registrar zone. RDNSS and browsing enumeration are live services. S10–S17, S22.
+C05	TODO			S64,S04,S06,S18,S23	IPv6-only stub; host-side synthesis; no DNS64. Stateful RFC 6146 TCP/UDP/ICMP translation using RFC 7915 header/ICMP rules, AIL DHCPv4, IPv4 link-local fallback and ARP. S04–S06, S18–S23.
+C06	TODO			S03,S24	Local registration/discovery survive AIL outage; timestamp transitions; validated, scoped, rate-limited, bounded inputs and output. S03–S24.
+C07	TODO			S02	Separate AIL/stub on-link payloads, per-IA/server lease timers, smaller validated offers/requests. S02.
+C08	TODO			S03,S23	Preserve selected/retiring state, deprecation origin, last advertised validity and withdrawal history across crashes. S03, S23.
+C09	TODO			S04	Carrier-aware status, macOS bridge membership, external-FD provenance: real native edge functions plus injected native results, rootless FD fixtures, cross-target compilation. S04.
+C10	TODO			S05,S24	DNS/mDNS/SRP/TSR, Discovery Proxy metadata and translation, DHCPv4 and NAT64 parsers/state machines require wire-level positive, negative, lifetime and resource tests. S05–S24.
