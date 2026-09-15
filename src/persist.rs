@@ -207,3 +207,33 @@ impl Identity {
         })
     }
 }
+
+/// Saves changes immediately and refreshes the rollback-detection timestamp at
+/// most once per five idle minutes. A process-local clock anchor keeps absolute
+/// expiry values stable across subsecond samples of the wall clock.
+#[derive(Default)]
+pub struct CheckpointWriter {
+    anchor: Option<(u64, u64)>,
+    payload: Vec<u8>,
+    next: u64,
+}
+impl CheckpointWriter {
+    pub fn save(
+        &mut self,
+        router: &crate::router::Router,
+        store: &mut impl StateStore,
+        now: u64,
+        wall: u64,
+    ) -> io::Result<()> {
+        let (at, epoch) = *self.anchor.get_or_insert((now / 1000, wall));
+        let mapped_wall = epoch.saturating_add((now / 1000).saturating_sub(at));
+        let snapshot = router.checkpoint(now, mapped_wall)?;
+        let payload = snapshot.splitn(2, |b| *b == b'\n').nth(1).unwrap_or(&[]);
+        if payload != self.payload || now >= self.next {
+            store.save(&snapshot)?;
+            self.payload = payload.to_vec();
+            self.next = now.saturating_add(300000);
+        }
+        Ok(())
+    }
+}

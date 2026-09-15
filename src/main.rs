@@ -101,7 +101,7 @@ fn run() -> io::Result<()> {
     let mut driver = Driver::new(router, backend)?;
     let clock = Instant::now();
     driver.start(0, &mut random)?;
-    let mut saved = vec![];
+    let mut checkpoint_writer = snac_rs::persist::CheckpointWriter::default();
     let mut last_status = String::new();
     loop {
         let now = clock.elapsed().as_millis() as u64;
@@ -140,11 +140,7 @@ fn run() -> io::Result<()> {
             eprintln!("{now}ms {status}");
             last_status = status;
         }
-        let checkpoint = driver.router.checkpoint(now, wall()?)?;
-        if checkpoint != saved {
-            store.save(&checkpoint)?;
-            saved = checkpoint;
-        }
+        checkpoint_writer.save(&driver.router, &mut store, now, wall()?)?;
         if driver.router.lifecycle == Lifecycle::Stopped {
             break;
         }

@@ -78,7 +78,7 @@ impl Router {
         fn end(l: Lifetime, now: Time, wall: u64) -> u64 {
             match l {
                 Lifetime::Infinite => u64::MAX,
-                _ => wall.saturating_add(l.remaining(now) as u64),
+                Lifetime::Until(t) => wall.saturating_add(t / 1000).saturating_sub(now / 1000),
             }
         }
         let mut text = format!(
