@@ -342,7 +342,9 @@ impl Router {
                         );
                         if self.state(link) == AilState::Unknown {
                             self.links[link.index()].state = AilState::Suitable;
-                            self.links[link.index()].scheduler.enable(now, rng)?;
+                            if self.address_ready(link, self.identity.link_local(link)) {
+                                self.links[link.index()].scheduler.enable(now, rng)?;
+                            }
                         }
                     } else if p.on_link() {
                         self.suppliers.remove(&(key, p.prefix));
@@ -499,7 +501,17 @@ impl Router {
         self.reap_exports(now);
         self.pd_hints.retain(|_, l| l.live(now));
         self.sync_pd(now, rng)?;
+        let ready =
+            [Link::Ail, Link::Stub].map(|l| self.address_ready(l, self.identity.link_local(l)));
         let mut out = self.tick_dad(now);
+        for link in [Link::Ail, Link::Stub] {
+            if !ready[link.index()]
+                && self.address_ready(link, self.identity.link_local(link))
+                && self.state(link) != AilState::Unknown
+            {
+                self.links[link.index()].scheduler.enable(now, rng)?;
+            }
+        }
         if self.lifecycle == Lifecycle::Starting
             && [Link::Ail, Link::Stub]
                 .into_iter()

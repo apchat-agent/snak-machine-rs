@@ -243,7 +243,10 @@ impl Router {
         });
         n.pending = Some(pending);
         if n.probes_sent == 0 {
-            return Ok(vec![self.probe(key, now)?]);
+            n.deadline = Some(now);
+            if self.address_ready(key.link, self.identity.link_local(key.link)) {
+                return Ok(vec![self.probe(key, now)?]);
+            }
         }
         Ok(vec![])
     }
