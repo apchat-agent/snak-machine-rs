@@ -1421,3 +1421,18 @@ the stop. No baseline assertion or S02 production behavior was changed. S01
 is complete; task 6 stops green at this boundary under its explicit stop rule.
 This addendum records the conflict; it does not narrow draft conformance or
 mark any outstanding service requirement N/A.
+
+## ADDENDUM 2 — S06 baseline ND fixtures on a dual-family AIL
+
+Draft §§6 and 6.2 require reaching IPv4-only services using an acquired AIL
+IPv4 address. S06 therefore emits DHCPv4 packets on the Ethernet AIL as
+planned. Two baseline ND tests assumed every emitted Ethernet frame was
+IPv6 and unconditionally unwrapped the IPv6 parser:
+`review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay` and
+`review_08_incoming_ra_during_dad_never_uses_tentative_source`.
+
+Their RED-commit update selects IPv6 EtherType before inspecting ICMPv6.
+The exact three-RS count, all scheduling/state assertions, no output before
+DAD, and required NS assertion are unchanged. This removes an obsolete
+IPv6-only framing assumption under the lane owner's ADDENDUM 1 policy;
+S06's design, timing and automatic IPv4 acquisition remain unchanged.

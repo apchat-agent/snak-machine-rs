@@ -179,11 +179,8 @@ fn review_02_local_replies_resolve_without_link_failure() {
         )
         .unwrap();
         assert!(d.router.links.iter().all(|l| l.up), "reply type {kind}");
-        assert!(d
-            .io
-            .output
-            .iter()
-            .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+        assert!(d.io.output.iter().any(|(_, b)| b[12..14] == [0x86, 0xdd]
+            && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
         d.accept(
             incoming(&d, Link::Ail, na(source, own, [2, 0, 0, 0, 0, 99])),
             1,
@@ -224,11 +221,8 @@ fn review_03_host_resolution_recovers_after_failure() {
         &mut ScriptedRandom::new([]),
     )
     .unwrap();
-    assert!(d
-        .io
-        .output
-        .iter()
-        .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+    assert!(d.io.output.iter().any(|(_, b)| b[12..14] == [0x86, 0xdd]
+        && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
     d.accept(
         incoming(&d, Link::Ail, na("fe80::99", own, [2, 0, 0, 0, 0, 99])),
         900001,
@@ -491,7 +485,9 @@ fn review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay() {
             d.io.output
                 .iter()
                 .filter(|(l, b)| {
-                    *l == Link::Ail && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 133
+                    *l == Link::Ail
+                        && b[12..14] == [0x86, 0xdd]
+                        && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 133
                 })
                 .count();
         assert_eq!(rs, 3);
@@ -541,11 +537,8 @@ fn review_08_incoming_ra_during_dad_never_uses_tentative_source() {
     .unwrap();
     assert!(d.io.output.is_empty());
     d.step(1000, &mut ScriptedRandom::new([])).unwrap();
-    assert!(d
-        .io
-        .output
-        .iter()
-        .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+    assert!(d.io.output.iter().any(|(_, b)| b[12..14] == [0x86, 0xdd]
+        && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
 }
 
 use snac_rs::persist::{FileStore, StateStore};
