@@ -302,28 +302,46 @@ impl Querier {
         rng: &mut impl RandomSource,
         probe: bool,
     ) -> io::Result<bool> {
-        if super::tsr::extract(&d.message, super::tsr::OPTION_CODE, now).is_err() {
+        if super::tsr::extract(&d.message, super::tsr::OPTION_CODE, now).is_err()
+            || !self.admit_datagram(d, on_link, now, probe)
+        {
             return Ok(false);
         }
+        self.receive_admitted(d, now, rng)?;
+        Ok(true)
+    }
+    pub(crate) fn admit_datagram(
+        &mut self,
+        d: &Datagram,
+        on_link: bool,
+        now: Time,
+        probe: bool,
+    ) -> bool {
         if !self.up || d.destination.port() != 5353 || !self.admit(d.source.ip(), now) {
-            return Ok(false);
+            return false;
         }
         let m = &d.message;
+        m.flags & 0x8000 == 0
+            || d.destination.ip().is_multicast()
+            || (on_link
+                && (probe
+                    || self.questions.values().any(|q| {
+                        q.qu.is_some_and(|t| now >= t && now - t <= 2000)
+                            && q.until > now
+                            && m.answers
+                                .iter()
+                                .chain(&m.additional)
+                                .any(|r| matches(&q.question, r))
+                    })))
+    }
+    pub(crate) fn receive_admitted(
+        &mut self,
+        d: &Datagram,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        let m = &d.message;
         if m.flags & 0x8000 != 0 {
-            if !d.destination.ip().is_multicast()
-                && (!on_link
-                    || (!probe
-                        && !self.questions.values().any(|q| {
-                            q.qu.is_some_and(|t| now >= t && now - t <= 2000)
-                                && q.until > now
-                                && m.answers
-                                    .iter()
-                                    .chain(&m.additional)
-                                    .any(|r| matches(&q.question, r))
-                        })))
-            {
-                return Ok(false);
-            }
             self.cache.receive(m, now, rng)?;
         } else if d.destination.ip().is_multicast() && d.source.port() == 5353 {
             for question in &m.questions {
@@ -344,7 +362,7 @@ impl Querier {
                 }
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
 fn advance(q: &mut Active, now: Time) {

@@ -1072,3 +1072,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   bounds use actual Rust Vec sizes, and the existing 4096-record and aggregate
   capacity tests still pass. This corrects byte accounting within PLAN2's
   existing budget; no new field, dependency or design change.
+- S14 local-ownership RED `cd48c34` confirms missing registration/receive APIs;
+  `16820f7` corrects only the new redundant-probe fixture's receipt ordering.
+  GREEN passes **258 tests** and all-feature clippy. Registrations distinguish
+  stale and conflicting ownership, adopt matching cached data quietly, and
+  refresh timestamps without probing unchanged data. Incoming stale goodbyes
+  cannot remove local data. Newer peer ownership suppresses that owner's mDNS
+  records silently while unrelated owners remain available (TSR-03 3.1–3.9).
+- Publisher owner/stamp, quiet/following and suppression metadata implements
+  planned TSR ownership and redundant-probe handling; per-dataset stamped owners
+  are capped at 128 with atomic overflow rejection. Stale notices coalesce by
+  owner, avoiding a separate unbounded event queue. Stored SRP data is not
+  modified by this unauthenticated mDNS signal. No dependency. Runtime wiring,
+  publication lifecycle integration and additional partial-set cases follow.

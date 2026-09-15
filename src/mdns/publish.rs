@@ -1,4 +1,5 @@
 //! Publication state holds identities and timers; records are projected by their owner.
+use super::tsr::Stamp;
 use super::{
     cache::{cacheable, matches, same},
     wire::Datagram,
@@ -40,11 +41,17 @@ struct Publication {
     state: State,
     history: BTreeMap<Digest, Time>,
     last_probe: Option<Time>,
+    owners: BTreeSet<Name>,
+    stamps: BTreeMap<Name, Stamp>,
+    quiet: BTreeSet<Name>,
+    following: BTreeMap<Name, Time>,
+    suppressed: BTreeMap<Name, (Stamp, bool)>,
 }
 struct Goodbye {
     records: Vec<Record>,
     charge: usize,
     next: Time,
+    stamps: BTreeMap<Name, Stamp>,
 }
 enum Offered {
     Publication {
@@ -90,6 +97,7 @@ struct Prepared {
     digest: Digest,
     names: Names,
     charge: usize,
+    owners: BTreeSet<Name>,
 }
 impl Prepared {
     fn new(input: &[Record]) -> io::Result<Self> {
@@ -158,11 +166,13 @@ impl Prepared {
         encoded.sort();
         encoded.dedup();
         let digest = crate::srp::wire::fingerprint(&encoded.concat());
+        let owners = records.iter().map(|r| r.name.clone()).collect();
         Ok(Self {
             records,
             names,
             digest,
             charge,
+            owners,
         })
     }
 }
@@ -310,6 +320,8 @@ impl Publisher {
                 next: now.saturating_add(rng.sample(250)?),
             },
         };
+        let old_stamps = existing.map(|p| p.stamps.clone()).unwrap_or_default();
+        let old_suppressed = existing.map(|p| p.suppressed.clone()).unwrap_or_default();
         let history = self
             .publications
             .remove(&id)
@@ -333,6 +345,18 @@ impl Publisher {
                     state,
                     history,
                     last_probe: None,
+                    owners: new.owners.clone(),
+                    stamps: old_stamps
+                        .iter()
+                        .filter(|(n, _)| new.owners.contains(*n))
+                        .map(|(n, s)| (n.clone(), *s))
+                        .collect(),
+                    quiet: BTreeSet::new(),
+                    following: BTreeMap::new(),
+                    suppressed: old_suppressed
+                        .into_iter()
+                        .filter(|(n, _)| new.owners.contains(n))
+                        .collect(),
                 },
             );
         }
@@ -341,6 +365,7 @@ impl Publisher {
                 records: goodbyes,
                 charge: goodbye_charge,
                 next: now,
+                stamps: old_stamps,
             });
         }
         self.offered = None;
@@ -360,6 +385,8 @@ impl Publisher {
             for p in self.publications.values_mut() {
                 p.history.clear();
                 p.last_probe = None;
+                p.quiet.clear();
+                p.following.clear();
                 p.state = if p.names.is_empty() {
                     State::Announce { sent: 0, next: now }
                 } else {
@@ -390,6 +417,13 @@ impl Publisher {
         if !self.up {
             return Ok(None);
         }
+        for p in self.publications.values_mut() {
+            let n = p.following.len();
+            p.following.retain(|_, until| *until > now);
+            if p.following.len() != n {
+                p.state = State::Probe { sent: 0, next: now };
+            }
+        }
         let (messages, offered) = if let Some(g) = self.goodbyes.front().filter(|g| g.next <= now) {
             (pack(&g.records, false)?, Offered::Goodbye)
         } else {
@@ -406,11 +440,32 @@ impl Publisher {
                 return Err(invalid());
             }
             let probe = matches!(p.state, State::Probe { sent: 0..=2, .. });
+            if !probe && !p.following.is_empty() {
+                let next = *p.following.values().min().unwrap();
+                let p = self.publications.get_mut(&id).unwrap();
+                p.state = State::Probe { sent: 3, next };
+                return Ok(None);
+            }
+
             let records: Vec<_> = data
                 .records
                 .into_iter()
+                .filter(|r| {
+                    active_record(p, r)
+                        && !p.quiet.contains(&r.name)
+                        && !p.following.contains_key(&r.name)
+                })
                 .filter(|r| !probe || r.class & 0x8000 != 0)
                 .collect();
+            if records.is_empty() {
+                let p = self.publications.get_mut(&id).unwrap();
+                if let Some(next) = p.following.values().min().copied() {
+                    p.state = State::Probe { sent: 0, next };
+                } else {
+                    p.state = State::Ready;
+                }
+                return Ok(None);
+            }
             let ids = records.iter().map(identity).collect::<io::Result<_>>()?;
             (
                 pack(&records, probe)?,
@@ -477,6 +532,127 @@ impl Publisher {
             }
         }
     }
+    pub(crate) fn known_stamp(&self, owner: &Name) -> Option<Option<Stamp>> {
+        self.publications
+            .values()
+            .find(|p| p.owners.contains(owner))
+            .map(|p| {
+                p.suppressed
+                    .get(owner)
+                    .map(|(s, _)| *s)
+                    .or_else(|| p.stamps.get(owner).copied())
+            })
+    }
+    pub(crate) fn registered_stamp(&self, id: u64, owner: &Name) -> Option<Stamp> {
+        self.publications.get(&id)?.stamps.get(owner).copied()
+    }
+    pub(crate) fn same_projection(&self, id: u64, records: &[Record]) -> io::Result<bool> {
+        let digest = Prepared::new(records)?.digest;
+        Ok(self
+            .publications
+            .get(&id)
+            .is_some_and(|p| p.digest == digest))
+    }
+    pub(crate) fn configure_tsr(
+        &mut self,
+        id: u64,
+        stamps: &BTreeMap<Name, Stamp>,
+        quiet: &BTreeSet<Name>,
+        activate: &BTreeSet<Name>,
+        probe: bool,
+        now: Time,
+    ) {
+        if let Some(p) = self.publications.get_mut(&id) {
+            p.stamps = stamps.clone();
+            for n in activate {
+                p.suppressed.remove(n);
+            }
+            p.quiet.extend(quiet.iter().cloned());
+            if p.names
+                .iter()
+                .all(|(n, _)| p.quiet.contains(n) || p.suppressed.contains_key(n))
+            {
+                p.state = State::Ready;
+            } else if probe {
+                p.state = State::Probe { sent: 0, next: now };
+                p.last_probe = None;
+            }
+        }
+    }
+    pub(crate) fn observe_equal(&mut self, owner: &Name, response: bool, now: Time) {
+        for p in self
+            .publications
+            .values_mut()
+            .filter(|p| p.stamps.contains_key(owner) && !p.suppressed.contains_key(owner))
+        {
+            if p.state.ready() {
+                continue;
+            }
+            if response {
+                p.following.remove(owner);
+                p.quiet.insert(owner.clone());
+                if p.names.iter().all(|(n, _)| p.quiet.contains(n)) {
+                    p.state = State::Ready;
+                }
+            } else {
+                p.following.insert(owner.clone(), now.saturating_add(1000));
+            }
+        }
+    }
+    pub(crate) fn suppress(&mut self, owner: &Name, remote: Stamp) {
+        for p in self
+            .publications
+            .values_mut()
+            .filter(|p| p.owners.contains(owner))
+        {
+            p.suppressed.insert(owner.clone(), (remote, true));
+            p.following.remove(owner);
+            p.quiet.remove(owner);
+            if p.names.iter().all(|(n, _)| p.suppressed.contains_key(n)) {
+                p.state = State::Ready;
+            }
+        }
+        self.offered = None;
+    }
+    pub(crate) fn conflict(&mut self, owner: &Name, now: Time) {
+        for p in self
+            .publications
+            .values_mut()
+            .filter(|p| p.owners.contains(owner))
+        {
+            p.state = if p.state.ready() {
+                State::Probe { sent: 0, next: now }
+            } else {
+                State::Failed {
+                    until: now.saturating_add(5000),
+                    notice: true,
+                }
+            };
+        }
+        self.offered = None;
+    }
+    pub fn take_stale(&mut self) -> Option<(u64, Name)> {
+        for (id, p) in &mut self.publications {
+            for (name, (_, notice)) in &mut p.suppressed {
+                if *notice {
+                    *notice = false;
+                    return Some((*id, name.clone()));
+                }
+            }
+        }
+        None
+    }
+    pub(crate) fn output_stamp(&self, owner: &Name) -> Option<Stamp> {
+        self.publications
+            .values()
+            .filter(|p| !p.suppressed.contains_key(owner))
+            .find_map(|p| p.stamps.get(owner).copied())
+            .or_else(|| {
+                self.goodbyes
+                    .iter()
+                    .find_map(|g| g.stamps.get(owner).copied())
+            })
+    }
     pub(crate) fn expects_unicast(&self, d: &Datagram, now: Time) -> bool {
         self.publications.values().any(|p| {
             p.last_probe.is_some_and(|t| now >= t && now - t <= 2000)
@@ -507,7 +683,12 @@ impl Publisher {
             if data.digest != p.digest {
                 return Err(invalid());
             }
-            out.extend(data.records.into_iter().map(|r| (*id, r)));
+            out.extend(
+                data.records
+                    .into_iter()
+                    .filter(|r| active_record(p, r))
+                    .map(|r| (*id, r)),
+            );
         }
         Ok(out)
     }
@@ -681,4 +862,9 @@ fn append(m: &mut Message, r: Record, probe: bool) {
     } else {
         m.answers.push(r);
     }
+}
+
+fn active_record(p: &Publication, r: &Record) -> bool {
+    !p.suppressed.contains_key(&r.name)
+        && !matches!(&r.data, Rdata::Name(target) if r.kind == 12 && p.suppressed.contains_key(target))
 }

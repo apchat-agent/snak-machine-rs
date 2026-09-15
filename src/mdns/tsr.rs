@@ -99,6 +99,15 @@ pub fn attach(
     now: Time,
     lookup: &impl Fn(&Name) -> Option<Stamp>,
 ) -> io::Result<()> {
+    attach_inner(m, code, now, lookup, true)
+}
+fn attach_inner(
+    m: &mut Message,
+    code: u16,
+    now: Time,
+    lookup: &impl Fn(&Name) -> Option<Stamp>,
+    local: bool,
+) -> io::Result<()> {
     if code == 0 || m.answers.len() + m.authority.len() + m.additional.len() > 512 {
         return Err(invalid());
     }
@@ -111,7 +120,7 @@ pub fn attach(
         let Some(stamp) = lookup(&r.name) else {
             continue;
         };
-        if m.flags & 0x8000 != 0 && r.class & 0x8000 == 0 {
+        if local && m.flags & 0x8000 != 0 && r.class & 0x8000 == 0 {
             return Err(invalid());
         }
         if !seen.insert(r.name.clone()) {
@@ -171,4 +180,43 @@ pub fn compare(local: Option<Stamp>, remote: Option<Stamp>) -> Relation {
         }
         _ => Relation::Conflict,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationError {
+    Invalid,
+    Capacity,
+    Conflict,
+    Stale,
+}
+impl From<io::Error> for RegistrationError {
+    fn from(e: io::Error) -> Self {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            Self::Capacity
+        } else {
+            Self::Invalid
+        }
+    }
+}
+/// Rebuild indexes after discarding stale or conflict-suppressed owners.
+pub(crate) fn filtered(
+    m: &Message,
+    ignored: &BTreeSet<Name>,
+    stamps: &BTreeMap<Name, Stamp>,
+    now: Time,
+) -> io::Result<Message> {
+    let mut out = m.clone();
+    out.answers.retain(|r| !ignored.contains(&r.name));
+    out.authority.retain(|r| !ignored.contains(&r.name));
+    out.additional
+        .retain(|r| r.kind == 41 || !ignored.contains(&r.name));
+    // Incoming cache-flush flags are not local registration instructions.
+    attach_inner(
+        &mut out,
+        OPTION_CODE,
+        now,
+        &|n| stamps.get(n).copied(),
+        false,
+    )?;
+    Ok(out)
 }
