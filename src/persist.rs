@@ -25,6 +25,11 @@ pub struct FileStore {
     path: PathBuf,
     _lock: File,
 }
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
 impl FileStore {
     pub fn open(path: &Path) -> io::Result<Self> {
         let lock = OpenOptions::new()
@@ -32,7 +37,7 @@ impl FileStore {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path.with_extension("lock"))?;
+            .open(sibling(path, ".lock"))?;
         // SAFETY: flock operates on a live descriptor, held for the store lifetime.
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
@@ -52,7 +57,14 @@ impl StateStore for FileStore {
         }
     }
     fn save(&mut self, b: &[u8]) -> io::Result<()> {
-        let temp = self.path.with_extension("tmp");
+        let temp = sibling(&self.path, ".tmp");
+        // The exclusive store lock owns this reserved sibling name. Unlink
+        // abandoned files (including symlinks) without following their contents.
+        match std::fs::remove_file(&temp) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
         let mut f = OpenOptions::new()
             .write(true)
             .create_new(true)
