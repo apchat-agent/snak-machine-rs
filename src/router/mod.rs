@@ -1,3 +1,4 @@
+mod budget;
 mod lifecycle;
 pub use lifecycle::Lifecycle;
 mod forward;
@@ -74,6 +75,8 @@ pub struct Router {
     pub pd: pd::PdClient,
     pub pd_prefixes: BTreeMap<Prefix, pd::OwnedPrefix>,
     pub withdrawals: BTreeMap<(Link, Prefix), u8>,
+    // Only successfully exported RIOs, bounded by each link's withdrawal budget.
+    pub advertised_routes: BTreeMap<(Link, Prefix), Lifetime>,
     pub routes: BTreeMap<(Ipv6Addr, Prefix), Route>,
     pub no_stub_default: bool,
     pub always_advertise_ail_routes: bool,
@@ -111,6 +114,7 @@ impl Router {
             pd: pd::PdClient::default(),
             pd_prefixes: BTreeMap::new(),
             withdrawals: BTreeMap::new(),
+            advertised_routes: BTreeMap::new(),
             routes: BTreeMap::new(),
             no_stub_default: false,
             always_advertise_ail_routes: false,
@@ -350,6 +354,7 @@ impl Router {
         if prior_default != self.default_lifetime(now) {
             self.links[1].scheduler.changed(now, rng)?;
         }
+        self.reap_exports(now);
         Ok(out)
     }
     pub fn snapshot(&self, link: Link, now: Time) -> Advertisement {
@@ -405,29 +410,31 @@ impl Router {
                     r.prefix,
                 )
             });
-            let zeros: Vec<_> = self
-                .withdrawals
-                .keys()
-                .filter(|(l, _)| *l == Link::Ail)
-                .map(|(_, p)| Rio {
+            rios = self.budget_ail(rios, now);
+        }
+        for ((l, p), valid) in &self.advertised_routes {
+            if *l == link && valid.live(now) && !rios.iter().any(|r| r.prefix == *p) {
+                rios.push(Rio {
                     prefix: *p,
                     preference: Preference::Low,
                     lifetime: 0,
-                })
-                .collect();
-            rios.retain(|r| !zeros.iter().any(|z| z.prefix == r.prefix));
-            let slots = (1280usize.saturating_sub(40 + 16 + 8 + pios.len() * 32)) / 16;
-            rios.truncate(slots.saturating_sub(zeros.len()));
-            rios.extend(zeros.into_iter().take(slots));
-            rios.sort_by_key(|r| r.prefix);
+                });
+            }
         }
         if matches!(
             self.lifecycle,
             Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Degraded
         ) {
-            for r in &mut rios {
-                r.lifetime = 0;
-            }
+            rios = self
+                .advertised_routes
+                .iter()
+                .filter(|((l, _), v)| *l == link && v.live(now))
+                .map(|((_, p), _)| Rio {
+                    prefix: *p,
+                    preference: Preference::Low,
+                    lifetime: 0,
+                })
+                .collect();
         }
         if matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped) {
             for p in &mut pios {
@@ -442,22 +449,6 @@ impl Router {
                 p.valid = p.valid.min(last.remaining(now));
             }
             pios.retain(|p| p.valid > 0);
-        }
-        if matches!(
-            self.lifecycle,
-            Lifecycle::Degraded | Lifecycle::Stopping | Lifecycle::Stopped
-        ) && link == Link::Stub
-        {
-            let mut available = 1280usize.saturating_sub(40 + 16 + 8 + 8 + pios.len() * 32);
-            rios.retain(|r| {
-                let size = r.encode().len();
-                if size <= available {
-                    available -= size;
-                    true
-                } else {
-                    false
-                }
-            });
         }
         Advertisement {
             link,
@@ -501,6 +492,7 @@ impl Router {
         if self.links[0].up {
             self.pd.advance(now, rng)?;
         }
+        self.reap_exports(now);
         self.pd_hints.retain(|_, l| l.live(now));
         self.sync_pd(now, rng)?;
         let mut out = self.tick_dad(now);
@@ -589,7 +581,26 @@ impl Router {
             }
             if self.state(link) != AilState::Unknown && self.links[link.index()].scheduler.due(now)
             {
-                let snap = self.snapshot(link, now);
+                let mut snap = self.snapshot(link, now);
+                if snap.rios.iter().map(|r| r.encode().len()).sum::<usize>()
+                    > Self::route_budget(link)
+                {
+                    self.degrade(now, rng)?;
+                    snap = self.snapshot(link, now);
+                }
+                if link == Link::Ail {
+                    let omitted = self
+                        .on_link
+                        .iter()
+                        .filter(|((l, _), v)| *l == Link::Stub && v.valid.live(now))
+                        .count()
+                        .saturating_sub(snap.rios.iter().filter(|r| r.lifetime > 0).count());
+                    if omitted > 0 {
+                        eprintln!(
+                            "{now}ms AIL RA omits {omitted} OSNRs (capacity or unavailable egress)"
+                        );
+                    }
+                }
                 if link == Link::Stub || !snap.pios.is_empty() || !snap.rios.is_empty() {
                     out.push(Tx {
                         link,
@@ -677,9 +688,16 @@ impl Router {
         }
         for o in &nd.options {
             if let Some(r) = Rio::decode(o.bytes) {
-                if r.lifetime == 0 {
-                    if let Some(count) = self.withdrawals.get_mut(&(tx.link, r.prefix)) {
-                        *count = count.saturating_sub(1);
+                let key = (tx.link, r.prefix);
+                if r.lifetime > 0 {
+                    self.advertised_routes
+                        .insert(key, Lifetime::from_secs(now, r.lifetime));
+                    self.withdrawals.remove(&key);
+                } else if self.advertised_routes.contains_key(&key) {
+                    let count = self.withdrawals.entry(key).or_insert(3);
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        self.advertised_routes.remove(&key);
                     }
                 }
             }
