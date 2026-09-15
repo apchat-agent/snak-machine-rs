@@ -436,3 +436,35 @@ fn review_06_same_subnet_replacement_owns_lifetimes() {
         }
     }
 }
+
+#[test]
+fn review_07_noninitial_icmp_fragments_forward_all_data_values() {
+    let mut r = router();
+    r.links[1].kind = FrameKind::RawIpv6;
+    let p = Prefix::new(ip("2001:db8:2::"), 64).unwrap();
+    r.on_link.insert(
+        (Link::Stub, p),
+        OnLink {
+            preferred: Lifetime::Infinite,
+            valid: Lifetime::Infinite,
+        },
+    );
+    for byte in 0..=255 {
+        let mut payload = vec![58, 0, 0, 9, 0, 0, 0, 42];
+        payload.extend([byte; 8]);
+        let packet = common::packet("2001:db8:1::99", "2001:db8:2::99", 44, 64, &payload);
+        let output = r
+            .receive_frame(
+                Link::Ail,
+                FrameKind::RawIpv6,
+                &packet,
+                0,
+                &mut ScriptedRandom::new([]),
+            )
+            .unwrap();
+        assert_eq!(output.len(), 1, "fragment data starts with {byte}");
+        assert_eq!(output[0].link, Link::Stub);
+        assert_eq!(output[0].packet[7], 63);
+        assert_eq!(&output[0].packet[40..], &payload);
+    }
+}
