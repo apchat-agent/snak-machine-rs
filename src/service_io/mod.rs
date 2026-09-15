@@ -1,5 +1,6 @@
 //! IP-medium endpoints. ND, routing and address readiness remain router-owned.
 //! S01 provides one bounded TCP endpoint; Driver integration is step S07.
+pub mod stack;
 use crate::{
     time::{RandomSource, Time},
     wire::{envelope, transport, FrameKind},

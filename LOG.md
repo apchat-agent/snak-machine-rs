@@ -407,3 +407,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   IPv4 TTL and reserved BOOTP flags are checked. No new fields/dependencies.
   S06 is complete; crash serialization of active DHCP state remains the S23
   journal integration, while INIT-REBOOT validation itself is tested here.
+
+### S07 — userspace listeners and scheduler (in progress)
+
+- Initial RED `3cd2eab`: `cargo test` confirms the missing multi-listener
+  stack API. GREEN passes **119 tests**. Real IPv4 and IPv6 packets exchange
+  UDP and TCP data, including split/coalesced writes and half-close. Removing
+  an owned address closes its connections and blocks source use. UDP/TCP
+  port ownership is explicit; there are eight listener slots per protocol,
+  64 connections, four per peer and 32 addresses. TCP buffers are 64 KiB per
+  direction; eight UDP listeners share 64 KiB of payload ring capacity.
+- State follows PLAN2's socket/address/buffer ownership. IP-medium /0 entries
+  let the stack emit off-link packets for Driver's authoritative route/ND/ARP
+  decision; they do not install kernel or advertised routes. No dependency.
+  Hostile/capacity, reassembly, native-loopback and Driver fixtures follow.
