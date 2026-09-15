@@ -122,3 +122,58 @@ fn ula_identity_is_random_distinct_and_persistent() {
     drop(disk);
     std::fs::remove_dir_all(path).unwrap();
 }
+
+use snac_rs::router::{AilState, Router};
+fn router(seed: u64) -> Router {
+    let id = Identity::load_or_create(
+        &mut MemoryStore::default(),
+        "mock",
+        &mut ScriptedRandom::new([seed, 1, 2, 3, 4, 5, 6, 7]),
+    )
+    .unwrap();
+    Router::new(id, 0, &mut ScriptedRandom::new([])).unwrap()
+}
+#[test]
+fn unknown_completes_router_discovery() {
+    let mut r = router(9);
+    let mut rng = ScriptedRandom::new([]);
+    let mut rs = vec![];
+    for t in [0, 4000, 8000] {
+        let tx = r.tick(t, &mut rng).unwrap();
+        rs.extend(
+            tx.iter()
+                .filter(|x| x.link == Link::Ail)
+                .map(|x| x.packet[40]),
+        );
+        assert!(tx.iter().all(|x| x.packet[40] != 134));
+    }
+    assert_eq!(rs, vec![133; 3]);
+    let tx = r.tick(9000, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
+    let ail = tx
+        .iter()
+        .find(|x| x.link == Link::Ail && x.packet[40] == 134)
+        .unwrap();
+    assert_eq!(ail.packet[45] & 2, 2);
+    r.transmitted(ail, 9000, false, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
+    r.transmitted(ail, 9000, true, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::Advertising);
+    let mut r = router(10);
+    let p = nd_packet(
+        "fe80::abcd",
+        "ff02::1",
+        ra(0, 0, &pio("2001:db8:1::", 64, 0xc0, 3600, 7200)),
+    );
+    r.receive(Link::Ail, &p, 100, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::Suitable);
+    let tx = r.tick(9000, &mut rng).unwrap();
+    let a = tx
+        .iter()
+        .find(|x| x.link == Link::Ail && x.packet[40] == 134)
+        .unwrap();
+    let e = envelope(FrameKind::RawIpv6, &a.packet).unwrap();
+    let nd = snac_rs::wire::decode_nd(&e).unwrap();
+    assert!(nd.options.iter().all(|o| o.kind != 3));
+    assert!(nd.options.iter().any(|o| o.kind == 24));
+}
