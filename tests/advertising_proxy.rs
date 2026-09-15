@@ -977,3 +977,172 @@ fn s14_tsr_options_are_included_in_packet_budget_without_losing_records() {
             .all(|q| m.authority.iter().any(|r| r.name == q.name)));
     }
 }
+
+#[test]
+fn s14_durable_registrar_drives_publication_refresh_expiry_and_restart() {
+    use snac_rs::{
+        mdns::{
+            tsr::{extract, OPTION_CODE},
+            Engine,
+        },
+        srp::{registry::LeasePolicy, service::Registrar},
+        time::ScriptedRandom,
+    };
+    let (_, update, _) = registered();
+    let store = common::srp::Store::default();
+    let mut registrar = Registrar::open(Box::new(store.clone()), 1000, common::srp::NOW).unwrap();
+    registrar
+        .set_policy(LeasePolicy {
+            max_lease: 30,
+            max_key_lease: 60,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    registrar.apply(&update, 1000, common::srp::NOW).unwrap();
+    registrar
+        .sync_advertising(&mut engine, 1000, &mut rng)
+        .unwrap();
+    assert_eq!(registrar.advertising_counts().0, 1);
+    for at in [1000, 1250, 1500, 1750, 2750] {
+        let b = engine
+            .publisher
+            .poll(&|id, t| registrar.advertised(id, t), at)
+            .unwrap()
+            .unwrap();
+        let output = engine.prepare_outgoing(b.messages, at).unwrap();
+        assert!(output
+            .iter()
+            .flat_map(|m| m.authority.iter().chain(&m.answers))
+            .all(|r| r.ttl <= 30));
+        assert!(output
+            .iter()
+            .any(|m| !extract(m, OPTION_CODE, at).unwrap().is_empty()));
+        engine.publisher.sent(b.token, true, at);
+    }
+    // Exact durable retry neither refreshes the original reception time nor announces.
+    registrar
+        .apply(&update, 3000, common::srp::NOW + 2)
+        .unwrap();
+    registrar
+        .sync_advertising(&mut engine, 3000, &mut rng)
+        .unwrap();
+    assert!(engine
+        .publisher
+        .poll(&|id, t| registrar.advertised(id, t), 3000)
+        .unwrap()
+        .is_none());
+    let mut restored = Registrar::open(Box::new(store.clone()), 0, common::srp::NOW + 10).unwrap();
+    let mut fresh = Engine::default();
+    restored.sync_advertising(&mut fresh, 0, &mut rng).unwrap();
+    let b = fresh
+        .publisher
+        .poll(&|id, t| restored.advertised(id, t), 0)
+        .unwrap()
+        .unwrap();
+    let output = fresh.prepare_outgoing(b.messages, 0).unwrap();
+    assert!(output
+        .iter()
+        .flat_map(|m| extract(m, OPTION_CODE, 0).unwrap().into_values())
+        .all(|s| s.received_at == -10000));
+    registrar.expire(31000);
+    registrar
+        .sync_advertising(&mut engine, 31000, &mut rng)
+        .unwrap();
+    let b = engine
+        .publisher
+        .poll(&|id, t| registrar.advertised(id, t), 31000)
+        .unwrap()
+        .unwrap();
+    assert!(b
+        .messages
+        .iter()
+        .flat_map(|m| &m.answers)
+        .all(|r| r.ttl == 0));
+    engine.publisher.sent(b.token, true, 31000);
+    assert_eq!(engine.publisher.counts().0, 0);
+    assert_eq!(registrar.advertising_counts(), (0, 0, 0));
+}
+#[test]
+fn s14_registrar_failed_durability_keeps_advertised_data_and_conflict_renames_only_publication() {
+    use snac_rs::{
+        mdns::{wire::Datagram, Engine},
+        srp::{
+            service::Registrar,
+            wire::{CryptoBudget, Validator},
+        },
+        time::ScriptedRandom,
+    };
+    let (_, update, _) = registered();
+    let store = common::srp::Store::default();
+    let mut registrar = Registrar::open(Box::new(store.clone()), 0, common::srp::NOW).unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    registrar.apply(&update, 0, common::srp::NOW).unwrap();
+    registrar
+        .sync_advertising(&mut engine, 0, &mut rng)
+        .unwrap();
+    let b = engine
+        .publisher
+        .poll(&|id, t| registrar.advertised(id, t), 0)
+        .unwrap()
+        .unwrap();
+    let old = b.messages[0].authority[0].name.clone();
+    engine.publisher.sent(b.token, true, 0);
+    let mut conflict = Message::new(0, 0x8400);
+    let mut r = b.messages[0].authority[0].clone();
+    r.class |= 0x8000;
+    r.data = Rdata::Aaaa([0x30; 16]);
+    conflict.answers.push(r);
+    engine
+        .receive(
+            &Datagram {
+                source: "[fe80::2]:5353".parse().unwrap(),
+                destination: "[ff02::fb]:5353".parse().unwrap(),
+                message: conflict,
+            },
+            true,
+            &|id, t| registrar.advertised(id, t),
+            100,
+            &mut rng,
+        )
+        .unwrap();
+    registrar
+        .sync_advertising(&mut engine, 100, &mut rng)
+        .unwrap();
+    let b = engine
+        .publisher
+        .poll(&|id, t| registrar.advertised(id, t), 5100)
+        .unwrap()
+        .unwrap();
+    assert!(b
+        .messages
+        .iter()
+        .flat_map(|m| &m.authority)
+        .all(|r| r.name != old));
+    assert!(registrar.registry().hosts().any(|(n, _)| *n == update.host));
+    let mut request = common::srp::update();
+    request.id += 1;
+    if let Some(r) = request.authority.iter_mut().find(|r| r.kind == 16) {
+        r.data = Rdata::Txt(vec![b"changed".to_vec()]);
+    }
+    let bytes = common::srp::sign(request);
+    let changed = Validator::new(&[])
+        .unwrap()
+        .verify(
+            &bytes,
+            common::srp::NOW,
+            &mut CryptoBudget::default(),
+            |_| None,
+        )
+        .unwrap();
+    let before = registrar.advertising_counts();
+    store.fail.set(true);
+    assert!(registrar.apply(&changed, 5200, common::srp::NOW).is_err());
+    assert_eq!(registrar.advertising_counts(), before);
+    assert!(registrar.registry().services().all(|(_, s)| s
+        .records
+        .iter()
+        .all(|r| r.data != Rdata::Txt(vec![b"changed".to_vec()]))));
+}
