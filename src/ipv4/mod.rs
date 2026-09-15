@@ -19,6 +19,8 @@ pub struct Ipv4 {
     neighbors: BTreeMap<Ipv4Addr, Neighbor>,
     routes: Vec<Route>,
     input: VecDeque<Vec<u8>>,
+    arp_window: u64,
+    arp_sent: u8,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Route {
@@ -40,6 +42,8 @@ impl Ipv4 {
             neighbors: BTreeMap::new(),
             routes: vec![],
             input: VecDeque::new(),
+            arp_window: 0,
+            arp_sent: 0,
         }
     }
     pub fn configure(
@@ -145,6 +149,17 @@ impl Ipv4 {
         }
         .encode([255; 6])
     }
+    fn allow_arp(&mut self, now: u64) -> bool {
+        if now >= self.arp_window.saturating_add(1000) {
+            self.arp_window = now;
+            self.arp_sent = 0;
+        }
+        if self.arp_sent >= 32 {
+            return false;
+        }
+        self.arp_sent += 1;
+        true
+    }
     pub fn send(&mut self, packet: &[u8], now: u64) -> io::Result<Vec<Vec<u8>>> {
         let p = Packet::parse(packet)?;
         let next = self
@@ -180,11 +195,12 @@ impl Ipv4 {
         let n = self.neighbors.entry(next).or_insert(Neighbor {
             mac: None,
             deadline: now.saturating_add(1000),
-            attempts: 1,
+            attempts: 0,
             queue: vec![],
         });
         n.queue.push(p.bytes.to_vec());
-        Ok(if first {
+        Ok(if first && self.allow_arp(now) {
+            self.neighbors.get_mut(&next).unwrap().attempts = 1;
             vec![self.probe(next)]
         } else {
             vec![]
@@ -196,6 +212,8 @@ impl Ipv4 {
         };
         if frame.len() < 14
             || frame[6..12] == self.mac
+            || frame[6] & 1 != 0
+            || frame[6..12] == [0; 6]
             || (frame[0] & 1 == 0 && frame[..6] != self.mac)
         {
             return Ok(vec![]);
@@ -229,6 +247,11 @@ impl Ipv4 {
         if !a.sender.is_unspecified()
             && (self.neighbors.contains_key(&a.sender) || a.operation == 1)
             && (self.neighbors.contains_key(&a.sender) || self.neighbors.len() < 256)
+            && (a.operation == 1
+                || self
+                    .neighbors
+                    .get(&a.sender)
+                    .is_some_and(|n| n.mac.is_none() || n.mac == Some(a.sender_mac)))
         {
             let n = self.neighbors.entry(a.sender).or_insert(Neighbor {
                 mac: None,
@@ -243,7 +266,7 @@ impl Ipv4 {
             n.deadline = now.saturating_add(60000);
             n.attempts = 0;
         }
-        if a.operation == 1 {
+        if a.operation == 1 && self.allow_arp(now) {
             out.push(
                 Arp {
                     operation: 2,
@@ -266,12 +289,20 @@ impl Ipv4 {
             if n.mac.is_some() || n.attempts >= 3 {
                 return false;
             }
-            n.attempts += 1;
-            n.deadline = now.saturating_add(1000);
             destinations.push(*ip);
             true
         });
-        destinations.into_iter().map(|ip| self.probe(ip)).collect()
+        let mut out = vec![];
+        for ip in destinations {
+            if !self.allow_arp(now) {
+                break;
+            }
+            let n = self.neighbors.get_mut(&ip).unwrap();
+            n.attempts += 1;
+            n.deadline = now.saturating_add(1000);
+            out.push(self.probe(ip));
+        }
+        out
     }
     pub fn neighbor_count(&self) -> usize {
         self.neighbors.len()

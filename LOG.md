@@ -326,3 +326,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   condition in the initial S05 reducer; its cleanup follows separately.
 - Needs privileged acceptance: real Ethernet ARP resolution, classless next-hop
   output and carrier loss on TAP/pcap. This step uses memory Ethernet peers.
+- S05 final RED `3e76e9c`: `cargo test --no-fail-fast` exposes 1000 ARP
+  responses to a same-tick flood (expected 32) and acceptance of an IPv4
+  Ethernet frame with a multicast source MAC. GREEN passes **104 tests** and
+  warnings-denied all-feature clippy. ARP has a global 32-output/second budget;
+  suppressed resolution probes do not consume retry attempts. Unsolicited
+  conflicting replies cannot replace an established MAC. Unicast requests
+  correctly permit unspecified target hardware, unlike inconsistent replies.
+  Incoming IP byte-cap, every truncation of a maximum-size frame and malformed
+  Ethernet/address cases are covered. The window/counter implement PLAN2's
+  global ARP rate budget; no dependency added. S05 is complete.
