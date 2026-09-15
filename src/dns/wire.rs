@@ -785,31 +785,61 @@ impl TcpFrames {
         out.extend(b);
         Ok(out)
     }
-    pub fn input(&mut self, b: &[u8]) -> io::Result<()> {
-        if self.bytes + b.len() > MAX_WIRE + 2 {
+    pub fn input(&mut self, mut b: &[u8]) -> io::Result<()> {
+        if b.len() > (MAX_WIRE + 2).saturating_sub(self.bytes) {
             return Err(invalid());
         }
-        let mut partial = self.partial.clone();
-        partial.extend(b);
+        // Validate only headers, without copying or revisiting buffered bodies.
+        // An invalid later frame must not commit an earlier complete frame.
+        let total = self.partial.len() + b.len();
+        let byte = |n: usize| {
+            if n < self.partial.len() {
+                self.partial[n]
+            } else {
+                b[n - self.partial.len()]
+            }
+        };
         let mut at = 0;
-        let mut frames = vec![];
-        while partial.len() - at >= 2 {
-            let n = usize::from(u16at(&partial, at)?);
+        let mut count = self.ready.len();
+        while total - at >= 2 {
+            let n = usize::from(u16::from_be_bytes([byte(at), byte(at + 1)]));
             if n < 12 || n > self.max {
                 return Err(invalid());
             }
-            if partial.len() - at < n + 2 {
+            if total - at < n + 2 {
                 break;
             }
-            if self.ready.len() + frames.len() >= 32 {
+            count += 1;
+            if count > 32 {
                 return Err(invalid());
             }
-            frames.push(partial[at + 2..at + 2 + n].to_vec());
             at += n + 2;
         }
         self.bytes += b.len();
-        self.partial = partial[at..].to_vec();
-        self.ready.extend(frames);
+        while !b.is_empty() {
+            if self.partial.capacity() == 0 {
+                self.partial = Vec::with_capacity(2);
+            }
+            if self.partial.len() < 2 {
+                let n = (2 - self.partial.len()).min(b.len());
+                self.partial.extend_from_slice(&b[..n]);
+                b = &b[n..];
+                if self.partial.len() < 2 {
+                    break;
+                }
+            }
+            let size = usize::from(u16::from_be_bytes([self.partial[0], self.partial[1]])) + 2;
+            self.partial.reserve_exact(size - self.partial.len());
+            let n = (size - self.partial.len()).min(b.len());
+            self.partial.extend_from_slice(&b[..n]);
+            b = &b[n..];
+            if self.partial.len() == size {
+                let mut frame = std::mem::take(&mut self.partial);
+                frame.copy_within(2.., 0);
+                frame.truncate(size - 2);
+                self.ready.push_back(frame);
+            }
+        }
         Ok(())
     }
     pub fn pop(&mut self) -> Option<Vec<u8>> {

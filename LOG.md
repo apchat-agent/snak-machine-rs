@@ -728,3 +728,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Needs privileged acceptance: native port 853 service startup, persistence
   and renewal on a real interface, and interoperability with external DoT
   clients. Rootless identity, TLS and userspace TCP paths are exercised.
+- S10 fragmentation RED `aa12a35` measures 134,275,288 allocated bytes for an
+  8 KiB message delivered one byte at a time. GREEN passes **188 tests** and
+  all-feature clippy. The framer validates only length headers before mutation,
+  reserves each frame once, and transfers its buffer to the completed queue.
+  Invalid later headers still reject the entire input atomically. The measured
+  allocation is now linear in message length. No new field or dependency.
