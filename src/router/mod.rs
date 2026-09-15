@@ -304,13 +304,17 @@ impl Router {
                             self.links[0].scheduler.changed(now, rng)?;
                         }
 
-                        self.on_link.insert(
-                            (link, p.prefix),
-                            OnLink {
-                                valid: Lifetime::from_secs(now, p.valid),
-                                preferred: Lifetime::from_secs(now, p.preferred),
-                            },
-                        );
+                        if p.valid == 0 {
+                            self.on_link.remove(&(link, p.prefix));
+                        } else {
+                            self.on_link.insert(
+                                (link, p.prefix),
+                                OnLink {
+                                    valid: Lifetime::from_secs(now, p.valid),
+                                    preferred: Lifetime::from_secs(now, p.preferred),
+                                },
+                            );
+                        }
                     }
                     if p.suitable() {
                         let own = self.identity.prefix(link);
