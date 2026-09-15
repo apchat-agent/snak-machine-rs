@@ -153,12 +153,14 @@ impl Registry {
             let received_at = now as i128 - p.u64()? as i128 - elapsed as i128;
             let records = p.records()?;
             let discovery = p.records()?;
-            if records
+            if records.iter().any(|r| {
+                r.name != name
+                    || r.class != 1
+                    || ![16, 33].contains(&r.kind)
+                    || matches!(&r.data, Rdata::Srv {target, ..} if target != &host)
+            }) || discovery
                 .iter()
-                .any(|r| r.name != name || r.class != 1 || ![16, 33].contains(&r.kind))
-                || discovery
-                    .iter()
-                    .any(|r| r.kind != 12 || r.class != 1 || r.data != Rdata::Name(name.clone()))
+                .any(|r| r.kind != 12 || r.class != 1 || r.data != Rdata::Name(name.clone()))
             {
                 return Err(invalid());
             }
@@ -280,12 +282,16 @@ impl Reader<'_> {
         {
             return Err(invalid());
         }
-        Ok(Key {
+        let key = Key {
             flags,
             protocol,
             algorithm,
             bytes: self.take(len)?.to_vec(),
-        })
+        };
+        if !key.valid_public() {
+            return Err(invalid());
+        }
+        Ok(key)
     }
     fn records(&mut self) -> io::Result<Vec<Record>> {
         let count = self.u16()?;

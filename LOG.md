@@ -865,3 +865,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   notification; these implement planned source validation and publication wiring.
   No dependency. Needs privileged acceptance: signed registration and restart on
   native interfaces with external SRP clients, including real filesystem failures.
+- S12 final hostile RED `1c794db`: a recomputed-checksum journal could change
+  an SRV target to a different hostname. GREEN passes **213 tests**, both builds,
+  all-feature clippy and macOS aarch64 all-targets/pcap checking. Restoration
+  checks target relationships and validates actual public-key encodings, in
+  addition to byte integrity and lengths. No field or dependency was added.
+- Additional tests prove atomic subtype replacement, ownership protection after
+  record expiry, reuse only after key expiry, and migration of the original
+  binary identity into the combined journal. S12 is complete. Rootless signed
+  success is exercised over UDP/TCP/DoT, with durable failure/retry and restart;
+  native/external-client acceptance remains listed above. S13 follows.

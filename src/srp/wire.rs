@@ -70,6 +70,34 @@ impl Key {
             bytes: key.clone(),
         })
     }
+    pub(crate) fn valid_public(&self) -> bool {
+        match self.algorithm {
+            13 => {
+                self.bytes.len() == 64
+                    && p256::ecdsa::VerifyingKey::from_sec1_bytes(&[&[4][..], &self.bytes].concat())
+                        .is_ok()
+            }
+            14 => {
+                self.bytes.len() == 96
+                    && p384::ecdsa::VerifyingKey::from_sec1_bytes(&[&[4][..], &self.bytes].concat())
+                        .is_ok()
+            }
+            15 => self
+                .bytes
+                .as_slice()
+                .try_into()
+                .ok()
+                .and_then(|b| ed25519_dalek::VerifyingKey::from_bytes(b).ok())
+                .is_some_and(|k| !k.is_weak()),
+            16 => self
+                .bytes
+                .as_slice()
+                .try_into()
+                .ok()
+                .is_some_and(|b| ed448_goldilocks_plus::VerifyingKey::from_bytes(b).is_ok()),
+            _ => false,
+        }
+    }
     fn verify(&self, message: &[u8], sig: &[u8]) -> Result<(), Error> {
         let result = match self.algorithm {
             13 => {
