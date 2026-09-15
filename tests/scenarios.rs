@@ -570,3 +570,47 @@ fn dad_and_neighbor_answers_only_claim_owned_addresses() {
         }
     }
 }
+
+#[test]
+fn osnr_export_is_one_bounded_advertisement() {
+    let mut r = providing(50);
+    let mut rng = ScriptedRandom::new([]);
+    for t in [12000, 15000] {
+        for tx in r.tick(t, &mut rng).unwrap() {
+            r.transmitted(&tx, t, true, &mut rng).unwrap();
+        }
+    }
+    assert!(r.links[0].scheduler.deadline() > 20000);
+    for n in 1..=90 {
+        let prefix = format!("fdab:{n:x}::");
+        let preferred = if n <= 20 { 0 } else { 3600 };
+        r.receive(
+            Link::Stub,
+            &nd_packet(
+                "fe80::99",
+                "ff02::1",
+                ra(0, 0, &pio(&prefix, 64, 0xc0, preferred, 3600 + n)),
+            ),
+            20000,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert!(r.links[0].scheduler.deadline() <= 20000);
+    let a = r.snapshot(Link::Ail, 20000);
+    let encoded = a.encode().unwrap();
+    assert!(encoded.len() <= 1280);
+    assert_eq!(a.rios.len(), 74);
+    assert!(a
+        .rios
+        .iter()
+        .all(|x| x.preference == snac_rs::wire::Preference::Low && x.lifetime <= 1800));
+    assert!(!a
+        .rios
+        .iter()
+        .any(|x| x.prefix == Prefix::new(ip("fdab:1::"), 64).unwrap()));
+    assert!(a
+        .rios
+        .iter()
+        .any(|x| x.prefix == Prefix::new(ip("fdab:5a::"), 64).unwrap()));
+}
