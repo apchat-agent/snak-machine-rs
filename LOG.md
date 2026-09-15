@@ -740,3 +740,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   against the connection budget. Reads may fill already reserved storage even
   with no additional credit. Response queuing writes the prefix directly,
   removing a temporary full response copy. No new field or dependency.
+- S10 handshake RED `42a35a2` confirms that fragmented unfinished handshakes
+  exceeded the connection's TLS input allowance. GREEN passes **191 tests**,
+  all-feature clippy and macOS aarch64 all-targets/pcap checking. A cumulative
+  16 KiB handshake-input counter rejects further data before rustls can grow
+  its handshake body buffer. This additional counter enforces the planned
+  connection memory bound; no dependency. Every truncated ClientHello prefix
+  yields no plaintext and expires at the original handshake deadline.
+- S10 is complete: persistent identity/renewal, actual loopback and memory-IP
+  TLS, DNS dispatch, malformed input, framing, short writes, close behavior,
+  connection exhaustion and deadlines have rootless coverage. Native acceptance
+  remains as listed above; signed registrar success follows in S11/S12.

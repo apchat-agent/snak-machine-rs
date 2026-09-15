@@ -82,6 +82,7 @@ pub struct Session {
     phase: Phase,
     peer_closed: bool,
     plaintext_pending: usize,
+    handshake_bytes: usize,
 }
 impl Session {
     pub fn new(config: Arc<rustls::ServerConfig>, now: u64) -> io::Result<Self> {
@@ -94,6 +95,7 @@ impl Session {
             phase: Phase::Open,
             peer_closed: false,
             plaintext_pending: 0,
+            handshake_bytes: 0,
         })
     }
     pub fn handshaking(&self) -> bool {
@@ -128,7 +130,14 @@ impl Session {
             return Ok(0);
         }
         let result = (|| {
-            let n = self.connection.read_tls(&mut &b[..b.len().min(4096)])?;
+            let limit = b.len().min(4096);
+            if self.handshaking() && self.handshake_bytes + limit > 16384 {
+                return Err(invalid());
+            }
+            let n = self.connection.read_tls(&mut &b[..limit])?;
+            if self.handshaking() {
+                self.handshake_bytes += n;
+            }
             let state = self
                 .connection
                 .process_new_packets()
