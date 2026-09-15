@@ -757,3 +757,57 @@ fn other_stub_routes_keep_independent_lifetimes() {
     }
     assert_eq!(exported(&r, 30001), None);
 }
+
+#[test]
+fn pd_solicit_contains_stable_identity_and_64_hints() {
+    let mut r = router(60);
+    let mut rng = ScriptedRandom::new([]);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::9", "2001:db8::"),
+        0,
+        &mut rng,
+    )
+    .unwrap();
+    r.receive(Link::Ail, &na_for(&r, "fe80::9", true), 1, &mut rng)
+        .unwrap();
+    let tx = r.tick(9000, &mut rng).unwrap();
+    let p = &tx
+        .iter()
+        .find(|x| x.link == Link::Ail && x.packet[6] == 17)
+        .expect("PD Solicit while M=O=0")
+        .packet;
+    assert_eq!(&p[40..44], &[2, 34, 2, 35]);
+    assert_eq!(p[48], 1);
+    assert_eq!(p[7], 1);
+    assert_eq!(&p[24..40], &ip("ff02::1:2").octets());
+    assert_eq!(
+        sum(
+            r.identity.link_local(Link::Ail),
+            ip("ff02::1:2"),
+            17,
+            &p[40..]
+        ),
+        0
+    );
+    let options = dhcp_opts(&p[52..]);
+    assert_eq!(
+        options.iter().find(|o| o.0 == 1).unwrap().1,
+        r.identity.duid
+    );
+    assert_eq!(options.iter().find(|o| o.0 == 6).unwrap().1, vec![0, 82]);
+    let ias: Vec<_> = options.iter().filter(|o| o.0 == 25).collect();
+    assert_eq!(ias.len(), 2);
+    assert_eq!(&ias[0].1[..4], &[0, 0, 0, 1]);
+    assert_eq!(&ias[1].1[..4], &[0, 0, 0, 2]);
+    for ia in ias {
+        let nested = dhcp_opts(&ia.1[12..]);
+        assert_eq!(nested[0].0, 26);
+        assert_eq!(nested[0].1[8], 64);
+    }
+    let original = p[49..52].to_vec();
+    let tx = r.tick(11000, &mut rng).unwrap();
+    let retry = &tx.iter().find(|x| x.packet[6] == 17).unwrap().packet;
+    assert_eq!(&retry[49..52], &original);
+    assert!(!r.snapshot(Link::Stub, 11000).pios.is_empty());
+}

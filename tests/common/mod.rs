@@ -60,3 +60,22 @@ pub fn rio(prefix: &str, length: u8, flags: u8, lifetime: u32, units: u8) -> Vec
     b.extend(&ip(prefix).octets()[..(units as usize - 1) * 8]);
     b
 }
+
+pub fn dhcp_opts(b: &[u8]) -> Vec<(u16, Vec<u8>)> {
+    let mut out = vec![];
+    let mut p = b;
+    while !p.is_empty() {
+        assert!(p.len() >= 4);
+        let n = u16::from_be_bytes([p[2], p[3]]) as usize;
+        assert!(p.len() >= 4 + n);
+        out.push((u16::from_be_bytes([p[0], p[1]]), p[4..4 + n].to_vec()));
+        p = &p[4 + n..];
+    }
+    out
+}
+pub fn option(code: u16, b: &[u8]) -> Vec<u8> {
+    let mut out = code.to_be_bytes().to_vec();
+    out.extend((b.len() as u16).to_be_bytes());
+    out.extend(b);
+    out
+}
