@@ -100,6 +100,8 @@ fn run() -> io::Result<()> {
         );
     }
     let mut driver = Driver::new(router, backend)?;
+    driver.dns.set_additional_a(!config.no_additional_a);
+    driver.dns_discovery.set_configured(&config.dns_upstreams)?;
     let clock = Instant::now();
     driver.start(0, &mut random)?;
     let mut checkpoint_writer = snac_rs::persist::CheckpointWriter::default();

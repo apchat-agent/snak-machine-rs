@@ -310,6 +310,22 @@ impl Stack {
         }
         None
     }
+    pub fn receive_udp_on(&mut self, port: u16) -> Option<Datagram> {
+        let h = *self.udp.get(&port)?;
+        let (bytes, meta) = self.sockets.get_mut::<udp::Socket>(h).recv().ok()?;
+        Some(Datagram {
+            source: meta.endpoint.addr.into(),
+            destination: meta.local_address?.into(),
+            source_port: meta.endpoint.port,
+            destination_port: port,
+            bytes: bytes.to_vec(),
+        })
+    }
+    pub fn unlisten_udp(&mut self, port: u16) {
+        if let Some(h) = self.udp.remove(&port) {
+            self.sockets.remove(h);
+        }
+    }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<()> {
         // Check ownership before retaining even the first fragment.
         let destination = match b.first().map(|v| v >> 4) {

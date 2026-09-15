@@ -1,3 +1,4 @@
+mod dns;
 use crate::{
     io::{Direction, PacketIo},
     router::{Lifecycle, Router, Tx},
@@ -9,6 +10,10 @@ pub struct Driver<I> {
     pub router: Router,
     pub io: I,
     pub ipv4: crate::ipv4::Ipv4,
+    pub dns: crate::dns::resolver::Resolver,
+    pub dns_discovery: crate::dns::upstream::Discovery,
+    dns_service: crate::dns::service::Service,
+    dns_info: Option<crate::dns::upstream::InformationClient>,
     dhcp: Option<crate::ipv4::dhcp::Client>,
     stacks: Option<[crate::service_io::stack::Stack; 2]>,
     groups: [BTreeSet<Ipv6Addr>; 2],
@@ -35,6 +40,10 @@ impl<I: PacketIo> Driver<I> {
             router,
             io,
             ipv4,
+            dns: crate::dns::resolver::Resolver::new(true),
+            dns_discovery: Default::default(),
+            dns_service: Default::default(),
+            dns_info: None,
             dhcp: None,
             stacks: None,
             groups: Default::default(),
@@ -167,6 +176,7 @@ impl<I: PacketIo> Driver<I> {
             crate::service_io::stack::Stack::new(now, rng)?,
             crate::service_io::stack::Stack::new(now, rng)?,
         ]);
+        self.stacks.as_mut().unwrap()[1].listen_udp(53)?;
         Ok(())
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
@@ -226,6 +236,7 @@ impl<I: PacketIo> Driver<I> {
         let tx = self.router.tick(now, rng)?;
         self.dispatch(tx, now, rng)?;
         self.poll_ipv4(now, rng)?;
+        self.poll_dns_configuration(now, rng)?;
         self.poll_services(now, rng)?;
         self.sync_groups()
     }
@@ -257,6 +268,9 @@ impl<I: PacketIo> Driver<I> {
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if rx.direction != Direction::OwnEgress {
+            if self.receive_dns_configuration(&rx, now) {
+                return Ok(());
+            }
             if self.receive_dhcp(&rx, now, rng)? {
                 return Ok(());
             }
@@ -285,6 +299,18 @@ impl<I: PacketIo> Driver<I> {
     }
     pub fn next_deadline(&mut self, now: Time) -> Time {
         let mut next = self.router.next_deadline(now);
+        for deadline in [
+            self.dns.next_deadline(),
+            self.dns_discovery.next_deadline(),
+            self.dns_info.as_ref().map(|c| c.next_deadline()),
+            self.dns_service.next_deadline(now),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            next = next.min(deadline);
+        }
+
         if let Some(deadline) = self.dhcp.as_ref().and_then(|c| c.next_deadline()) {
             next = next.min(deadline);
         }
@@ -385,6 +411,12 @@ impl<I: PacketIo> Driver<I> {
                     let _ = stack.input(&p, now);
                 }
             }
+            stack.poll(now)?;
+        }
+        self.dns_service
+            .poll(&mut self.dns, self.stacks.as_mut().unwrap(), now, rng)?;
+        for link in [Link::Ail, Link::Stub] {
+            let stack = &mut self.stacks.as_mut().unwrap()[link.index()];
             stack.poll(now)?;
             let mut packets = vec![];
             for _ in 0..32 {

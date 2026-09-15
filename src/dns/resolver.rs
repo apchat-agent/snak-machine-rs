@@ -20,18 +20,21 @@ fn capacity() -> io::Error {
 pub struct Client {
     pub address: SocketAddr,
     pub connection: Option<usize>,
+    pub local: Option<IpAddr>,
 }
 impl Client {
     pub fn udp(address: SocketAddr) -> Self {
         Self {
             address,
             connection: None,
+            local: None,
         }
     }
     pub fn tcp(address: SocketAddr, connection: usize) -> Self {
         Self {
             address,
             connection: Some(connection),
+            local: None,
         }
     }
 }
@@ -124,6 +127,9 @@ impl Resolver {
         }
         self.upstreams = unique;
         Ok(())
+    }
+    pub fn queries(&self) -> impl Iterator<Item = &UpstreamQuery> {
+        self.pending.values().map(|p| &p.query)
     }
     pub fn rate_entries(&self) -> usize {
         self.rates.len()

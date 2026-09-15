@@ -15,9 +15,11 @@ pub struct Config {
     pub no_stub_default: bool,
     pub always_advertise_ail_routes: bool,
     pub pcap_library: Option<String>,
+    pub dns_upstreams: Vec<std::net::SocketAddr>,
+    pub no_additional_a: bool,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nRouting prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nRouting prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.\nReal backends require root; --help opens no interfaces.";
 impl Config {
     pub fn parse<S: Into<String>>(args: impl IntoIterator<Item = S>) -> io::Result<Option<Self>> {
         let args: Vec<String> = args
@@ -34,6 +36,8 @@ impl Config {
         if args.iter().any(|a| a == "--help" || a == "-h") {
             return Ok(None);
         }
+        let mut dns_upstreams = vec![];
+        let mut no_additional_a = false;
         let mut ula_policy = crate::router::attachment::UlaPolicy::Rotate;
         let mut attachment_id = None;
         let mut iter = args.into_iter();
@@ -42,6 +46,10 @@ impl Config {
         let (mut no_stub_default, mut always_advertise_ail_routes) = (false, false);
         let (mut pcap_library, mut af, mut sf, mut framing) = (None, None, None, None);
         while let Some(key) = iter.next() {
+            if key == "--no-additional-a" {
+                no_additional_a = true;
+                continue;
+            }
             if key == "--no-stub-default" {
                 no_stub_default = true;
                 continue;
@@ -77,6 +85,17 @@ impl Config {
                 "--infra" => infra = Some(value),
                 "--stub" => stub = Some(value),
                 "--state" => state = value.into(),
+                "--dns-upstream" => {
+                    let a: std::net::SocketAddr = value.parse().map_err(io::Error::other)?;
+                    if dns_upstreams.len() >= 8
+                        || a.port() == 0
+                        || a.ip().is_unspecified()
+                        || a.ip().is_multicast()
+                    {
+                        return Err(io::Error::other("invalid DNS upstream"));
+                    }
+                    dns_upstreams.push(a);
+                }
                 "--pcap-library" => pcap_library = Some(value),
                 "--nat64" if value == "disabled" => {}
                 "--nat64" => return Err(io::Error::other("NAT64 is not implemented")),
@@ -120,6 +139,8 @@ impl Config {
             no_stub_default,
             always_advertise_ail_routes,
             pcap_library,
+            dns_upstreams,
+            no_additional_a,
             fds,
         }))
     }

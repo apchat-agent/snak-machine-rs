@@ -591,3 +591,21 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Invalid/truncated inputs leave configuration unchanged. Existing DHCPv4
   binary search labels map directly into DNS names. State is within PLAN2's
   evidence/exchange ownership; no dependency. Driver wiring follows.
+- S09 Driver RED `682a62c` confirms the missing live UDP/configuration seams;
+  RED `1dc7981` updates the S07 saturation setup before code is restored.
+  GREEN passes **163 tests**. Actual DNS UDP packets travel from a stub
+  Ethernet peer through Driver/ND and an owned AIL source to the upstream,
+  then return with the required A Additional data. DHCPv6 Information-reply,
+  validated RA options, DHCPv4 configuration and carrier loss feed the resolver.
+  CLI supports repeated `--dns-upstream IP:PORT` and `--no-additional-a`.
+- `s07_saturated_service_work_does_not_starve_a_router_advertisement` previously
+  bound eight unused ports; now it fills the existing DNS port plus seven
+  temporary ports. All 32 queued datagrams and RA assertions remain. PLAN2
+  ADDENDUM 3 records the draft section 7 basis. The earlier 72 tests pass.
+- Transport state uses eight upstream UDP slots and a 64 KiB/256-entry reply
+  work queue. The client route retains the queried local address so replies
+  use that ready source address. These are planned transport/queue fields;
+  no dependency. DNS TCP/DoT and combined-buffer fixtures follow before the
+  service readiness and conformance ledger can close.
+- Needs privileged acceptance: real stub DNS clients, native AIL DNS servers,
+  DHCPv6 Information exchanges and RDNSS/DNSSL under carrier transitions.
