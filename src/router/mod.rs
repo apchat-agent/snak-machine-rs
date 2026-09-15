@@ -1,4 +1,5 @@
 pub mod pd;
+mod restart;
 mod routes;
 pub use routes::Route;
 mod owned;
@@ -43,6 +44,7 @@ pub struct OnLink {
     pub preferred: Lifetime,
 }
 pub struct LinkState {
+    pub up: bool,
     pub state: AilState,
     pub scheduler: RaScheduler,
     rs_count: u8,
@@ -59,6 +61,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub pd_hints: BTreeMap<Prefix, Lifetime>,
     pub pd: pd::PdClient,
     pub pd_prefixes: BTreeMap<Prefix, pd::OwnedPrefix>,
     pub withdrawals: BTreeMap<(Link, Prefix), u8>,
@@ -78,6 +81,7 @@ impl Router {
         fn link(now: Time, rng: &mut impl RandomSource) -> io::Result<LinkState> {
             let first = now + rng.sample(1000)?;
             Ok(LinkState {
+                up: true,
                 state: AilState::Unknown,
                 scheduler: RaScheduler::new(now, rng)?,
                 rs_count: 0,
@@ -88,6 +92,7 @@ impl Router {
             })
         }
         Ok(Self {
+            pd_hints: BTreeMap::new(),
             pd: pd::PdClient::default(),
             pd_prefixes: BTreeMap::new(),
             withdrawals: BTreeMap::new(),
@@ -126,6 +131,9 @@ impl Router {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Tx>> {
+        if !self.links[link.index()].up {
+            return Ok(vec![]);
+        }
         let Ok(e) = envelope(FrameKind::RawIpv6, packet) else {
             return Ok(vec![]);
         };
@@ -195,6 +203,27 @@ impl Router {
             );
             for o in &nd.options {
                 if let Some(p) = Pio::decode(o.bytes) {
+                    if link == Link::Ail {
+                        let had = self.pd_hints.contains_key(&p.prefix);
+                        let has = p.flags & 0x10 != 0 && p.preferred > 0 && p.preferred <= p.valid;
+                        if has {
+                            self.pd_hints
+                                .insert(p.prefix, Lifetime::from_secs(now, p.preferred));
+                        } else {
+                            self.pd_hints.remove(&p.prefix);
+                        }
+                        if had != has
+                            && !self.pd_hints.is_empty()
+                            && self
+                                .pd
+                                .exchange
+                                .as_ref()
+                                .is_none_or(|e| now.saturating_sub(e.started) >= 1000)
+                        {
+                            self.pd.refresh(6, now, rng)?;
+                        }
+                    }
+
                     if p.on_link() && p.prefix.routable() {
                         if link == Link::Stub
                             && !self.on_link.contains_key(&(link, p.prefix))
@@ -326,7 +355,10 @@ impl Router {
         }
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
-        self.pd.advance(now, rng)?;
+        if self.links[0].up {
+            self.pd.advance(now, rng)?;
+        }
+        self.pd_hints.retain(|_, l| l.live(now));
         self.sync_pd(now, rng)?;
         self.tick_dad(now);
         let mut out = self.tick_neighbors(now)?;
@@ -335,7 +367,9 @@ impl Router {
         });
         self.on_link.retain(|_, p| p.valid.live(now));
         for link in [Link::Stub, Link::Ail] {
-            if !self.address_ready(link, self.identity.link_local(link)) {
+            if !self.links[link.index()].up
+                || !self.address_ready(link, self.identity.link_local(link))
+            {
                 continue;
             }
             let fresh = (link == Link::Stub && !self.pd.selected(now).is_empty())
@@ -398,7 +432,8 @@ impl Router {
                 }
             }
         }
-        if self.address_ready(Link::Ail, self.identity.link_local(Link::Ail))
+        if self.links[0].up
+            && self.address_ready(Link::Ail, self.identity.link_local(Link::Ail))
             && (self.pd.state != pd::PdState::Dormant
                 || matches!(
                     self.state(Link::Stub),

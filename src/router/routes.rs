@@ -71,7 +71,7 @@ impl Router {
                 .is_some_and(|n| n.is_router && n.state != NeighborState::Failed)
     }
     pub fn default_lifetime(&self, now: Time) -> u16 {
-        if self.no_stub_default {
+        if !self.links[0].up || self.no_stub_default {
             return 0;
         }
         self.routes
@@ -83,6 +83,9 @@ impl Router {
     }
     pub(super) fn stub_routes(&self, now: Time) -> Vec<Rio> {
         let mut routes: BTreeMap<Prefix, u32> = BTreeMap::new();
+        if !self.links[0].up {
+            return vec![];
+        }
         if self.default_lifetime(now) == 0 || self.always_advertise_ail_routes {
             for ((l, p), v) in &self.on_link {
                 if *l == Link::Ail && v.valid.live(now) {

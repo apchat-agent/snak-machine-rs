@@ -405,6 +405,7 @@ impl PdClient {
 }
 impl Router {
     pub(super) fn sync_pd(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        let had_pd = !self.pd_prefixes.is_empty();
         let selected = self.pd.selected(now);
         let mut changed = false;
         for key in &selected {
@@ -454,7 +455,7 @@ impl Router {
             changed = true;
         }
         if selected.is_empty()
-            && !self.pd_prefixes.is_empty()
+            && had_pd
             && !matches!(
                 self.state(Link::Stub),
                 AilState::Advertising | AilState::BeginAdvertising

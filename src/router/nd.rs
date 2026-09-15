@@ -120,8 +120,10 @@ impl Router {
         let keys: Vec<_> = self
             .neighbors
             .iter()
-            .filter(|(_, n)| {
-                n.deadline.is_some_and(|t| now >= t) && n.state != NeighborState::Failed
+            .filter(|(key, n)| {
+                self.links[key.link.index()].up
+                    && n.deadline.is_some_and(|t| now >= t)
+                    && n.state != NeighborState::Failed
             })
             .map(|(k, _)| *k)
             .collect();
