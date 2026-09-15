@@ -430,3 +430,99 @@ fn s06_dhcp_conflict_sends_decline_and_waits_before_retry() {
     assert!(c.poll(12002, &mut r).unwrap().is_empty());
     assert_eq!(client_kind(&c.poll(12003, &mut r).unwrap()[0]), 1);
 }
+
+use snac_rs::{
+    io::{Direction, LinkInfo, MemoryIo, Received},
+    persist::{Identity, MemoryStore},
+    router::{Lifecycle, Router},
+    runtime::Driver,
+    wire::FrameKind,
+    Link,
+};
+fn driver(r: &mut impl RandomSource) -> Driver<MemoryIo> {
+    let id = Identity::load_or_create(&mut MemoryStore::default(), "dhcp4", r).unwrap();
+    let router = Router::new(id, 0, r).unwrap();
+    let info = [1, 2].map(|index| LinkInfo {
+        name: format!("memory{index}"),
+        index,
+        kind: FrameKind::Ethernet,
+        mtu: 1500,
+        mac: Some([2, 0, 0, 0, 0, index as u8]),
+    });
+    Driver::new(router, MemoryIo::new(info)).unwrap()
+}
+fn ether(packet: Vec<u8>) -> Vec<u8> {
+    let mut b = vec![255; 6];
+    b.extend([2, 0, 0, 0, 0, 99, 8, 0]);
+    b.extend(packet);
+    b
+}
+fn receive(d: &mut Driver<MemoryIo>, link: Link, b: Vec<u8>, now: u64, r: &mut impl RandomSource) {
+    d.accept(
+        Received {
+            link,
+            bytes: b,
+            kind: FrameKind::Ethernet,
+            direction: Direction::Ingress,
+        },
+        now,
+        r,
+    )
+    .unwrap();
+}
+#[test]
+fn s06_driver_acquires_ipv4_through_actual_ethernet_and_clears_on_carrier_loss() {
+    let mut r = ScriptedRandom::new([]);
+    let mut d = driver(&mut r);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    let discover =
+        d.io.output
+            .iter()
+            .find(|(l, b)| *l == Link::Ail && b.len() > 300 && b[12..14] == [8, 0])
+            .expect("Driver must emit DHCPDISCOVER on AIL")
+            .1
+            .clone();
+    let xid = u32::from_be_bytes(discover[46..50].try_into().unwrap());
+    let offer = ether(reply(&body(2, xid, &parameters())));
+    receive(&mut d, Link::Stub, offer.clone(), 1001, &mut r);
+    receive(&mut d, Link::Ail, offer, 1001, &mut r);
+    d.step(2001, &mut r).unwrap();
+    receive(
+        &mut d,
+        Link::Ail,
+        ether(reply(&body(5, xid, &parameters()))),
+        2002,
+        &mut r,
+    );
+    assert!(!d.ipv4.ready());
+    for now in (2100..=10000).step_by(100) {
+        d.step(now, &mut r).unwrap();
+    }
+    assert_eq!(d.ipv4.address, Some((ip("192.0.2.10"), 24)));
+    assert_eq!(d.ipv4.next_hop(ip("198.51.100.1")), Some(ip("192.0.2.1")));
+    assert!(d
+        .io
+        .output
+        .iter()
+        .all(|(link, b)| *link == Link::Ail || b[12..14] == [0x86, 0xdd]));
+    d.io.up[0] = false;
+    d.step(10001, &mut r).unwrap();
+    assert!(!d.ipv4.ready());
+    d.io.up[0] = true;
+    d.step(10002, &mut r).unwrap();
+    assert!(!d.ipv4.ready());
+}
+#[test]
+fn s06_driver_acquisition_transmit_failure_keeps_readiness_false_and_stops_cleanly() {
+    let mut r = ScriptedRandom::new([]);
+    let mut d = driver(&mut r);
+    d.start(0, &mut r).unwrap();
+    d.io.fail_send = true;
+    d.step(1000, &mut r).unwrap();
+    assert!(!d.ipv4.ready());
+    assert!(matches!(
+        d.router.lifecycle,
+        Lifecycle::Stopping | Lifecycle::Stopped
+    ));
+}
