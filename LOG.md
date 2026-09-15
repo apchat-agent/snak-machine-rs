@@ -645,3 +645,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Draft sections 7/5.5.2 and PLAN2 ADDENDUM 4 justify requesting DHCPv6 DNS
   servers/search domains during PD. No new field or dependency. Socket
   BufferFull now maps to WouldBlock, which is the existing queue retry signal.
+- S09 local-view RED `a1aa4f7`: `cargo test` fails on the absent local-zone
+  policy and authoritative response wrapper. GREEN passes **174 tests**.
+  The shared canonical-name/A augmentation and size logic serves authoritative
+  responses using a supplied local lookup, without entering the learned cache.
+  Local zone policy is bounded to eight configured zone names plus the fixed
+  service.arpa rule; overflow preserves existing policy.
+- Queries for service.arpa and every subdomain remain local, including unknown
+  subdomains. DS with DO preserves the narrow RFC 9665 section 8.4 forwarding
+  exception needed for DNSSEC delegation denial. Configured owned zones cannot
+  leak into forwarding. Actual SRP/Discovery Proxy view owners are installed
+  in S15/S16. Zone names are the planned authority dispatch state; no dependency.

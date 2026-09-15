@@ -85,6 +85,7 @@ struct Cache {
 }
 pub struct Resolver {
     additional_a: bool,
+    local_zones: Vec<Name>,
     upstreams: Vec<SocketAddr>,
     pending: BTreeMap<u64, Pending>,
     cache: BTreeMap<Vec<u8>, Cache>,
@@ -95,12 +96,55 @@ impl Resolver {
     pub fn new(additional_a: bool) -> Self {
         Self {
             additional_a,
+            local_zones: vec![],
             upstreams: vec![],
             pending: BTreeMap::new(),
             cache: BTreeMap::new(),
             next: 0,
             rates: BTreeMap::new(),
         }
+    }
+    pub fn set_local_zones(&mut self, zones: &[Name]) -> io::Result<()> {
+        if zones.len() > 8 || zones.iter().any(|z| z.labels().is_empty()) {
+            return Err(invalid());
+        }
+        self.local_zones = zones.to_vec();
+        self.cache.clear();
+        Ok(())
+    }
+    /// An authoritative view supplies its A lookup without entering the forwarding cache.
+    pub fn answer_local(
+        &self,
+        client: Client,
+        query: &[u8],
+        answer: &[u8],
+        mut lookup: impl FnMut(&Question) -> io::Result<Vec<u8>>,
+    ) -> io::Result<Action> {
+        let q = Message::parse(query, Context::Unicast)?;
+        let m = Message::parse(answer, Context::Unicast)?;
+        if q.questions.len() != 1
+            || q.flags & 0xf800 != 0
+            || m.flags & 0xf800 != 0x8000
+            || m.questions != q.questions
+        {
+            return Err(invalid());
+        }
+        let mut bytes = answer.to_vec();
+        if let Some(aq) = additional_question(&m, &q.questions[0], self.additional_a) {
+            if let Ok(a) = lookup(&aq).and_then(|b| Message::parse(&b, Context::Unicast)) {
+                if a.flags & 0xf800 == 0x8000 && a.questions == [aq.clone()] {
+                    bytes = augment(&bytes, &a, &aq.name).unwrap_or(bytes);
+                }
+            }
+        }
+        deliver(
+            Waiter {
+                limit: client_limit(&client, &q),
+                client,
+                id: q.id,
+            },
+            &bytes,
+        )
     }
     pub fn set_additional_a(&mut self, enabled: bool) {
         if self.additional_a != enabled {
@@ -228,6 +272,21 @@ impl Resolver {
             client,
             id: m.id,
         };
+        let service_arpa = in_zone(&m.questions[0].name, &"service.arpa.".parse().unwrap());
+        let ds_exception = service_arpa
+            && m.questions[0].kind == 43
+            && m.additional
+                .iter()
+                .any(|r| r.kind == 41 && r.ttl & 0x8000 != 0);
+        if !ds_exception
+            && (service_arpa
+                || self
+                    .local_zones
+                    .iter()
+                    .any(|z| in_zone(&m.questions[0].name, z)))
+        {
+            return Ok(vec![deliver(waiter, &failure(&m, 3)?)?]);
+        }
         self.cache.retain(|_, c| c.expires > now);
         if let Some(c) = self.cache.get_mut(&key) {
             c.last = now;
@@ -344,20 +403,9 @@ impl Resolver {
             let b = augment(&base, &m, &p.question.name).unwrap_or(base);
             return self.finish(p, b, now);
         }
-        if self.additional_a
-            && p.question.kind == 28
-            && rcode(&m) != 3
-            && !m.answers.iter().any(|r| r.kind == 28)
-        {
-            let Ok(name) = canonical(&m, &p.question.name) else {
-                return self.finish(p, bytes.to_vec(), now);
-            };
+        if let Some(aq) = additional_question(&m, &p.question, self.additional_a) {
             let mut q = Message::new(0, 0x100 | (p.original.flags & 0x10));
-            q.questions.push(Question {
-                name,
-                kind: 1,
-                class: p.question.class,
-            });
+            q.questions.push(aq);
             q.additional = p.original.additional.clone();
             let aq = self.make_query(&q.encode()?, server, rng)?;
             p.query = aq.clone();
@@ -629,4 +677,24 @@ fn rcode(m: &Message) -> u16 {
             .find(|r| r.kind == 41)
             .map_or(0, |r| (r.ttl >> 24) as u16)
             << 4)
+}
+
+fn in_zone(name: &Name, zone: &Name) -> bool {
+    let n = name.labels();
+    let z = zone.labels();
+    n.len() >= z.len()
+        && n[n.len() - z.len()..]
+            .iter()
+            .zip(z)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+fn additional_question(m: &Message, q: &Question, enabled: bool) -> Option<Question> {
+    if !enabled || q.kind != 28 || rcode(m) == 3 || m.answers.iter().any(|r| r.kind == 28) {
+        return None;
+    }
+    Some(Question {
+        name: canonical(m, &q.name).ok()?,
+        kind: 1,
+        class: q.class,
+    })
 }
