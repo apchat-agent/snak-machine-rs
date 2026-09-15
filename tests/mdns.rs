@@ -172,3 +172,210 @@ fn s13_mdns_large_single_records_respect_nine_thousand_byte_ip_limit() {
     let _ = Context::Mdns;
     let _: IpAddr = "fe80::1".parse().unwrap();
 }
+
+fn a_record(name: &str, last: u8, ttl: u32, unique: bool) -> Record {
+    Record {
+        name: name.parse().unwrap(),
+        kind: 1,
+        class: if unique { 0x8001 } else { 1 },
+        ttl,
+        data: Rdata::A([192, 0, 2, last]),
+    }
+}
+fn response(records: Vec<Record>) -> Message {
+    let mut m = Message::new(99, 0x8000); // AA and ID have no receive significance.
+    m.answers = records;
+    m
+}
+fn question(name: &str, kind: u16) -> Question {
+    Question {
+        name: name.parse().unwrap(),
+        kind,
+        class: 1,
+    }
+}
+#[test]
+fn s13_cache_flush_bursts_goodbyes_rescue_and_expiry_use_one_second_grace() {
+    use snac_rs::{mdns::cache::Cache, time::ScriptedRandom};
+    let mut c = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    let q = question("lamp.local.", 1);
+    c.receive(
+        &response(vec![a_record("lamp.local.", 1, 120, true)]),
+        0,
+        &mut rng,
+    )
+    .unwrap();
+    c.receive(
+        &response(vec![a_record("LAMP.local.", 2, 120, true)]),
+        2000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(c.answers(&q, 2999).len(), 2);
+    c.receive(
+        &response(vec![a_record("lamp.local.", 3, 120, true)]),
+        2500,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(
+        c.answers(&q, 3500).len(),
+        2,
+        "recent members of a burst survive flush"
+    );
+    c.receive(
+        &response(vec![a_record("lamp.local.", 2, 0, true)]),
+        4000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(c.answers(&q, 4999).len(), 2);
+    c.receive(
+        &response(vec![a_record("lamp.local.", 2, 10, true)]),
+        4500,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(c.answers(&q, 5000).len(), 2, "fresh data rescues goodbye");
+    assert_eq!(
+        c.answers(&q, 5500).len(),
+        1,
+        "old other member expires after flush"
+    );
+    assert_eq!(c.answers(&q, 14500).len(), 0);
+    c.expire(14500);
+    assert_eq!(c.counts(), (0, 0, 0));
+    c.receive(
+        &response(vec![a_record("lamp.local.", 8, 0, true)]),
+        15000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(
+        c.counts(),
+        (0, 0, 0),
+        "unsolicited goodbye cannot create cache state"
+    );
+}
+#[test]
+fn s13_cache_never_learns_queries_pseudorecords_or_unknown_pointer_data_and_tracks_nsec() {
+    use snac_rs::{mdns::cache::Cache, time::ScriptedRandom};
+    let mut c = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut m = response(vec![a_record("lamp.local.", 1, 120, false)]);
+    m.flags = 0;
+    c.receive(&m, 0, &mut rng).unwrap();
+    assert_eq!(c.counts(), (0, 0, 0));
+    m.flags = 0x8400;
+    m.answers.clear();
+    m.additional.push(Record {
+        name: Name::root(),
+        kind: 41,
+        class: 4096,
+        ttl: 120,
+        data: Rdata::Opt(vec![]),
+    });
+    m.additional.push(Record {
+        name: "lamp.local.".parse().unwrap(),
+        kind: 65000,
+        class: 1,
+        ttl: 120,
+        data: Rdata::Opaque(vec![0xc0, 12]),
+    });
+    c.receive(&m, 0, &mut rng).unwrap();
+    assert_eq!(c.counts(), (0, 0, 0));
+    let mut n = a_record("lamp.local.", 1, 120, true);
+    n.kind = 47;
+    n.data = Rdata::Nsec {
+        next: n.name.clone(),
+        bitmap: vec![0, 6, 0x40, 0, 0, 0, 0, 1],
+    };
+    c.receive(&response(vec![n]), 0, &mut rng).unwrap();
+    assert!(c.negative(&question("LAMP.local.", 28), 0));
+    assert!(!c.negative(&question("lamp.local.", 1), 0));
+    assert!(!c.negative(&question("other.local.", 28), 0));
+    assert!(!c.negative(&question("lamp.local.", 28), 120000));
+}
+#[test]
+fn s13_cache_bounds_rrsets_bytes_and_lru_without_losing_recent_lookup() {
+    use snac_rs::{mdns::cache::Cache, time::ScriptedRandom};
+    let mut c = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    for i in 0..1024 {
+        c.receive(
+            &response(vec![a_record(&format!("n{i}.local."), 1, 120, false)]),
+            i,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!(c.counts().0, 1024);
+    c.answers(&question("n0.local.", 1), 1025);
+    c.receive(
+        &response(vec![a_record("new.local.", 1, 120, false)]),
+        1026,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(c.counts().0, 1024);
+    assert_eq!(c.answers(&question("n0.local.", 1), 1027).len(), 1);
+    assert!(c.answers(&question("n1.local.", 1), 1027).is_empty());
+    let mut c = Cache::default();
+    for i in 0..1100 {
+        let mut r = a_record(&format!("t{i}.local."), 1, 120, false);
+        r.kind = 16;
+        r.data = Rdata::Txt(vec![vec![42; 250]; 30]);
+        c.receive(&response(vec![r]), i, &mut rng).unwrap();
+        assert!(c.counts().2 <= 4 * 1024 * 1024);
+    }
+    assert!(
+        c.counts().0 < 1024,
+        "byte budget is exercised independently"
+    );
+    c.expire(200000);
+    assert_eq!(c.counts(), (0, 0, 0));
+}
+#[test]
+fn s13_cache_passive_failure_observation_expires_stale_records() {
+    use snac_rs::{mdns::cache::Cache, time::ScriptedRandom};
+    let mut c = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    let q = question("lamp.local.", 1);
+    c.receive(
+        &response(vec![a_record("lamp.local.", 1, 120, false)]),
+        0,
+        &mut rng,
+    )
+    .unwrap();
+    c.observe_question(&q, &[], 1000);
+    c.observe_question(&q, &[], 2000);
+    assert_eq!(c.answers(&q, 10999).len(), 1);
+    assert!(c.answers(&q, 11000).is_empty());
+    c.receive(
+        &response(vec![a_record("lamp.local.", 1, 120, false)]),
+        12000,
+        &mut rng,
+    )
+    .unwrap();
+    c.observe_question(&q, &[], 13000);
+    c.observe_question(&q, &[], 14000);
+    c.receive(
+        &response(vec![a_record("lamp.local.", 1, 120, false)]),
+        15000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(
+        c.answers(&q, 23000).len(),
+        1,
+        "response cancels passive failure"
+    );
+    c.observe_question(&q, &[a_record("lamp.local.", 1, 120, false)], 24000);
+    c.observe_question(&q, &[a_record("lamp.local.", 1, 120, false)], 25000);
+    assert_eq!(
+        c.answers(&q, 35000).len(),
+        1,
+        "known-answer suppression explains missing response"
+    );
+}
