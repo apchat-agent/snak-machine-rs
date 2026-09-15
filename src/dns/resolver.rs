@@ -405,6 +405,13 @@ impl Resolver {
         } else {
             None
         };
+        let life = life.map(|ttl| {
+            records
+                .iter()
+                .map(|r| r.ttl)
+                .min()
+                .map_or(ttl, |r| r.min(ttl))
+        });
         let Some(life) = life.filter(|t| *t > 0) else {
             return Ok(());
         };

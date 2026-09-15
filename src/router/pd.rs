@@ -29,6 +29,7 @@ pub struct Exchange {
 #[derive(Debug)]
 pub struct PdClient {
     pub sol_max_rt_seen: Option<Option<u32>>,
+    pub reserved_xid: Option<[u8; 3]>,
     pub refresh_after: Time,
     pub fallback_at: Option<Time>,
     pub leases: BTreeMap<LeaseKey, Lease>,
@@ -43,6 +44,7 @@ impl Default for PdClient {
     fn default() -> Self {
         Self {
             sol_max_rt_seen: None,
+            reserved_xid: None,
             refresh_after: 0,
             fallback_at: None,
             leases: BTreeMap::new(),
@@ -56,6 +58,9 @@ impl Default for PdClient {
     }
 }
 impl PdClient {
+    pub fn reserve_xid(&mut self, xid: Option<[u8; 3]>) {
+        self.reserved_xid = xid;
+    }
     pub fn start(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         self.offers.clear();
         self.sol_max_rt_seen = None;
@@ -74,6 +79,9 @@ impl PdClient {
         self.refresh_after = now.saturating_add(1000);
         let mut xid = [0; 3];
         rng.fill(&mut xid)?;
+        if self.reserved_xid == Some(xid) {
+            xid[2] ^= 1;
+        }
         self.exchange = Some(Exchange {
             kind,
             xid,

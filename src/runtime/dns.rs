@@ -31,6 +31,9 @@ impl<I: PacketIo> Driver<I> {
                         rng,
                     )?);
                 }
+                if let Some(ex) = &self.router.pd.exchange {
+                    self.dns_info.as_mut().unwrap().avoid_xid(ex.xid, now);
+                }
                 if let Some(p) = self.dns_info.as_mut().unwrap().poll(now, source, rng)? {
                     self.dispatch(
                         vec![Tx {
@@ -43,6 +46,9 @@ impl<I: PacketIo> Driver<I> {
                 }
             }
         }
+        self.router
+            .pd
+            .reserve_xid(self.dns_info.as_ref().and_then(|c| c.xid()));
         self.dns.set_upstreams(&self.dns_discovery.endpoints(now))
     }
     pub(super) fn receive_dns_configuration(

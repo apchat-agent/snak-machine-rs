@@ -623,3 +623,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   planned DNS framing/output buffers within the 128 KiB connection budget;
   all transport regression assertions still pass. Round-robin client service
   and eight upstream TCP slots use the existing connection limit. No dependency.
+- S09 negative/cache/XID RED `c81cdb2` and `a0ed98a` fail on the absent
+  shared DHCP transaction reservation. GREEN passes **169 tests** and
+  all-feature clippy. Information and PD exchanges reserve each other's live
+  24-bit IDs, including all-zero injected randomness, so a DNS-only Reply
+  cannot terminate an unrelated PD exchange. `reserved_xid` on each client
+  is an extra optional field beyond PLAN2's literal layout, justified by
+  their shared UDP port and DUID; it is transient and not journaled.
+- An augmented negative cache entry now expires at the shortest participating
+  record TTL, including Additional A data. Tests also preserve opaque original
+  RDATA across forwarding/cache decay, enforce UDP TC size fallback, and
+  cancel only the waiters belonging to a disconnected TCP client. No dependency.

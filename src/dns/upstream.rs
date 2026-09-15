@@ -307,6 +307,7 @@ pub struct InformationClient {
     next: u64,
     interval: u64,
     max: u64,
+    reserved_xid: Option<[u8; 3]>,
 }
 impl InformationClient {
     pub fn new(duid: Vec<u8>, now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -322,7 +323,22 @@ impl InformationClient {
             next: now.saturating_add(rng.sample(1000)?),
             interval: 0,
             max: 3600000,
+            reserved_xid: None,
         })
+    }
+    pub fn xid(&self) -> Option<[u8; 3]> {
+        self.xid
+    }
+    pub fn avoid_xid(&mut self, xid: [u8; 3], now: u64) {
+        self.reserved_xid = Some(xid);
+        if self.xid == Some(xid) {
+            let mut other = xid;
+            other[2] ^= 1;
+            self.xid = Some(other);
+            self.next = now;
+            self.started = now;
+            self.interval = 0;
+        }
     }
     pub fn next_deadline(&self) -> u64 {
         self.next
@@ -340,6 +356,9 @@ impl InformationClient {
         if self.xid.is_none() {
             let mut xid = [0; 3];
             rng.fill(&mut xid)?;
+            if self.reserved_xid == Some(xid) {
+                xid[2] ^= 1;
+            }
             self.xid = Some(xid);
             self.started = now;
             self.interval = 0;
