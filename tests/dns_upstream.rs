@@ -196,3 +196,12 @@ fn s09_information_request_retransmission_reply_refresh_and_wrong_link() {
         .unwrap()
         .is_some());
 }
+
+#[test]
+fn s09_information_xid_is_distinct_from_concurrent_pd() {
+    let mut rng = ScriptedRandom::new([]);
+    let mut c = InformationClient::new(vec![0, 3, 0, 1, 2, 0, 0, 0, 0, 1], 0, &mut rng).unwrap();
+    c.avoid_xid([0; 3], 0);
+    let p = c.poll(0, common::ip("fe80::2"), &mut rng).unwrap().unwrap();
+    assert_ne!(&p[49..52], &[0; 3]);
+}

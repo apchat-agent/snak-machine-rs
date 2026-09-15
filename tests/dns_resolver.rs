@@ -535,3 +535,89 @@ fn s09_rate_table_is_bounded_and_expires() {
         .submit(client(33), &query("rate.test.", 1, 1), 1000, &mut rng)
         .is_ok());
 }
+
+#[test]
+fn s09_augmented_negative_cache_expires_at_shortest_record_ttl() {
+    let (mut r, mut rng) = setup();
+    let bytes = query("short.test.", 28, 1);
+    let q = upstream(r.submit(client(1), &bytes, 0, &mut rng).unwrap());
+    let mut m = Message::parse(&response(&q, 0, None), Context::Unicast).unwrap();
+    m.authority.push(Record {
+        name: "test.".parse().unwrap(),
+        kind: 6,
+        class: 1,
+        ttl: 60,
+        data: Rdata::Soa {
+            mname: "ns.test.".parse().unwrap(),
+            rname: "mail.test.".parse().unwrap(),
+            serial: 1,
+            refresh: 10,
+            retry: 10,
+            expire: 100,
+            minimum: 60,
+        },
+    });
+    let aq = upstream(receive(&mut r, &q, &m.encode().unwrap(), 1, &mut rng));
+    let mut a = Message::parse(&response(&aq, 0, Some(1)), Context::Unicast).unwrap();
+    a.answers[0].ttl = 2;
+    receive(&mut r, &aq, &a.encode().unwrap(), 2, &mut rng);
+    assert!(
+        matches!(
+            r.submit(client(1), &bytes, 3002, &mut rng).unwrap()[0],
+            Action::Upstream(_)
+        ),
+        "expired Additional data cannot outlive its own TTL"
+    );
+}
+#[test]
+fn s09_udp_size_fallback_and_opaque_dnssec_preservation() {
+    let (mut r, mut rng) = setup();
+    let q = upstream(
+        r.submit(client(1), &query("large.test.", 16, 44), 0, &mut rng)
+            .unwrap(),
+    );
+    let mut m = Message::parse(&response(&q, 0, None), Context::Unicast).unwrap();
+    m.answers.push(Record {
+        name: m.questions[0].name.clone(),
+        kind: 16,
+        class: 1,
+        ttl: 60,
+        data: Rdata::Txt(vec![vec![42; 250]; 4]),
+    });
+    let b = reply(receive(&mut r, &q, &m.encode().unwrap(), 1, &mut rng));
+    assert!(b.len() <= 512);
+    assert_ne!(
+        Message::parse(&b, Context::Unicast).unwrap().flags & 0x200,
+        0
+    );
+    let q = upstream(
+        r.submit(client(1), &query("opaque.test.", 1, 45), 2, &mut rng)
+            .unwrap(),
+    );
+    let mut wire = response(&q, 0, Some(1));
+    wire[11] = 1;
+    wire.extend([0xc0, 12, 0xfd, 0xe8, 0, 1, 0, 0, 0, 60, 0, 2, 0xc0, 12]);
+    let b = reply(receive(&mut r, &q, &wire, 3, &mut rng));
+    assert_eq!(&b[4..], &wire[4..]);
+    let cached = reply(
+        r.submit(client(1), &query("opaque.test.", 1, 46), 1003, &mut rng)
+            .unwrap(),
+    );
+    assert_eq!(&cached[cached.len() - 2..], &[0xc0, 12]);
+    assert_eq!(cached.len(), wire.len());
+}
+#[test]
+fn s09_tcp_disconnect_cancels_only_its_waiters() {
+    let (mut r, mut rng) = setup();
+    let q = query("shared.test.", 1, 1);
+    r.submit(Client::tcp(client(1).address, 11), &q, 0, &mut rng)
+        .unwrap();
+    r.submit(Client::tcp(client(2).address, 12), &q, 0, &mut rng)
+        .unwrap();
+    assert_eq!(r.waiter_count(), 2);
+    r.cancel_connection(11);
+    assert_eq!(r.waiter_count(), 1);
+    assert_eq!(r.pending_count(), 1);
+    r.cancel_connection(12);
+    assert_eq!(r.pending_count(), 0);
+}
