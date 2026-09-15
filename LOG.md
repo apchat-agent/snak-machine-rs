@@ -904,3 +904,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   The codec consumes complete reassembled IP datagrams and emits compressed DNS
   with checked IPv4/IPv6 headers and TTL/hop limit 255. Unicast-response source
   checks and cache/query logic belong to the engine below. No field/dependency.
+- S13 cache RED `31d02c0`: full `cargo test` fails on the absent cache.
+  GREEN passes **222 tests** and all-feature clippy. Independent fixtures cover
+  one-second cache-flush/goodbye grace, burst protection, rescue, TTL expiry,
+  case-insensitive RRsets, NSEC denial and passive failure observation (RFC 6762
+  sections 7 and 10). Queries, pseudo-RRs and unsafe opaque RDATA never enter
+  the learned cache. LRU tests fill 1024 RRsets, then independently exhaust the
+  four-MiB bound while preserving recently read records.
+- Cache receive/expiry/last-use and passive-observation timestamps implement
+  the planned coherency rules. Conservative byte charges include decoded names,
+  TXT vectors, key/index storage and response work copies; shrinking expired
+  vectors releases retained allocation. No dependency. Active querying follows.
