@@ -539,3 +539,43 @@ fn review_08_incoming_ra_during_dad_never_uses_tentative_source() {
         .iter()
         .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
 }
+
+use snac_rs::persist::{FileStore, StateStore};
+#[test]
+fn review_10_checkpoint_recovers_abandoned_temp_without_losing_identity() {
+    let dir = std::env::temp_dir().join(format!("snac-review-10-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state");
+    let id = router().identity;
+    {
+        FileStore::open(&path)
+            .unwrap()
+            .save(&id.encode().unwrap())
+            .unwrap();
+    }
+    std::fs::write(path.with_extension("tmp"), b"interrupted write").unwrap();
+    let mut store = FileStore::open(&path).unwrap();
+    assert_eq!(
+        Identity::decode(&store.load().unwrap().unwrap()).unwrap(),
+        id
+    );
+    store.save(&id.encode().unwrap()).unwrap();
+    assert_eq!(
+        Identity::decode(&store.load().unwrap().unwrap()).unwrap(),
+        id
+    );
+    drop(store);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+#[test]
+fn review_10_state_lock_filename_does_not_alias_lock_inode() {
+    let dir = std::env::temp_dir().join(format!("snac-review-10-lock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("state.lock");
+    let mut first = FileStore::open(&path).unwrap();
+    assert_eq!(first.load().unwrap(), None);
+    first.save(b"identity").unwrap();
+    assert!(FileStore::open(&path).is_err());
+    drop(first);
+    std::fs::remove_dir_all(dir).unwrap();
+}
