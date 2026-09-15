@@ -700,7 +700,12 @@ impl Router {
                         preferred: Lifetime::from_secs(now, p.preferred),
                     },
                 );
-                if !matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped) {
+                if !matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped)
+                    && !self
+                        .owned
+                        .iter()
+                        .any(|((l, _), a)| *l == tx.link && a.prefix == Some(p.prefix))
+                {
                     let address = self.identity.address(tx.link, p.prefix);
                     self.owned
                         .entry((tx.link, address))

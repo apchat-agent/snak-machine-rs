@@ -7,6 +7,15 @@ impl Router {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
+        // An exhausted identity requires operator restart, not an IFF_UP poll.
+        if up
+            && self
+                .owned
+                .iter()
+                .any(|((l, _), a)| *l == link && a.state == DadState::Failed)
+        {
+            return Ok(());
+        }
         if self.links[link.index()].up == up {
             return Ok(());
         }

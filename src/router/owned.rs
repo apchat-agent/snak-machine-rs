@@ -104,7 +104,10 @@ impl Router {
         };
         if own.state == DadState::Tentative {
             if own.attempts >= 3 {
-                self.owned.get_mut(&(link, target)).unwrap().state = DadState::Failed;
+                let own = self.owned.get_mut(&(link, target)).unwrap();
+                own.state = DadState::Failed;
+                own.deadline = None;
+                self.set_link(link, false, now, rng)?;
                 return Err(io::Error::other("DAD conflict after three identities"));
             }
             self.owned.remove(&(link, target));
