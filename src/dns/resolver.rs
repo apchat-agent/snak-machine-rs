@@ -131,6 +131,18 @@ impl Resolver {
     pub fn queries(&self) -> impl Iterator<Item = &UpstreamQuery> {
         self.pending.values().map(|p| &p.query)
     }
+    pub fn cancel_connection(&mut self, id: usize) {
+        for p in self.pending.values_mut() {
+            p.waiters.retain(|w| w.client.connection != Some(id));
+        }
+        self.pending.retain(|_, p| !p.waiters.is_empty());
+    }
+    pub fn connection_pending(&self, id: usize) -> bool {
+        self.pending
+            .values()
+            .flat_map(|p| &p.waiters)
+            .any(|w| w.client.connection == Some(id))
+    }
     pub fn rate_entries(&self) -> usize {
         self.rates.len()
     }

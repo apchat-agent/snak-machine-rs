@@ -13,7 +13,7 @@ use smoltcp::{
 use std::{collections::BTreeMap, io, net::IpAddr};
 const CONNECTIONS: usize = 64;
 const LISTENERS: usize = 8;
-const TCP_BUFFER: usize = 65536;
+const TCP_BUFFER: usize = 8192;
 const UDP_BUFFER: usize = 4096;
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid service IP packet")
@@ -259,6 +259,36 @@ impl Stack {
             c.last_io = self.now;
         }
         b
+    }
+    pub fn receive_tcp_limit(&mut self, id: usize, limit: usize) -> Vec<u8> {
+        let Some(c) = self.connections.get_mut(&id) else {
+            return vec![];
+        };
+        let b = self
+            .sockets
+            .get_mut::<tcp::Socket>(c.handle)
+            .recv(|bytes| {
+                let n = bytes.len().min(limit);
+                (n, bytes[..n].to_vec())
+            })
+            .unwrap_or_default();
+        if !b.is_empty() {
+            c.last_io = self.now;
+        }
+        b
+    }
+    pub fn tcp_eof(&self, id: usize) -> bool {
+        self.connections.get(&id).is_none_or(|c| {
+            let s = self.sockets.get::<tcp::Socket>(c.handle);
+            matches!(
+                s.state(),
+                tcp::State::CloseWait
+                    | tcp::State::LastAck
+                    | tcp::State::Closing
+                    | tcp::State::TimeWait
+                    | tcp::State::Closed
+            ) && s.recv_queue() == 0
+        })
     }
     pub fn close(&mut self, id: usize) {
         if let Some(c) = self.connections.get(&id) {

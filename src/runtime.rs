@@ -177,6 +177,7 @@ impl<I: PacketIo> Driver<I> {
             crate::service_io::stack::Stack::new(now, rng)?,
         ]);
         self.stacks.as_mut().unwrap()[1].listen_udp(53)?;
+        self.stacks.as_mut().unwrap()[1].listen_tcp(53)?;
         Ok(())
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {

@@ -609,3 +609,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   service readiness and conformance ledger can close.
 - Needs privileged acceptance: real stub DNS clients, native AIL DNS servers,
   DHCPv6 Information exchanges and RDNSS/DNSSL under carrier transitions.
+- S09 TCP RED `5e5c8e6`: `cargo test` fails at the missing production DNS
+  TCP listener. GREEN passes **164 tests** and all-feature clippy. A stub
+  TCP client sends split/coalesced pipelined queries through Driver; the
+  resolver retries a truncated upstream UDP reply over TCP and returns the
+  exact 45 KiB TXT answer through repeated short writes. Replies retain IDs
+  even when completing out of order. Upstream/downstream framing and socket
+  cleanup are bounded; closed client connections cancel their waiters.
+- Surprise: smoltcp's `may_recv` is false during SYN-RECEIVED too. Treating
+  that as EOF closed the response direction before the handshake finished.
+  EOF now requires a closing state and an empty receive queue. No test was
+  weakened. TCP rings shrink to 8 KiB per direction to leave room for the
+  planned DNS framing/output buffers within the 128 KiB connection budget;
+  all transport regression assertions still pass. Round-robin client service
+  and eight upstream TCP slots use the existing connection limit. No dependency.
