@@ -779,3 +779,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   deletions, SRV/TXT relationships, implicit/explicit KEY mismatch, key lengths,
   unsupported algorithms, lease lengths/duplicates and eight service groups
   plus one. Structural rejections leave all eight crypto credits available.
+- S11 dispatch RED `e576cce` confirms the missing signed UPDATE handoff and
+  shared crypto credit. GREEN passes **197 tests** and all-feature clippy.
+  UDP/plain TCP/DoT use the same validator; the live memory-Ethernet TLS
+  pipeline returns REFUSED for an invalid SIG(0). Valid updates produce a
+  registration action for the S12 transaction owner, with SERVFAIL while that
+  owner is unavailable, so no uncommitted registration is acknowledged.
+- UPDATE now shares the bounded client-rate table, validates source addresses,
+  and consumes at most eight crypto jobs per service poll. Native startup
+  supplies a wall/monotonic anchor for signature validity. New fields retain
+  that planned time conversion, validator policy and per-poll crypto budget;
+  no dependency. S11 is complete. Retained-key lookup and transactional success
+  are wired with the registry in S12, before service publication can begin.

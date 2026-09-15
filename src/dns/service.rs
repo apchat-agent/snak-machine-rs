@@ -35,6 +35,19 @@ impl Service {
     }
     pub fn queue(&mut self, actions: Vec<Action>) {
         for a in actions {
+            let a = if let Action::Register { client, update } = a {
+                // S12 installs the durable registry here. Never acknowledge data
+                // as committed while this transaction owner is unavailable.
+                super::resolver::registration_reply(
+                    client,
+                    update.id,
+                    Some(update.zone),
+                    crate::srp::wire::Error::ServFail,
+                )
+                .unwrap()
+            } else {
+                a
+            };
             if let Action::Reply { client, bytes } = a {
                 if let Some(id) = client.connection {
                     if let Some(stream) = self.incoming.get_mut(&id) {
@@ -68,6 +81,7 @@ impl Service {
         now: u64,
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
+        r.reset_crypto_budget();
         self.queue(r.tick(now, rng)?);
         self.poll_tcp(r, stacks, now, rng)?;
         let old: Vec<_> = self

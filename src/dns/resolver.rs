@@ -1,6 +1,9 @@
 //! Bounded forwarding transactions. Packet and stream adapters execute the returned actions.
 use super::wire::{Context, Message, Name, Question, Rdata, Record};
-use crate::time::RandomSource;
+use crate::{
+    srp::wire::{CryptoBudget, Error as SrpError, Update, Validator},
+    time::RandomSource,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -49,6 +52,7 @@ pub struct UpstreamQuery {
 #[derive(Clone, Debug)]
 pub enum Action {
     Upstream(UpstreamQuery),
+    Register { client: Client, update: Update },
     Reply { client: Client, bytes: Vec<u8> },
 }
 struct Waiter {
@@ -91,6 +95,9 @@ pub struct Resolver {
     cache: BTreeMap<Vec<u8>, Cache>,
     next: u64,
     rates: BTreeMap<IpAddr, (u64, u8)>,
+    srp_clock: (u64, u64),
+    crypto: CryptoBudget,
+    srp_validator: Validator,
 }
 impl Resolver {
     pub fn new(additional_a: bool) -> Self {
@@ -102,7 +109,16 @@ impl Resolver {
             cache: BTreeMap::new(),
             next: 0,
             rates: BTreeMap::new(),
+            srp_clock: (0, 0),
+            crypto: CryptoBudget::default(),
+            srp_validator: Validator::new(&[]).unwrap(),
         }
+    }
+    pub fn set_srp_clock(&mut self, wall: u64, monotonic: u64) {
+        self.srp_clock = (wall, monotonic);
+    }
+    pub fn reset_crypto_budget(&mut self) {
+        self.crypto = CryptoBudget::default();
     }
     pub fn set_local_zones(&mut self, zones: &[Name]) -> io::Result<()> {
         if zones.len() > 8 || zones.iter().any(|z| z.labels().is_empty()) {
@@ -218,6 +234,21 @@ impl Resolver {
             .chain(self.cache.values().map(|c| c.expires))
             .min()
     }
+    fn admit(&mut self, source: IpAddr, now: u64) -> io::Result<()> {
+        self.rates.retain(|_, (until, _)| *until > now);
+        if !self.rates.contains_key(&source) && self.rates.len() >= 32 {
+            return Err(capacity());
+        }
+        let (_, count) = self
+            .rates
+            .entry(source)
+            .or_insert((now.saturating_add(1000), 0));
+        if *count >= 32 {
+            return Err(capacity());
+        }
+        *count += 1;
+        Ok(())
+    }
     pub fn submit(
         &mut self,
         client: Client,
@@ -226,18 +257,30 @@ impl Resolver {
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Action>> {
         let m = Message::parse(bytes, Context::Unicast)?;
-        if m.flags & 0xf800 == 0x2800 && m.questions.len() == 1 {
-            // The SRP verifier/transaction owner is installed by S11/S12.
-            let mut response = Message::new(m.id, 0xa804);
-            response.questions = m.questions.clone();
-            return Ok(vec![deliver(
-                Waiter {
-                    limit: client_limit(&client, &m),
+        if client.address.port() == 0
+            || client.address.ip().is_multicast()
+            || client.address.ip().is_unspecified()
+        {
+            return Err(invalid());
+        }
+        self.admit(client.address.ip(), now)?;
+        if m.flags & 0xf800 == 0x2800 {
+            let wall = self
+                .srp_clock
+                .0
+                .saturating_add(now.saturating_sub(self.srp_clock.1) / 1000);
+            return match self
+                .srp_validator
+                .verify(bytes, wall, &mut self.crypto, |_| None)
+            {
+                Ok(update) => Ok(vec![Action::Register { client, update }]),
+                Err(e) => Ok(vec![registration_reply(
                     client,
-                    id: m.id,
-                },
-                &response.encode()?,
-            )?]);
+                    m.id,
+                    m.questions.first().map(|q| q.name.clone()),
+                    e,
+                )?]),
+            };
         }
         if m.flags & 0xf800 != 0
             || m.questions.len() != 1
@@ -250,18 +293,6 @@ impl Resolver {
         {
             return Err(invalid());
         }
-        self.rates.retain(|_, (until, _)| *until > now);
-        if !self.rates.contains_key(&client.address.ip()) && self.rates.len() >= 32 {
-            return Err(capacity());
-        }
-        let (_, count) = self
-            .rates
-            .entry(client.address.ip())
-            .or_insert((now.saturating_add(1000), 0));
-        if *count >= 32 {
-            return Err(capacity());
-        }
-        *count += 1;
         if m.additional.iter().any(|r| (r.ttl >> 16) & 255 != 0) {
             let mut answer = Message::new(m.id, 0x8080 | (m.flags & 0x110));
             answer.questions = m.questions.clone();
@@ -718,5 +749,26 @@ fn additional_question(m: &Message, q: &Question, enabled: bool) -> Option<Quest
         name: canonical(m, &q.name).ok()?,
         kind: 1,
         class: q.class,
+    })
+}
+
+/// A small UPDATE response, independent of the query cache and Additional-A wrapper.
+pub fn registration_reply(
+    client: Client,
+    id: u16,
+    zone: Option<Name>,
+    error: SrpError,
+) -> io::Result<Action> {
+    let mut m = Message::new(id, 0xa800 | error as u16);
+    if let Some(name) = zone {
+        m.questions.push(Question {
+            name,
+            kind: 6,
+            class: 1,
+        });
+    }
+    Ok(Action::Reply {
+        client,
+        bytes: m.encode()?,
     })
 }

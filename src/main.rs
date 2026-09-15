@@ -106,6 +106,7 @@ fn run() -> io::Result<()> {
     let mut driver = Driver::new(router, backend)?;
     driver.enable_dot(identity.server_config()?.into())?;
 
+    driver.dns.set_srp_clock(wall()?, 0);
     driver.dns.set_additional_a(!config.no_additional_a);
     driver.dns_discovery.set_configured(&config.dns_upstreams)?;
     let clock = Instant::now();
