@@ -262,3 +262,78 @@ fn review_03_ns_updates_changed_mac_and_failed_state() {
         n.state = snac_rs::router::NeighborState::Failed;
     }
 }
+
+use snac_rs::{
+    router::{pd::Lease, OnLink},
+    time::Lifetime,
+    wire::{decode_nd, Prefix, Rio},
+};
+fn lease(r: &mut Router, iaid: u32, prefix: Prefix, preferred: u32, valid: u32) {
+    r.pd.leases.insert(
+        (iaid, prefix),
+        Lease {
+            server: vec![1, 2, 3],
+            preferred: Lifetime::from_secs(0, preferred),
+            valid: Lifetime::from_secs(0, valid),
+            t1: Lifetime::Infinite,
+            t2: Lifetime::Infinite,
+            used: true,
+        },
+    );
+}
+#[test]
+fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
+    let mut d = driver();
+    for s in &mut d.router.links {
+        s.state = AilState::BeginAdvertising;
+    }
+    let delegated = Prefix::new(ip("2001:db8:aa::"), 64).unwrap();
+    lease(&mut d.router, 1, delegated, 5000, 6000);
+    d.step(0, &mut ScriptedRandom::new([])).unwrap();
+    let expected = [d.router.identity.prefix(Link::Stub), delegated];
+    assert!(expected.iter().all(|p| d
+        .router
+        .snapshot(Link::Ail, 0)
+        .rios
+        .iter()
+        .any(|r| r.prefix == *p && r.lifetime > 0)));
+    d.io.output.clear();
+    d.io.up[1] = false;
+    for now in [1000, 3000] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    let rios: Vec<_> =
+        d.io.output
+            .iter()
+            .filter(|(l, _)| *l == Link::Ail)
+            .flat_map(|(_, b)| {
+                let e = envelope(FrameKind::Ethernet, b).unwrap();
+                decode_nd(&e)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|n| n.options.into_iter().filter_map(|o| Rio::decode(o.bytes)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+    assert!(expected
+        .iter()
+        .all(|p| rios.iter().any(|r| r.prefix == *p && r.lifetime == 0)));
+    assert!(d
+        .router
+        .snapshot(Link::Ail, 3000)
+        .rios
+        .iter()
+        .all(|r| r.lifetime == 0));
+    assert!(expected
+        .iter()
+        .all(|p| d.router.on_link[&(Link::Stub, *p)].valid.live(3000)));
+    d.io.up[1] = true;
+    d.step(4000, &mut ScriptedRandom::new([])).unwrap();
+    assert!(expected.iter().all(|p| d
+        .router
+        .snapshot(Link::Ail, 4000)
+        .rios
+        .iter()
+        .any(|r| r.prefix == *p && r.lifetime > 0)));
+    assert!(d.router.links[0].scheduler.deadline() <= 20000);
+}
