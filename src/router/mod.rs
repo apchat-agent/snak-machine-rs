@@ -1,3 +1,5 @@
+mod routes;
+pub use routes::Route;
 mod owned;
 pub use owned::{DadState, OwnedAddress};
 mod nd;
@@ -56,6 +58,9 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub routes: BTreeMap<(Ipv6Addr, Prefix), Route>,
+    pub no_stub_default: bool,
+    pub always_advertise_ail_routes: bool,
     pub owned: BTreeMap<(Link, Ipv6Addr), OwnedAddress>,
     pub neighbors: BTreeMap<RouterKey, Neighbor>,
     pub headers: BTreeMap<RouterKey, Header>,
@@ -79,6 +84,9 @@ impl Router {
             })
         }
         Ok(Self {
+            routes: BTreeMap::new(),
+            no_stub_default: false,
+            always_advertise_ail_routes: false,
             owned: [Link::Ail, Link::Stub]
                 .into_iter()
                 .map(|l| {
@@ -141,6 +149,7 @@ impl Router {
                 link,
                 address: e.source,
             };
+            self.observe_routes(key, &nd, now, rng)?;
             let raw_life = u16::from_be_bytes([nd.body[6], nd.body[7]]);
             self.headers.insert(
                 key,
@@ -250,7 +259,7 @@ impl Router {
                 })
                 .collect()
         } else {
-            vec![]
+            self.stub_routes(now)
         };
         if link == Link::Ail {
             rios.sort_by_key(|r| {
@@ -278,7 +287,11 @@ impl Router {
                 })
                 .max_by_key(|(_, h)| h.last_ra_at)
                 .map_or(0, |(_, h)| h.mo),
-            default_lifetime: 0,
+            default_lifetime: if link == Link::Stub {
+                self.default_lifetime(now)
+            } else {
+                0
+            },
             pios,
             rios,
         }

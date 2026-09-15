@@ -40,3 +40,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 18 owned-nd GREEN — 18 passed; Owned address fields follow the plan. Core constructor accepts already-ready identities for reducer tests; native startup must call begin_dad before sending. DAD retries are bounded; memberships derive from owned /128s.
 - 19 osnr-budget RED — 19 tests specified; cargo test failed for the new contract (see paired test commit).
 - 19 osnr-budget GREEN — 19 passed; AIL capacity drops deprecated then earliest-invalid OSNR entries per draft permission; no pagination. Export lifetime caps remain independent of preferred lifetime.
+- 20 stub-default RED — 20 tests specified; cargo test failed for the new contract (see paired test commit).
+- 20 stub-default GREEN — 20 passed; Effective default lives once in AilRoute, header processed before default RIO; two planned configuration switches affect advertisements; failed next hops cease backing defaults.
