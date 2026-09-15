@@ -163,3 +163,73 @@ fn s01_audit_contracts() {
         "conformance/dependency auditor self-tests"
     );
 }
+
+use snac_rs::service_io::stack::Stack;
+use std::net::IpAddr;
+fn stack(address: &str) -> Stack {
+    let mut s = Stack::new(0, &mut ScriptedRandom::new([])).unwrap();
+    s.set_addresses(&[address.parse::<IpAddr>().unwrap()])
+        .unwrap();
+    s
+}
+fn stacks(a: &mut Stack, b: &mut Stack, now: u64) {
+    a.poll(now).unwrap();
+    b.poll(now).unwrap();
+    while let Some(p) = a.output() {
+        b.input(&p, now).unwrap();
+    }
+    while let Some(p) = b.output() {
+        a.input(&p, now).unwrap();
+    }
+}
+#[test]
+fn s07_udp_tcp_use_ready_addresses_and_share_bounded_port_ownership() {
+    for (aip, bip) in [("fd11:22::1", "fd11:33::2"), ("192.0.2.1", "198.51.100.2")] {
+        let aaddr = aip.parse::<IpAddr>().unwrap();
+        let baddr = bip.parse::<IpAddr>().unwrap();
+        let mut a = stack(aip);
+        let mut b = stack(bip);
+        a.listen_udp(40000).unwrap();
+        b.listen_udp(1053).unwrap();
+        b.listen_tcp(1053).unwrap();
+        assert!(b.listen_udp(1053).is_err());
+        assert!(b.port_owned(17, 1053));
+        assert!(b.port_owned(6, 1053));
+        a.send_udp(aaddr, 40000, baddr, 1053, b"query").unwrap();
+        for now in (0..100).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        let d = b.receive_udp().unwrap();
+        assert_eq!(d.bytes, b"query");
+        assert_eq!((d.source, d.destination), (aaddr, baddr));
+        b.send_udp(baddr, 1053, aaddr, 40000, b"answer").unwrap();
+        for now in (100..200).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        assert_eq!(a.receive_udp().unwrap().bytes, b"answer");
+        let id = a.connect(aaddr, 40001, baddr, 1053, 200).unwrap();
+        for now in (200..1000).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        assert!(a.established(id));
+        let peer = b.connections()[0];
+        assert!(b.established(peer));
+        assert_eq!(a.send_tcp(id, b"split ").unwrap(), 6);
+        assert_eq!(a.send_tcp(id, b"message").unwrap(), 7);
+        for now in (1000..1200).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        assert_eq!(b.receive_tcp(peer), b"split message");
+        b.send_tcp(peer, b"reply").unwrap();
+        b.close(peer);
+        for now in (1200..1600).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        assert_eq!(a.receive_tcp(id), b"reply");
+        b.set_addresses(&[]).unwrap();
+        assert!(b.connections().is_empty());
+        assert!(b
+            .send_udp(baddr, 1053, aaddr, 40000, b"lost address")
+            .is_err());
+    }
+}
