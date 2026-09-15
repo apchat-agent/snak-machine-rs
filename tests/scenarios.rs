@@ -430,3 +430,43 @@ fn deprecation_counts_down_then_omits() {
     assert!(!r.on_link[&(Link::Ail, own)].valid.live(1812000));
     assert_eq!(r.links[0].deprecate_at, Some(12000));
 }
+
+#[test]
+fn lost_replacement_restores_same_local_prefix() {
+    let mut r = providing(24);
+    let own = r.identity.prefix(Link::Ail);
+    let mut rng = ScriptedRandom::new([]);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::9", "2001:db8::"),
+        12000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::Deprecating);
+    r.receive(
+        Link::Ail,
+        &nd_packet(
+            "fe80::9",
+            "ff02::1",
+            ra(0, 0, &pio("2001:db8::", 64, 0xc0, 0, 0)),
+        ),
+        13000,
+        &mut rng,
+    )
+    .unwrap();
+    let tx = r.tick(15000, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
+    let a = tx
+        .iter()
+        .find(|x| x.link == Link::Ail && x.packet[40] == 134)
+        .unwrap();
+    let e = envelope(FrameKind::RawIpv6, &a.packet).unwrap();
+    let p = snac_rs::wire::decode_nd(&e)
+        .unwrap()
+        .options
+        .iter()
+        .find_map(|o| Pio::decode(o.bytes))
+        .unwrap();
+    assert_eq!((p.prefix, p.preferred, p.valid), (own, 1800, 1800));
+}
