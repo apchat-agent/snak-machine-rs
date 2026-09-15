@@ -174,3 +174,162 @@ fn s12_delete_host_removes_services_and_subtypes_but_retains_requested_key_claim
         (0, 0, 0)
     );
 }
+
+#[test]
+fn s12_exact_retries_reuse_durable_ack_and_reception_time() {
+    #[derive(Default)]
+    struct Counted {
+        bytes: Option<Vec<u8>>,
+        saves: usize,
+    }
+    impl StateStore for Counted {
+        fn load(&mut self) -> io::Result<Option<Vec<u8>>> {
+            Ok(self.bytes.clone())
+        }
+        fn save(&mut self, b: &[u8]) -> io::Result<()> {
+            self.saves += 1;
+            self.bytes = Some(b.to_vec());
+            Ok(())
+        }
+    }
+    let mut r = Registry::default();
+    let mut store = Counted::default();
+    let m = update();
+    let bytes = sign(m.clone());
+    let u = verified(&r, m, 0);
+    r.apply(&u, &mut store, 0, NOW).unwrap();
+    let g = r.apply(&u, &mut store, 1000, NOW + 1).unwrap();
+    assert_eq!(
+        store.saves, 1,
+        "an acknowledged retransmission makes no new durable transaction"
+    );
+    assert_eq!((g.lease, g.key_lease), (7199, 1209599));
+    assert_eq!(r.hosts().next().unwrap().1.received_at, 0);
+    let restart = Registry::restore(store.bytes.as_ref().unwrap(), 0, NOW + 1).unwrap();
+    assert_eq!(restart.cached(&bytes, 0).unwrap(), g);
+    assert!(r.cached(&bytes, 30000).is_none());
+}
+fn named(host: usize, services: usize, live: bool) -> Message {
+    use snac_rs::dns::wire::{Name, Record};
+    let mut m = update();
+    m.authority.truncate(3);
+    let zone: Name = "z.".parse().unwrap();
+    let owner: Name = format!("h{host}.z.").parse().unwrap();
+    m.questions[0].name = zone;
+    for r in &mut m.authority {
+        r.name = owner.clone();
+    }
+    if let Rdata::Sig { signer, .. } = &mut m.additional[1].data {
+        *signer = owner.clone();
+    }
+    for n in 0..services {
+        let name: Name = format!("s{host}-{n}._x._tcp.z.").parse().unwrap();
+        m.authority.push(Record {
+            name: name.clone(),
+            kind: 255,
+            class: 255,
+            ttl: 0,
+            data: Rdata::Empty,
+        });
+        if live {
+            m.authority.push(Record {
+                name: name.clone(),
+                kind: 33,
+                class: 1,
+                ttl: 120,
+                data: Rdata::Srv {
+                    priority: 0,
+                    weight: 0,
+                    port: 80,
+                    target: owner.clone(),
+                },
+            });
+            m.authority.push(Record {
+                name,
+                kind: 16,
+                class: 1,
+                ttl: 120,
+                data: Rdata::Txt(vec![b"k=v".to_vec()]),
+            });
+        }
+    }
+    m
+}
+fn checked_named(r: &Registry, m: Message) -> Update {
+    Validator::new(&["z.".parse().unwrap()])
+        .unwrap()
+        .verify(&sign(m), NOW, &mut CryptoBudget::default(), |n| {
+            r.key(n, 0).cloned()
+        })
+        .unwrap()
+}
+#[test]
+fn s12_host_service_tombstone_and_replay_tables_are_bounded() {
+    let mut r = Registry::default();
+    let mut store = MemoryStore::default();
+    for n in 0..128 {
+        let u = checked_named(&r, named(n, 8, false));
+        r.apply(&u, &mut store, 0, NOW).unwrap();
+        assert_eq!((r.counts().0, r.counts().1), (n + 1, (n + 1) * 8));
+        assert!(r.counts().2 <= 4 * 1024 * 1024);
+    }
+    let before = store.0.clone();
+    let u = checked_named(&r, named(129, 0, false));
+    assert_eq!(
+        r.apply(&u, &mut store, 0, NOW).unwrap_err(),
+        Error::ServFail
+    );
+    assert_eq!(store.0, before);
+    // A valid add and an overflow service in one update cannot partially commit.
+    let mut m = named(0, 0, false);
+    m.id += 1;
+    let mut extra = m.authority[0].clone();
+    extra.name = "ninth._x._tcp.z.".parse().unwrap();
+    m.authority.push(extra);
+    let u = checked_named(&r, m);
+    assert_eq!(
+        r.apply(&u, &mut store, 0, NOW).unwrap_err(),
+        Error::ServFail
+    );
+    assert_eq!(store.0, before);
+    assert_eq!(r.replay_count(), 128);
+    let mut m = named(0, 0, false);
+    m.id += 2;
+    let u = checked_named(&r, m);
+    r.apply(&u, &mut store, 0, NOW).unwrap();
+    assert_eq!(
+        r.replay_count(),
+        128,
+        "only cached acknowledgments may be evicted"
+    );
+    r.expire(1209600000);
+    assert_eq!(r.counts(), (0, 0, 0));
+    assert_eq!(r.replay_count(), 0);
+}
+#[test]
+fn s12_registry_byte_bound_refuses_atomically_before_host_limit() {
+    let mut r = Registry::default();
+    let mut store = MemoryStore::default();
+    let mut refused = false;
+    for n in 0..128 {
+        let mut m = named(n, 1, true);
+        m.authority.last_mut().unwrap().data = Rdata::Txt(vec![vec![b'x'; 250]; 200]);
+        let u = checked_named(&r, m);
+        let before = store.0.clone();
+        match r.apply(&u, &mut store, 0, NOW) {
+            Ok(_) => assert!(r.counts().2 <= 4 * 1024 * 1024),
+            Err(e) => {
+                assert_eq!(e, Error::ServFail);
+                assert_eq!(store.0, before);
+                assert!(r.counts().0 < 128);
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(refused);
+    assert!(
+        r.counts().0 > 1,
+        "small bounded registrations still make progress"
+    );
+}
