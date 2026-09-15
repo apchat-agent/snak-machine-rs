@@ -106,6 +106,7 @@ fn s03_service_iid_and_dad_state_survive_renumbering() {
     r.owned.insert(
         (Link::Stub, address),
         OwnedAddress {
+            probe_sent: true,
             prefix: Some(prefix),
             state: DadState::Ready,
             deadline: None,

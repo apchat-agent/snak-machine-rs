@@ -705,3 +705,32 @@ fn s07_peer_service_address_journal_accepts_two_bounded_endpoint_sets() {
         .filter(|(_, a)| a.prefix.is_some())
         .all(|(_, a)| a.state == DadState::Tentative));
 }
+
+#[test]
+fn s07_restored_service_addresses_repeat_dad_before_readiness() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    for now in (1000..=15000).step_by(1000) {
+        d.step(now, &mut r).unwrap();
+    }
+    let bytes = d.router.checkpoint(15000, 100).unwrap();
+    let mut restored = Router::restore(&bytes, 0, 101, &mut r).unwrap();
+    let services: Vec<_> = restored
+        .owned
+        .iter()
+        .filter(|(_, a)| a.prefix.is_some())
+        .map(|(k, _)| *k)
+        .collect();
+    assert!(!services.is_empty());
+    let tx = restored.tick(0, &mut r).unwrap();
+    assert!(services
+        .iter()
+        .all(|(l, a)| !restored.address_ready(*l, *a)));
+    assert_eq!(
+        tx.iter()
+            .filter(|t| t.packet[40] == 135 && t.packet[8..24] == [0; 16])
+            .count(),
+        services.len()
+    );
+}

@@ -163,6 +163,7 @@ fn review_02_local_replies_resolve_without_link_failure() {
                 d.router.owned.insert(
                     (Link::Ail, ip("2001:db8:1::1")),
                     snac_rs::router::OwnedAddress {
+                        probe_sent: true,
                         prefix: Some(prefix),
                         state: snac_rs::router::DadState::Ready,
                         deadline: None,
