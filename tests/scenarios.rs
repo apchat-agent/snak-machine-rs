@@ -251,3 +251,44 @@ fn ra_is_not_nud_confirmation() {
     assert!(r.reachable(key, 60299));
     assert!(!r.reachable(key, 60300));
 }
+
+#[test]
+fn unreachable_supplier_triggers_takeover() {
+    let mut r = router(42);
+    let mut rng = ScriptedRandom::new([]);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::9", "2001:db8::"),
+        0,
+        &mut rng,
+    )
+    .unwrap();
+    r.receive(Link::Ail, &na_for(&r, "fe80::9", true), 1, &mut rng)
+        .unwrap();
+    for t in [60001, 61001, 62001] {
+        let tx = r.tick(t, &mut rng).unwrap();
+        let ns: Vec<_> = tx
+            .iter()
+            .filter(|x| x.link == Link::Ail && x.packet[40] == 135)
+            .collect();
+        assert_eq!(ns.len(), 1);
+        assert_eq!(&ns[0].packet[24..40], &ip("fe80::9").octets());
+    }
+    let tx = r.tick(63001, &mut rng).unwrap();
+    assert!(!tx.iter().any(|x| x.packet[40] == 135));
+    let rs = nd_packet("::", "ff02::2", vec![133, 0, 0, 0, 0, 0, 0, 0]);
+    r.receive(Link::Ail, &rs, 63002, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
+    let mut r = router(43);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::8", "2001:db8::"),
+        10,
+        &mut rng,
+    )
+    .unwrap();
+    r.receive(Link::Ail, &na_for(&r, "fe80::8", true), 11, &mut rng)
+        .unwrap();
+    r.receive(Link::Ail, &rs, 12, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::Suitable);
+}
