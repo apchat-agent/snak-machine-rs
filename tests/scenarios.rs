@@ -943,3 +943,66 @@ fn pd_reply_selects_best_gua_and_ula() {
         .flat_map(|(_, b)| dhcp_opts(&b[12..]))
         .any(|(c, b)| c == 26 && b[8] == 65));
 }
+
+fn bound_router() -> Router {
+    let mut r = providing(64);
+    let extra = ia(1, 60, 120, &[("2001:db8:aa::", 64, 1800, 2000)]);
+    request_pd(&mut r, &extra);
+    r.receive(
+        Link::Ail,
+        &pd_response(&r, 7, &extra),
+        9300,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    r
+}
+#[test]
+fn pd_timers_renew_rebind_fallback_and_expire() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([432, 543, 654]);
+    let p = Prefix::new(ip("2001:db8:aa::"), 64).unwrap();
+    let tx = r.tick(69300, &mut rng).unwrap();
+    let renew = &tx
+        .iter()
+        .find(|x| x.packet[6] == 17 && x.packet[48] == 5)
+        .expect("Renew at T1")
+        .packet;
+    assert!(dhcp_opts(&renew[52..])
+        .iter()
+        .any(|(c, b)| *c == 2 && b == b"server"));
+    let renew_id = renew[49..52].to_vec();
+    let tx = r.tick(129300, &mut rng).unwrap();
+    let rebind = &tx
+        .iter()
+        .find(|x| x.packet[6] == 17 && x.packet[48] == 6)
+        .expect("Rebind at T2")
+        .packet;
+    assert!(!dhcp_opts(&rebind[52..]).iter().any(|(c, _)| *c == 2));
+    assert_ne!(&rebind[49..52], &renew_id);
+    r.tick(141300, &mut rng).unwrap();
+    let pios = r.snapshot(Link::Stub, 141300).pios;
+    assert!(pios
+        .iter()
+        .any(|p| p.prefix == r.identity.prefix(Link::Stub) && p.preferred == 1800));
+    assert_eq!(pios.iter().find(|x| x.prefix == p).unwrap().preferred, 0);
+    let before = r
+        .snapshot(Link::Ail, 1900000)
+        .rios
+        .into_iter()
+        .find(|x| x.prefix == p)
+        .unwrap();
+    assert!(before.lifetime <= 109);
+    r.tick(2009300, &mut rng).unwrap();
+    assert!(!r
+        .snapshot(Link::Stub, 2009300)
+        .pios
+        .iter()
+        .any(|x| x.prefix == p));
+    assert!(!r
+        .snapshot(Link::Ail, 2009300)
+        .rios
+        .iter()
+        .any(|x| x.prefix == p && x.lifetime > 0));
+    assert_eq!(r.pd.state, PdState::Soliciting);
+}
