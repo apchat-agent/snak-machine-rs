@@ -1458,3 +1458,21 @@ available when PD replies do not supply configuration. The baseline
 exact ORO `[82]` to `[23, 24, 82]`. Every other assertion, including stable
 identity, packet checksum, both IAIDs and /64 hints, is retained. The draft
 and RFC 8415 do not require excluding DNS options from the PD ORO.
+
+## ADDENDUM 5 — S14 TSR checksum for a partial final key word
+
+The referenced TSR-03 section 2 sums network-order 32-bit words of the public
+key, but leaves a partial final word unspecified. S11 supports Ed448 as
+recommended by RFC 9665 section 6.6; its 57-byte public key is not a multiple
+of four. S14 therefore pads only the final checksum word with trailing zero
+bytes. It sums public-key bytes only, excluding KEY flags/protocol/algorithm,
+and uses wrapping 32-bit addition. A non-word-aligned independent fixture
+records this interoperability convention. This fills a gap in the referenced
+work-in-progress protocol; it does not change accepted SRP key material.
+
+Draft authority: draft-ietf-snac-simple-12 sections 5.5.1 and 7 require the
+Advertising Proxy, whose -06 section 2.3 requires TSR; [TSR-03 section 2](https://www.ietf.org/archive/id/draft-ietf-dnssd-tsr-03.txt)
+defines the checksum but no partial-word rule. Keep this convention, like the
+experimental option code 65002, explicit in final interoperability limitations
+until the referenced specification defines it. No external acceptance is
+claimed for Ed448 TSR checksums.

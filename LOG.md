@@ -1023,3 +1023,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   reducer fixtures cover legacy/QM, coherence, suppression, conflicts and bounds.
   Native external-peer acceptance remains listed above. No new dependency or
   design addendum. S14 now supplies SRP-derived publication and TSR semantics.
+
+### S14 — Advertising Proxy and TSR (in progress)
+
+- TSR wire RED `4aa2368`: full `cargo test` confirms the missing codec.
+  GREEN passes **247 tests** and all-feature clippy. Independent bytes cover
+  the exact ten-byte index/checksum/age layout, network-order wrapping checksum,
+  seven-day saturation, clock rollback, every truncation and all DNS sections.
+  Invalid/out-of-range/OPT/known-answer indexes and malformed option lengths
+  cannot address arbitrary names; ambiguous duplicate owner options are ignored.
+- Output uses one option per authoritative owner, refuses shared TSR records
+  and omits known-answer TSR data. The per-message option/name work table is
+  capped at 128 and tested at/over capacity. Option code 65002 remains an
+  experimental convention. PLAN2 ADDENDUM 5 documents the underspecified final
+  checksum word for Ed448 and the tested trailing-zero convention. No dependency.
