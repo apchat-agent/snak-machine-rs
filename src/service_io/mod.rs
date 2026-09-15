@@ -3,6 +3,7 @@
 pub mod identity;
 pub mod loopback;
 pub mod stack;
+pub mod tls;
 use crate::{
     time::{RandomSource, Time},
     wire::{envelope, transport, FrameKind},

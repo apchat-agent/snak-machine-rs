@@ -685,3 +685,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   crate's existing zeroize re-export; diagnostics omit key material. No new
   dependency or field outside the planned identity state. DoT record pumping,
   listener integration and connection limits follow.
+- S10 TLS channel RED `8ae77c6` confirms the missing record-channel API;
+  fixture-only RED `6d8419a` disambiguates its receive vector before production
+  is restored. GREEN passes **183 tests** and all-feature clippy. The explicit
+  RustCrypto provider completes an opportunistic self-signed handshake while
+  still verifying TLS key-possession signatures. The channel bounds each I/O
+  pass and outbound rustls buffering, exposes short writes, enforces a fixed
+  ten-second handshake deadline and 120-second idle deadline, and distinguishes
+  close-notify from abrupt EOF. Malformed/oversized TLS records and plaintext
+  at the TLS boundary fail closed. Real ephemeral loopback TCP exchanges the
+  same encrypted bytes; another fixture drains a 40 KiB response 19 bytes at
+  a time. State is planned TLS lifecycle/I/O state; no dependency.
