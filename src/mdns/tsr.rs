@@ -145,3 +145,30 @@ pub fn attach(
     }
     Ok(())
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Relation {
+    Unstamped,
+    Conflict,
+    Equal,
+    Newer,
+    Older,
+}
+/// TSR's seconds field loses subsecond registration time. Tolerate one second
+/// of that quantization; different keys remain conflicts regardless of time.
+pub fn compare(local: Option<Stamp>, remote: Option<Stamp>) -> Relation {
+    match (local, remote) {
+        (None, None) => Relation::Unstamped,
+        (Some(a), Some(b)) if a.key_checksum == b.key_checksum => {
+            let delta = b.received_at.saturating_sub(a.received_at);
+            if delta > 1000 {
+                Relation::Newer
+            } else if delta < -1000 {
+                Relation::Older
+            } else {
+                Relation::Equal
+            }
+        }
+        _ => Relation::Conflict,
+    }
+}

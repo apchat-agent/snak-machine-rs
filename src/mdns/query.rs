@@ -302,6 +302,9 @@ impl Querier {
         rng: &mut impl RandomSource,
         probe: bool,
     ) -> io::Result<bool> {
+        if super::tsr::extract(&d.message, super::tsr::OPTION_CODE, now).is_err() {
+            return Ok(false);
+        }
         if !self.up || d.destination.port() != 5353 || !self.admit(d.source.ip(), now) {
             return Ok(false);
         }

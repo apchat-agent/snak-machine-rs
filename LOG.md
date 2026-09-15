@@ -1051,3 +1051,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   names only. TSR owner stamps derive from the registry's existing reception
   timestamps/public keys, and shared PTR owners have no TSR. Mapping fields
   implement the planned dataset/conflict identity. No dependency.
+- S14 cache RED `c6873aa`: full `cargo test` confirms missing TSR provenance
+  and comparison. GREEN passes **253 tests** and all-feature clippy. Newer TSR
+  replaces all stale cached types on an owner; older records, including stale
+  goodbyes, cannot erase newer data. Absent/different-key stamps flush conflicting
+  cached ownership. Query known answers never change TSR/cache state; query
+  authority data participates in stale checks without being cached, while
+  additional data can be cached (TSR-03 section 3.5).
+- Cached records retain their associated stamp within the existing byte charge.
+  Timestamp comparison allows one second for the wire field's subsecond loss
+  (TSR-03 section 4); equal samples retain the earlier local origin so repeated
+  observations cannot advance it. Different keys always conflict. Excessive
+  TSR input is dropped at runtime admission. No dependency. Local-publication
+  stale/equal/newer decisions and native SRP synchronization follow.

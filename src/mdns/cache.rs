@@ -1,9 +1,13 @@
 //! AIL-scoped learned records. Registrations are owned by SRP, never by this LRU.
+use super::tsr::{self, Relation, Stamp};
 use crate::{
     dns::wire::{Message, Name, Question, Rdata, Record},
     time::{RandomSource, Time},
 };
-use std::{collections::BTreeMap, io};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+};
 const SETS: usize = 1024;
 const BYTES: usize = 4 * 1024 * 1024;
 type Key = (Name, u16, u16);
@@ -12,6 +16,7 @@ struct Entry {
     received: Time,
     expires: Time,
     charge: usize,
+    stamp: Option<Stamp>,
     refresh: [Time; 4],
     refreshed: usize,
     // First unanswered multicast question, last distinct query, and count.
@@ -102,9 +107,15 @@ impl Cache {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
-        if message.flags & 0x8000 == 0 {
-            return Ok(());
-        }
+        self.receive_with_code(message, tsr::OPTION_CODE, now, rng)
+    }
+    pub fn receive_with_code(
+        &mut self,
+        message: &Message,
+        code: u16,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
         if message.answers.len() + message.authority.len() + message.additional.len() > 512 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -112,13 +123,58 @@ impl Cache {
             ));
         }
         self.expire(now);
-        for r in message
+        let stamps = tsr::extract(message, code, now)?;
+        let mut selected = BTreeMap::new();
+        let mut ignored = BTreeSet::new();
+        for (index, r) in message
             .answers
             .iter()
             .chain(&message.authority)
             .chain(&message.additional)
+            .enumerate()
         {
-            if !cacheable(r) {
+            if !cacheable(r)
+                || (message.flags & 0x8000 == 0 && index < message.answers.len())
+                || selected.contains_key(&r.name)
+                || ignored.contains(&r.name)
+            {
+                continue;
+            }
+            let remote = stamps.get(&r.name).copied();
+            let mut chosen = remote;
+            if let Some(local) = self.owner_stamp(&r.name, now) {
+                match tsr::compare(local, remote) {
+                    Relation::Older => {
+                        ignored.insert(r.name.clone());
+                        continue;
+                    }
+                    Relation::Newer | Relation::Conflict => self.remove_owner(&r.name),
+                    Relation::Equal => {
+                        if let (Some(a), Some(b)) = (local, remote) {
+                            chosen = Some(Stamp {
+                                received_at: a.received_at.min(b.received_at),
+                                ..b
+                            });
+                        }
+                    }
+                    Relation::Unstamped => {}
+                }
+            }
+            selected.insert(r.name.clone(), chosen);
+        }
+
+        for (index, r) in message
+            .answers
+            .iter()
+            .chain(&message.authority)
+            .chain(&message.additional)
+            .enumerate()
+        {
+            if !cacheable(r)
+                || ignored.contains(&r.name)
+                || (message.flags & 0x8000 == 0
+                    && index < message.answers.len() + message.authority.len())
+            {
                 continue;
             }
             let k = key(r);
@@ -153,6 +209,7 @@ impl Cache {
                     e.record.ttl = r.ttl.min(0x7fffffff);
                     e.record.class = r.class; // Preserve uniqueness separately from the RRset class.
                     e.failure = None;
+                    e.stamp = selected.get(&r.name).copied().flatten();
                     e.refresh = refresh;
                     e.refreshed = 0;
                     s.used = now;
@@ -182,6 +239,7 @@ impl Cache {
                 received: now,
                 expires,
                 charge: cost,
+                stamp: selected.get(&r.name).copied().flatten(),
                 refresh,
                 refreshed: 0,
                 failure: None,
@@ -190,6 +248,23 @@ impl Cache {
             self.bytes += cost;
         }
         Ok(())
+    }
+    pub fn owner_stamp(&self, name: &Name, now: Time) -> Option<Option<Stamp>> {
+        self.sets
+            .values()
+            .flat_map(|s| &s.records)
+            .find(|e| e.record.name == *name && e.deadline() > now)
+            .map(|e| e.stamp)
+    }
+    pub fn remove_owner(&mut self, name: &Name) {
+        self.sets.retain(|(owner, _, _), s| {
+            if *owner == *name {
+                self.bytes -= s.records.iter().map(|r| r.charge).sum::<usize>();
+                false
+            } else {
+                true
+            }
+        });
     }
     pub fn answers(&mut self, q: &Question, now: Time) -> Vec<Record> {
         let mut out = vec![];
