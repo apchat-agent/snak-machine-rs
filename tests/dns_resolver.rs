@@ -753,3 +753,37 @@ fn s09_cname_to_local_zone_never_leaks_an_a_lookup_and_large_queries_use_tcp() {
     );
     assert!(q.tcp);
 }
+
+#[test]
+fn s11_update_dispatch_validates_signatures_with_a_shared_crypto_budget() {
+    let mut r = Resolver::new(true);
+    r.set_srp_clock(1789473600, 0);
+    let mut rng = ScriptedRandom::new([]);
+    let client = Client::udp("[fe80::2]:40000".parse().unwrap());
+    let wire = include_bytes!("fixtures/srp/alg13.bin");
+    let actions = r.submit(client.clone(), wire, 0, &mut rng).unwrap();
+    assert!(matches!(&actions[0], Action::Register { update, .. } if update.id == 0x1234));
+    let mut bad = wire.to_vec();
+    *bad.last_mut().unwrap() ^= 1;
+    for _ in 0..7 {
+        let out = reply(r.submit(client.clone(), &bad, 0, &mut rng).unwrap());
+        assert_eq!(
+            Message::parse(&out, Context::Unicast).unwrap().flags & 15,
+            5
+        );
+    }
+    let out = reply(r.submit(client.clone(), &bad, 0, &mut rng).unwrap());
+    assert_eq!(
+        Message::parse(&out, Context::Unicast).unwrap().flags & 15,
+        2
+    );
+    r.reset_crypto_budget();
+    let out = reply(r.submit(client, &bad, 0, &mut rng).unwrap());
+    assert_eq!(
+        Message::parse(&out, Context::Unicast).unwrap().flags & 15,
+        5
+    );
+    assert_eq!(r.pending_count(), 0);
+    let invalid = Client::udp("[ff02::1]:40000".parse().unwrap());
+    assert!(r.submit(invalid, wire, 0, &mut rng).is_err());
+}

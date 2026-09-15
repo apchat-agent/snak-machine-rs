@@ -588,6 +588,7 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
         TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
     d.enable_dot(identity.server_config().unwrap().into())
         .unwrap();
+    d.dns.set_srp_clock(1789473600, 0);
     d.start(0, &mut rng).unwrap();
     d.step(1000, &mut rng).unwrap();
     learn(&mut d, Link::Stub, &mut rng);
@@ -639,6 +640,9 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
         data: Rdata::Opt(vec![(65000, vec![9; 60000])]),
     });
     bytes.extend(TcpFrames::frame(&large.encode().unwrap()).unwrap());
+    let mut bad_signature = include_bytes!("fixtures/srp/alg13.bin").to_vec();
+    *bad_signature.last_mut().unwrap() ^= 1;
+    bytes.extend(TcpFrames::frame(&bad_signature).unwrap());
     tls.writer().write_all(&bytes).unwrap();
     let mut frames = TcpFrames::new(65535).unwrap();
     let mut replies = std::collections::BTreeMap::new();
@@ -663,11 +667,16 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
             let m = Message::parse(&b, Context::Unicast).unwrap();
             replies.insert(m.id, m);
         }
-        if replies.len() == 3 {
+        if replies.len() == 4 {
             break;
         }
     }
-    assert_eq!(replies.len(), 3);
+    assert_eq!(replies.len(), 4);
+    assert_eq!(
+        replies[&0x1234].flags & 15,
+        5,
+        "bad SIG(0) is REFUSED over TLS"
+    );
     assert_eq!(replies[&77].flags & 15, 2);
     assert_eq!(replies[&79].flags & 15, 2);
     assert_eq!((replies[&78].flags >> 11) & 15, 5);
