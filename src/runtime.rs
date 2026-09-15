@@ -51,7 +51,7 @@ impl<I: PacketIo> Driver<I> {
             mdns: Default::default(),
             mdns_output: None,
             mdns_fragment_id: 0,
-            mdns_source: Box::new(|_, _, _, _| vec![]),
+            mdns_source: Box::new(|id, now, _, resolver| resolver.advertised(id, now)),
             mdns_round: 0,
             dns_service: Default::default(),
             dns_info: None,
@@ -265,6 +265,7 @@ impl<I: PacketIo> Driver<I> {
         self.poll_ipv4(now, rng)?;
         self.poll_dns_configuration(now, rng)?;
         self.poll_services(now, rng)?;
+        self.dns.sync_advertising(&mut self.mdns, now, rng)?;
         self.poll_mdns(now, rng)?;
         self.sync_groups()
     }

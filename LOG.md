@@ -1112,3 +1112,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   equal space for old-data withdrawals within the mDNS budget. These fields
   implement PLAN2's minimal derived publication state; no new dependency.
   Native Driver wiring and further admission/reconnect fixtures follow.
+- S14 native RED `94c1e82` fails after a successful signed Stub UDP update:
+  no AIL probe follows. Fixture correction `12a6257` moves browsing outside the
+  existing one-second multicast announcement suppression window; the corrected
+  fixture still fails at that missing publication with production code parked.
+  GREEN passes **265 tests** and all-feature clippy.
+- Driver now synchronizes registrar publications after DNS service processing;
+  its default projection callback derives live records from the resolver's
+  registrar. An independent Stub IP stack sends signed UDP updates and receives
+  successful acknowledgements. AIL bytes demonstrate probes, announcements,
+  PTR browsing with SRV/binary TXT/AAAA additions, changed TXT and expiry goodbye.
+  No extra field or dependency. Native physical interfaces/external clients
+  remain **needs privileged acceptance**; this fixture uses MemoryIo throughout.

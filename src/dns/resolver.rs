@@ -133,6 +133,23 @@ impl Resolver {
         self.cache.clear();
         Ok(())
     }
+    pub fn advertised(&self, id: u64, now: u64) -> Vec<Record> {
+        self.registrar
+            .as_ref()
+            .map(|r| r.advertised(id, now))
+            .unwrap_or_default()
+    }
+    pub fn sync_advertising(
+        &mut self,
+        engine: &mut crate::mdns::Engine,
+        now: u64,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        if let Some(r) = &mut self.registrar {
+            r.sync_advertising(engine, now, rng)?;
+        }
+        Ok(())
+    }
     pub fn registry(&self) -> Option<&crate::srp::registry::Registry> {
         self.registrar.as_ref().map(|r| &r.registry)
     }
