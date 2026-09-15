@@ -175,38 +175,24 @@ impl<I: PacketIo> Driver<I> {
         };
         // A fragmented multicast DNS message may contain only one RR (RFC 6762 17).
         if fragmented
-            && d.message.answers.len() + d.message.authority.len() + d.message.additional.len() > 1
+            && d.message
+                .answers
+                .iter()
+                .chain(&d.message.authority)
+                .chain(&d.message.additional)
+                .filter(|r| r.kind != 41)
+                .count()
+                > 1
         {
             return Ok(true);
         }
-        self.mdns.sync_budget()?;
-        let probe = self.mdns.publisher.expects_unicast(&d, now);
-        if self
-            .mdns
-            .querier
-            .receive_with_probe(&d, on_link, now, rng, probe)?
-        {
-            if rx.kind == FrameKind::Ethernet {
-                self.mdns.querier.remember_peer(
-                    d.source.ip(),
-                    rx.bytes[6..12].try_into().unwrap(),
-                    now,
-                );
-            }
-            let source = |id, at| (self.mdns_source)(id, at, &self.router, &self.dns);
-            self.mdns.publisher.receive(&d, &source, now, rng)?;
-            if let Err(e) = self.mdns.responder.receive(
-                &d,
-                on_link,
-                &mut self.mdns.publisher,
-                &source,
+        let source = |id, at| (self.mdns_source)(id, at, &self.router, &self.dns);
+        if self.mdns.receive(&d, on_link, &source, now, rng)? && rx.kind == FrameKind::Ethernet {
+            self.mdns.querier.remember_peer(
+                d.source.ip(),
+                rx.bytes[6..12].try_into().unwrap(),
                 now,
-                rng,
-            ) {
-                if e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e);
-                }
-            }
+            );
         }
         self.mdns.sync_budget()?;
         Ok(true)
@@ -264,7 +250,7 @@ impl<I: PacketIo> Driver<I> {
             return Ok(Some(Output {
                 owner,
                 destination,
-                messages: messages.into(),
+                messages: self.mdns.prepare_outgoing(messages, now)?.into(),
                 packets: VecDeque::new(),
                 sources: sources.to_vec(),
                 retry: now,
@@ -305,12 +291,15 @@ impl<I: PacketIo> Driver<I> {
                 break;
             }
             if output.packets.is_empty() {
-                let Some(message) = output.messages.pop_front() else {
+                let Some(mut message) = output.messages.pop_front() else {
                     let owner = output.owner;
                     self.mdns_output = None;
                     self.mdns_complete(owner, true, now);
                     continue;
                 };
+                crate::mdns::tsr::attach(&mut message, crate::mdns::tsr::OPTION_CODE, now, &|n| {
+                    self.mdns.publisher.output_stamp(n)
+                })?;
                 for source in &output.sources {
                     if output
                         .destination

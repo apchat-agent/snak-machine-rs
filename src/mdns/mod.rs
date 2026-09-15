@@ -73,6 +73,7 @@ impl Engine {
         let mut quiet = BTreeSet::new();
         let mut activate = BTreeSet::new();
         let mut probe = false;
+        let mut superseded = BTreeSet::new();
         for (name, stamp) in stamps {
             let own = self.publisher.registered_stamp(id, name);
             for (cached, known) in [
@@ -91,6 +92,9 @@ impl Engine {
                         }
                     }
                     R::Newer => {
+                        if !cached {
+                            superseded.insert(name.clone());
+                        }
                         if cached || own != known || !unchanged {
                             probe = true;
                         }
@@ -100,6 +104,9 @@ impl Engine {
             activate.insert(name.clone());
         }
         self.replace(id, old, new, now, rng)?;
+        for n in superseded {
+            self.publisher.supersede(&n, stamps[&n], id);
+        }
         for n in stamps.keys() {
             self.querier.cache.remove_owner(n);
         }
@@ -115,13 +122,15 @@ impl Engine {
         mut messages: Vec<crate::dns::wire::Message>,
         now: crate::time::Time,
     ) -> std::io::Result<Vec<crate::dns::wire::Message>> {
-        for m in &mut messages {
-            tsr::attach(m, tsr::OPTION_CODE, now, &|n| {
+        let mut output = vec![];
+        for m in messages.drain(..) {
+            output.extend(tsr::packetize(m, tsr::OPTION_CODE, now, &|n| {
                 self.publisher.output_stamp(n)
-            })?;
+            })?);
         }
-        Ok(messages)
+        Ok(output)
     }
+
     pub fn receive(
         &mut self,
         d: &wire::Datagram,

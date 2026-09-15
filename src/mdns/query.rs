@@ -344,6 +344,7 @@ impl Querier {
         if m.flags & 0x8000 != 0 {
             self.cache.receive(m, now, rng)?;
         } else if d.destination.ip().is_multicast() && d.source.port() == 5353 {
+            self.cache.receive(m, now, rng)?;
             for question in &m.questions {
                 self.cache.observe_question(question, &m.answers, now);
                 if question.class & 0x8000 != 0 || m.flags & 0x200 != 0 {

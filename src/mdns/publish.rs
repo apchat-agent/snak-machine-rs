@@ -277,7 +277,8 @@ impl Publisher {
         let mut goodbyes = vec![];
         if self.up && existing.is_some_and(|p| p.state.ready()) {
             for r in &old.records {
-                if !new.records.iter().any(|n| same(n, r))
+                if existing.is_some_and(|p| active_record(p, r))
+                    && !new.records.iter().any(|n| same(n, r))
                     && (r.class & 0x8000 == 0
                         || !new.names.contains(&(r.name.clone(), r.class & 0x7fff)))
                 {
@@ -613,6 +614,18 @@ impl Publisher {
             }
         }
         self.offered = None;
+    }
+    pub(crate) fn supersede(&mut self, owner: &Name, stamp: Stamp, except: u64) {
+        for (id, p) in &mut self.publications {
+            if *id != except && p.owners.contains(owner) {
+                p.suppressed.insert(owner.clone(), (stamp, true));
+                p.following.remove(owner);
+                p.quiet.remove(owner);
+                if p.names.iter().all(|(n, _)| p.suppressed.contains_key(n)) {
+                    p.state = State::Ready;
+                }
+            }
+        }
     }
     pub(crate) fn conflict(&mut self, owner: &Name, now: Time) {
         for p in self

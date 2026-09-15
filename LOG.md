@@ -1085,3 +1085,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   owner, avoiding a separate unbounded event queue. Stored SRP data is not
   modified by this unauthenticated mDNS signal. No dependency. Runtime wiring,
   publication lifecycle integration and additional partial-set cases follow.
+- S14 transport RED `5baf901` fails on all four intended gaps. GREEN passes
+  **262 tests** and all-feature clippy. A newer local registrant now notifies
+  the superseded owner and withdrawing stale data emits no goodbye. Query
+  Additional data reaches the cache, while same-key partial authority sets
+  avoid false conflicts (TSR-03 3.5/3.7/3.9).
+- Driver now uses the combined TSR-aware receive path and adds TSR to outgoing
+  probes/answers. Packet packing includes EDNS overhead; splitting preserves
+  owner indexes and probe questions. A fragmented single data RR accompanied
+  by its OPT pseudo-record is accepted (RFC 6762 section 17; RFC 6891 section 6).
+  Age is refreshed when forming packets. Rootless peer fixtures check both
+  transmitted TSR bytes and reassembled stamped TXT input. No dependency or
+  additional persistent field. Native SRP-to-publication synchronization follows.

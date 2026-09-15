@@ -220,3 +220,73 @@ pub(crate) fn filtered(
     )?;
     Ok(out)
 }
+
+/// Reserve EDNS space while packing, keeping a probe's questions with its owners.
+pub(crate) fn packetize(
+    m: Message,
+    code: u16,
+    now: Time,
+    lookup: &impl Fn(&Name) -> Option<Stamp>,
+) -> io::Result<Vec<Message>> {
+    use crate::dns::wire::Context;
+    let mut complete = m.clone();
+    attach(&mut complete, code, now, lookup)?;
+    let size = complete.encode_context(Context::Mdns)?.len();
+    let count = records(&m).filter(|r| r.kind != 41).count();
+    if size <= 1200 || (count <= 1 && size <= 8952) {
+        return Ok(vec![complete]);
+    }
+    let probe = m.flags & 0x8000 == 0 && !m.authority.is_empty();
+    let mut base = Message::new(m.id, m.flags);
+    if !probe {
+        base.questions = m.questions.clone();
+    }
+    base.additional = m
+        .additional
+        .iter()
+        .filter(|r| r.kind == 41)
+        .cloned()
+        .collect();
+    let mut current = base.clone();
+    let mut output = vec![];
+    let mut count = 0;
+    let append = |current: &mut Message, section: usize, r: &Record| {
+        if probe {
+            for q in m.questions.iter().filter(|q| q.name == r.name) {
+                if !current.questions.contains(q) {
+                    current.questions.push(q.clone());
+                }
+            }
+        }
+        match section {
+            0 => current.answers.push(r.clone()),
+            1 => current.authority.push(r.clone()),
+            _ => current.additional.push(r.clone()),
+        }
+    };
+    for (section, r) in [&m.answers, &m.authority, &m.additional]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, records)| records.iter().filter(|r| r.kind != 41).map(move |r| (i, r)))
+    {
+        let mut trial = current.clone();
+        append(&mut trial, section, r);
+        attach(&mut trial, code, now, lookup)?;
+        if trial.encode_context(Context::Mdns)?.len() > 1200 && count > 0 {
+            attach(&mut current, code, now, lookup)?;
+            output.push(current);
+            current = base.clone();
+            count = 0;
+        }
+        append(&mut current, section, r);
+        attach(&mut current, code, now, lookup)?;
+        if current.encode_context(Context::Mdns)?.len() > 8952 {
+            return Err(invalid());
+        }
+        count += 1;
+    }
+    if count > 0 {
+        output.push(current);
+    }
+    Ok(output)
+}
