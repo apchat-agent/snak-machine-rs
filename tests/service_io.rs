@@ -698,7 +698,12 @@ fn s07_peer_service_address_journal_accepts_two_bounded_endpoint_sets() {
     let bytes = d.router.checkpoint(2001, 100).unwrap();
     let restored = Router::restore(&bytes, 0, 101, &mut r)
         .expect("32 slots apply per endpoint, not across both endpoints");
-    assert_eq!(restored.owned.len(), 42);
+    // Forty peer addresses, two link-local addresses, and two local ULA addresses.
+    assert_eq!(restored.owned.len(), 44);
+    assert_eq!(
+        restored.owned.keys().collect::<Vec<_>>(),
+        d.router.owned.keys().collect::<Vec<_>>()
+    );
     assert!(restored
         .owned
         .iter()
