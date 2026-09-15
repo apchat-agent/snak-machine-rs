@@ -343,3 +343,137 @@ fn s09_driver_tcp_pipeline_and_upstream_tcp_large_split_response() {
     assert_eq!(replies[&90].flags & 0x200, 0);
     assert_eq!(d.dns.pending_count(), 0);
 }
+
+#[test]
+fn s09_dns_configuration_ignores_foreign_ethernet_destination() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let mut opt = vec![25, 3, 0, 0, 0, 0, 0, 60];
+    opt.extend(common::ip("2001:db8::53").octets());
+    let mut p = rx(
+        Link::Ail,
+        common::nd_packet("fe80::99", "ff02::1", common::ra(0, 1800, &opt)),
+    );
+    p.bytes[..6].copy_from_slice(&[2, 0, 0, 0, 0, 222]);
+    d.accept(p, 1001, &mut rng).unwrap();
+    d.step(1001, &mut rng).unwrap();
+    assert!(d.dns.upstreams().is_empty());
+}
+#[test]
+fn s09_udp_backpressure_retains_reply_and_queue_bounds_are_independent() {
+    use snac_rs::dns::{
+        resolver::{Action, Client, Resolver},
+        service::Service,
+    };
+    let mut r = Resolver::new(true);
+    let mut rng = ScriptedRandom::new([]);
+    let mut svc = Service::default();
+    let mut stacks = [
+        stack("fe80::1".parse().unwrap()),
+        stack("fe80::2".parse().unwrap()),
+    ];
+    stacks[1].listen_udp(53).unwrap();
+    let mut c = stack("fe80::99".parse().unwrap());
+    c.listen_udp(40000).unwrap();
+    c.send_udp(
+        "fe80::99".parse().unwrap(),
+        40000,
+        "fe80::2".parse().unwrap(),
+        53,
+        &query("blocked.test.", 1, 1),
+    )
+    .unwrap();
+    c.poll(0).unwrap();
+    stacks[1].input(&c.output().unwrap(), 0).unwrap();
+    stacks[1].poll(0).unwrap();
+    for _ in 0..4 {
+        stacks[1]
+            .send_udp(
+                "fe80::2".parse().unwrap(),
+                53,
+                "fe80::99".parse().unwrap(),
+                40000,
+                &[42; 1024],
+            )
+            .unwrap();
+    }
+    svc.poll(&mut r, &mut stacks, 0, &mut rng).unwrap();
+    assert_eq!(
+        svc.next_deadline(0),
+        Some(0),
+        "full socket must retain the pending reply"
+    );
+    stacks[1].poll(1).unwrap();
+    while stacks[1].output().is_some() {}
+    svc.poll(&mut r, &mut stacks, 1, &mut rng).unwrap();
+    assert_eq!(svc.queued_replies(), (0, 0));
+    let mut svc = Service::default();
+    for _ in 0..257 {
+        svc.queue(vec![Action::Reply {
+            client: Client::udp("[fe80::99]:40000".parse().unwrap()),
+            bytes: vec![0; 12],
+        }]);
+    }
+    assert_eq!(svc.queued_replies().0, 256);
+    assert!(svc.queued_replies().1 <= 65536);
+    let mut svc = Service::default();
+    for _ in 0..20 {
+        svc.queue(vec![Action::Reply {
+            client: Client::udp("[fe80::99]:40000".parse().unwrap()),
+            bytes: vec![0; 4096],
+        }]);
+    }
+    assert!(svc.queued_replies().0 < 20);
+    assert!(svc.queued_replies().1 <= 65536);
+}
+#[test]
+fn s09_service_upstream_slot_bounds_release_on_expiry() {
+    use snac_rs::dns::{resolver::Resolver, service::Service};
+    for tcp in [false, true] {
+        let mut r = Resolver::new(true);
+        let mut rng = ScriptedRandom::new(0..10000);
+        let mut svc = Service::default();
+        let mut stacks = [
+            stack("fe80::1".parse().unwrap()),
+            stack("fe80::2".parse().unwrap()),
+        ];
+        stacks[1].listen_udp(53).unwrap();
+        for n in 0..9 {
+            r.set_upstreams(&[format!("[fe80::{:x}]:53", 100 + n).parse().unwrap()])
+                .unwrap();
+            r.submit(
+                snac_rs::dns::resolver::Client::udp(
+                    format!("[fe80::{:x}]:40000", 200 + n).parse().unwrap(),
+                ),
+                &query(&format!("n{n}.test."), 1, n),
+                0,
+                &mut rng,
+            )
+            .unwrap();
+        }
+        if tcp {
+            let queries: Vec<_> = r.queries().cloned().collect();
+            for q in queries {
+                let mut m = Message::parse(&q.bytes, Context::Unicast).unwrap();
+                m.flags = 0x8380;
+                r.receive(
+                    q.exchange,
+                    q.server,
+                    q.source_port,
+                    false,
+                    &m.encode().unwrap(),
+                    0,
+                    &mut rng,
+                )
+                .unwrap();
+            }
+        }
+        svc.poll(&mut r, &mut stacks, 0, &mut rng).unwrap();
+        let (udp, _, up) = svc.counts();
+        assert_eq!((udp, up), if tcp { (0, 8) } else { (8, 0) });
+        svc.poll(&mut r, &mut stacks, 10000, &mut rng).unwrap();
+        assert_eq!(svc.counts(), (0, 0, 0));
+    }
+}

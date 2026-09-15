@@ -829,7 +829,10 @@ fn pd_solicit_contains_stable_identity_and_64_hints() {
         options.iter().find(|o| o.0 == 1).unwrap().1,
         r.identity.duid
     );
-    assert_eq!(options.iter().find(|o| o.0 == 6).unwrap().1, vec![0, 82]);
+    assert_eq!(
+        options.iter().find(|o| o.0 == 6).unwrap().1,
+        vec![0, 23, 0, 24, 0, 82]
+    );
     let ias: Vec<_> = options.iter().filter(|o| o.0 == 25).collect();
     assert_eq!(ias.len(), 2);
     assert_eq!(&ias[0].1[..4], &[0, 0, 0, 1]);

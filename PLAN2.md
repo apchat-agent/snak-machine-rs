@@ -1447,3 +1447,14 @@ It still queues exactly 32 datagrams across eight listeners and retains all
 RA ordering/deadline assertions. The listener capacity and scheduler design
 are unchanged; this replaces the fixture's stage-S07 assumption that no
 production DNS listener exists.
+
+## ADDENDUM 4 — S09 requests resolver options during PD
+
+Draft section 7 requires a resolver, and section 5.5.2 requires discovering
+infrastructure services. The DHCPv6 ORO now requests DNS servers (23) and
+search domains (24), retaining SOL_MAX_RT (82); Information-request remains
+available when PD replies do not supply configuration. The baseline
+`pd_solicit_contains_stable_identity_and_64_hints` assertion changes from
+exact ORO `[82]` to `[23, 24, 82]`. Every other assertion, including stable
+identity, packet checksum, both IAIDs and /64 hints, is retained. The draft
+and RFC 8415 do not require excluding DNS options from the PD ORO.
