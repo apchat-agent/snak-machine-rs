@@ -915,3 +915,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   the planned coherency rules. Conservative byte charges include decoded names,
   TXT vectors, key/index storage and response work copies; shrinking expired
   vectors releases retained allocation. No dependency. Active querying follows.
+- S13 querying RED `dde33a4`: full `cargo test` confirms the missing reducer.
+  GREEN passes **226 tests** and all-feature clippy. Questions use initial
+  20–120 ms jitter/QU, then QM retries doubling from one second to one hour.
+  Unique answers switch to the RFC 6762 section 5.2 refresh schedule at
+  80–82/85–87/90–92/95–97% of TTL. Cancellation stops maintenance; client
+  reconfirmation issues repeated queries and expires unanswered data in ten
+  seconds. Failed sends advance neither QU admission nor the retry interval.
+- Known-answer lists exclude half-expired records, clear cache-flush bits and
+  span bounded TC packets. Peer QM queries suppress only redundant local work.
+  Unicast answers require a matching successfully sent QU within two seconds
+  and an on-link source; multicast works across overlay subnets (section 11).
+  Link loss clears learned evidence and reconnect resets live questions to QU.
+- Tests fill 128 questions and the 32-source rate table, exercise the global
+  128-packet/second budget, and show all queued questions progress during a
+  source flood. Question/rate allocations reserve cache-budget credit before
+  admitting records. Added retry/QU/refresh/interest fields implement the
+  planned timers and sent-history distinction. No dependency. Responder follows.

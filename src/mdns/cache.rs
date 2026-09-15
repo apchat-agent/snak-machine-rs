@@ -12,6 +12,8 @@ struct Entry {
     received: Time,
     expires: Time,
     charge: usize,
+    refresh: [Time; 4],
+    refreshed: usize,
     // First unanswered multicast question, last distinct query, and count.
     failure: Option<(Time, Time, u8)>,
 }
@@ -31,6 +33,7 @@ struct Set {
 pub struct Cache {
     sets: BTreeMap<Key, Set>,
     bytes: usize,
+    reserved: usize,
 }
 fn key(r: &Record) -> Key {
     (r.name.clone(), r.kind, r.class & 0x7fff)
@@ -64,7 +67,7 @@ impl Cache {
         (
             self.sets.len(),
             self.sets.values().map(|s| s.records.len()).sum(),
-            self.bytes,
+            self.bytes + self.reserved,
         )
     }
     pub fn clear(&mut self) {
@@ -97,7 +100,7 @@ impl Cache {
         &mut self,
         message: &Message,
         now: Time,
-        _rng: &mut impl RandomSource,
+        rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if message.flags & 0x8000 == 0 {
             return Ok(());
@@ -132,6 +135,10 @@ impl Cache {
             let Some(cost) = charge(r).filter(|n| *n <= BYTES) else {
                 continue;
             };
+            let ttl_ms = u64::from(r.ttl.min(0x7fffffff)) * 1000;
+            let jitter = rng.sample(ttl_ms / 50)?;
+            let refresh = [80, 85, 90, 95]
+                .map(|p| now.saturating_add(ttl_ms * p / 100).saturating_add(jitter));
             if let Some(s) = self.sets.get_mut(&k) {
                 if r.class & 0x8000 != 0 {
                     for e in &mut s.records {
@@ -146,11 +153,13 @@ impl Cache {
                     e.record.ttl = r.ttl.min(0x7fffffff);
                     e.record.class = r.class; // Preserve uniqueness separately from the RRset class.
                     e.failure = None;
+                    e.refresh = refresh;
+                    e.refreshed = 0;
                     s.used = now;
                     continue;
                 }
             }
-            while self.bytes + cost > BYTES
+            while self.bytes + self.reserved + cost > BYTES
                 || (!self.sets.contains_key(&k) && self.sets.len() == SETS)
             {
                 let Some(oldest) = self
@@ -173,6 +182,8 @@ impl Cache {
                 received: now,
                 expires,
                 charge: cost,
+                refresh,
+                refreshed: 0,
                 failure: None,
             });
             s.used = now;
@@ -216,6 +227,76 @@ impl Cache {
             *next == q.name && !bitmap_has(bitmap, q.kind) && !bitmap_has(bitmap, 5)
         })
     }
+    pub(crate) fn reserve(&mut self, bytes: usize) {
+        self.reserved = bytes;
+        while self.bytes + self.reserved > BYTES {
+            let Some(k) = self
+                .sets
+                .iter()
+                .min_by_key(|(_, s)| s.used)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            self.bytes -= self
+                .sets
+                .remove(&k)
+                .unwrap()
+                .records
+                .iter()
+                .map(|e| e.charge)
+                .sum::<usize>();
+        }
+    }
+    pub(crate) fn timing(&self, q: &Question, now: Time) -> (bool, Option<Time>) {
+        let entries = self
+            .sets
+            .values()
+            .flat_map(|s| &s.records)
+            .filter(|e| e.deadline() > now && interested(q, &e.record));
+        let unique = entries.clone().any(|e| e.record.class & 0x8000 != 0);
+        (
+            unique,
+            entries
+                .filter_map(|e| e.refresh.get(e.refreshed).copied())
+                .min(),
+        )
+    }
+    pub(crate) fn refreshed(&mut self, q: &Question, now: Time) {
+        for e in self.sets.values_mut().flat_map(|s| &mut s.records) {
+            if interested(q, &e.record) {
+                while e.refresh.get(e.refreshed).is_some_and(|t| *t <= now) {
+                    e.refreshed += 1;
+                }
+            }
+        }
+    }
+    pub(crate) fn known(&mut self, q: &Question, now: Time) -> Vec<Record> {
+        let mut out = vec![];
+        for s in self.sets.values_mut() {
+            for e in &s.records {
+                let remaining = e.deadline().saturating_sub(now) / 1000;
+                if interested(q, &e.record)
+                    && remaining >= u64::from(e.record.ttl.div_ceil(2))
+                    && remaining > 0
+                {
+                    let mut r = e.record.clone();
+                    r.class &= 0x7fff;
+                    r.ttl = remaining as u32;
+                    out.push(r);
+                    s.used = now;
+                }
+            }
+        }
+        out
+    }
+    pub(crate) fn suspect(&mut self, q: &Question, now: Time) {
+        for e in self.sets.values_mut().flat_map(|s| &mut s.records) {
+            if interested(q, &e.record) {
+                e.expires = e.expires.min(now.saturating_add(10000));
+            }
+        }
+    }
     pub fn observe_question(&mut self, q: &Question, known: &[Record], now: Time) {
         if q.class & 0x8000 != 0 {
             return;
@@ -253,4 +334,8 @@ pub(crate) fn bitmap_has(mut b: &[u8], kind: u16) -> bool {
         b = &b[2 + n..];
     }
     false
+}
+
+fn interested(q: &Question, r: &Record) -> bool {
+    matches(q, r) || (r.kind == 47 && r.name == q.name && r.class & 0x7fff == q.class & 0x7fff)
 }
