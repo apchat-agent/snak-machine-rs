@@ -45,3 +45,21 @@ pub fn sign(mut m: Message) -> Vec<u8> {
     m.additional.push(sig);
     m.encode().unwrap()
 }
+
+#[derive(Clone, Default)]
+pub struct Store {
+    pub bytes: std::rc::Rc<std::cell::RefCell<Option<Vec<u8>>>>,
+    pub fail: std::rc::Rc<std::cell::Cell<bool>>,
+}
+impl snac_rs::persist::StateStore for Store {
+    fn load(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        Ok(self.bytes.borrow().clone())
+    }
+    fn save(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.fail.get() {
+            return Err(std::io::Error::other("injected full disk"));
+        }
+        *self.bytes.borrow_mut() = Some(bytes.to_vec());
+        Ok(())
+    }
+}

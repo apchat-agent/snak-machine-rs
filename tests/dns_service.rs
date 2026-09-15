@@ -588,6 +588,10 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
         TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
     d.enable_dot(identity.server_config().unwrap().into())
         .unwrap();
+    let disk = common::srp::Store::default();
+    d.dns
+        .enable_srp(Box::new(disk.clone()), 0, 1789473600)
+        .unwrap();
     d.dns.set_srp_clock(1789473600, 0);
     d.start(0, &mut rng).unwrap();
     d.step(1000, &mut rng).unwrap();
@@ -643,6 +647,10 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
     let mut bad_signature = include_bytes!("fixtures/srp/alg13.bin").to_vec();
     *bad_signature.last_mut().unwrap() ^= 1;
     bytes.extend(TcpFrames::frame(&bad_signature).unwrap());
+    let mut registration = common::srp::update();
+    registration.id = 85;
+    bytes.extend(TcpFrames::frame(&common::srp::sign(registration)).unwrap());
+    bytes.extend(TcpFrames::frame(&query("host.default.service.arpa.", 28, 86)).unwrap());
     tls.writer().write_all(&bytes).unwrap();
     let mut frames = TcpFrames::new(65535).unwrap();
     let mut replies = std::collections::BTreeMap::new();
@@ -667,11 +675,30 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
             let m = Message::parse(&b, Context::Unicast).unwrap();
             replies.insert(m.id, m);
         }
-        if replies.len() == 4 {
+        if replies.len() == 6 {
             break;
         }
     }
-    assert_eq!(replies.len(), 4);
+    assert_eq!(replies.len(), 6);
+    assert_eq!(
+        replies[&85].flags & 15,
+        0,
+        "signed TLS registration succeeds"
+    );
+    assert!(matches!(replies[&85].additional[0].data, Rdata::Opt(_)));
+    assert_eq!(
+        replies[&86].answers[0].data,
+        Rdata::Aaaa("fd00::1".parse::<std::net::Ipv6Addr>().unwrap().octets())
+    );
+    let durable = snac_rs::srp::registry::Registry::restore(
+        disk.bytes.borrow().as_ref().unwrap(),
+        0,
+        1789473600 + 15,
+    )
+    .unwrap();
+    assert!(durable
+        .key(&"host.default.service.arpa.".parse().unwrap(), 0)
+        .is_some());
     assert_eq!(
         replies[&0x1234].flags & 15,
         5,
@@ -743,4 +770,140 @@ fn s10_tls_handshake_exhaustion_shares_sixty_four_slots_and_expires() {
     stacks[1].poll(10001).unwrap();
     svc.poll(&mut r, &mut stacks, 10001, &mut rng).unwrap();
     assert_eq!(svc.counts().1, 0);
+}
+
+#[test]
+fn s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss() {
+    use snac_rs::dns::wire::TcpFrames;
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(1..10000);
+    let disk = common::srp::Store::default();
+    d.dns
+        .enable_srp(Box::new(disk.clone()), 0, common::srp::NOW)
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    learn(&mut d, Link::Stub, &mut rng);
+    d.router.set_link(Link::Ail, false, 1001, &mut rng).unwrap();
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    hosts[1].listen_udp(40000).unwrap();
+    let own = d.router.identity.link_local(Link::Stub).into();
+    let mut m = common::srp::update();
+    m.authority[2].kind = 1;
+    m.authority[2].data = Rdata::A([192, 0, 2, 99]);
+    let bytes = common::srp::sign(m.clone());
+    hosts[1]
+        .send_udp(peer(Link::Stub), 40000, own, 53, &bytes)
+        .unwrap();
+    let mut ack = None;
+    for now in (1010..2000).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        if let Some(p) = hosts[1].receive_udp() {
+            ack = Some(p.bytes);
+            break;
+        }
+    }
+    assert_eq!(
+        Message::parse(&ack.unwrap(), Context::Unicast)
+            .unwrap()
+            .flags
+            & 15,
+        0
+    );
+    let committed = disk.bytes.borrow().clone().unwrap();
+    assert!(
+        snac_rs::srp::registry::Registry::restore(&committed, 0, common::srp::NOW)
+            .unwrap()
+            .key(&"host.default.service.arpa.".parse().unwrap(), 0)
+            .is_some()
+    );
+    hosts[1]
+        .send_udp(
+            peer(Link::Stub),
+            40000,
+            own,
+            53,
+            &query("host.default.service.arpa.", 28, 42),
+        )
+        .unwrap();
+    let mut answer = None;
+    for now in (2000..3000).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        if let Some(p) = hosts[1].receive_udp() {
+            answer = Some(p.bytes);
+            break;
+        }
+    }
+    let answer = Message::parse(&answer.unwrap(), Context::Unicast).unwrap();
+    assert_ne!(answer.flags & 0x400, 0);
+    assert!(answer.answers.is_empty());
+    assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 99]));
+    let id = hosts[1]
+        .connect(peer(Link::Stub), 40001, own, 53, 3000)
+        .unwrap();
+    for now in (3000..3500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    m.id += 1;
+    if let Rdata::Srv { port, .. } = &mut m.authority[4].data {
+        *port = 9000;
+    }
+    disk.fail.set(true);
+    hosts[1]
+        .send_tcp(
+            id,
+            &TcpFrames::frame(&common::srp::sign(m.clone())).unwrap(),
+        )
+        .unwrap();
+    let mut frames = TcpFrames::new(65535).unwrap();
+    let mut reply = None;
+    for now in (3500..4500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        frames.input(&hosts[1].receive_tcp(id)).unwrap();
+        if let Some(b) = frames.pop() {
+            reply = Some(b);
+            break;
+        }
+    }
+    assert_eq!(
+        Message::parse(&reply.unwrap(), Context::Unicast)
+            .unwrap()
+            .flags
+            & 15,
+        2
+    );
+    assert_eq!(disk.bytes.borrow().as_ref().unwrap(), &committed);
+    disk.fail.set(false);
+    hosts[1]
+        .send_tcp(id, &TcpFrames::frame(&common::srp::sign(m)).unwrap())
+        .unwrap();
+    let mut reply = None;
+    for now in (4500..5500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        frames.input(&hosts[1].receive_tcp(id)).unwrap();
+        if let Some(b) = frames.pop() {
+            reply = Some(b);
+            break;
+        }
+    }
+    assert_eq!(
+        Message::parse(&reply.unwrap(), Context::Unicast)
+            .unwrap()
+            .flags
+            & 15,
+        0
+    );
+    assert!(matches!(
+        d.dns.registry().unwrap().records(
+            &"My Printer._http._tcp.default.service.arpa."
+                .parse()
+                .unwrap(),
+            33,
+            5500
+        )[0]
+        .data,
+        Rdata::Srv { port: 9000, .. }
+    ));
+    assert_eq!(d.dns.pending_count(), 0);
+    assert_eq!(d.dns.cache_sets(), 0);
 }

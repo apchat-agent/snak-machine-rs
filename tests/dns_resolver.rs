@@ -1,3 +1,4 @@
+mod common;
 use snac_rs::dns::{
     resolver::{Action, Client, Resolver, UpstreamQuery},
     wire::{Context, Message, Question, Rdata, Record, TcpFrames},
@@ -786,4 +787,78 @@ fn s11_update_dispatch_validates_signatures_with_a_shared_crypto_budget() {
     assert_eq!(r.pending_count(), 0);
     let invalid = Client::udp("[ff02::1]:40000".parse().unwrap());
     assert!(r.submit(invalid, wire, 0, &mut rng).is_err());
+}
+
+#[test]
+fn s12_registrar_replay_release_and_source_policy_are_shared_and_bounded() {
+    let mut r = Resolver::new(true);
+    let mut rng = ScriptedRandom::new([]);
+    r.enable_srp(
+        Box::new(snac_rs::persist::MemoryStore::default()),
+        0,
+        1789473600,
+    )
+    .unwrap();
+    let remote = Client::udp("[2001:db8:1::2]:40000".parse().unwrap());
+    let raw = include_bytes!("fixtures/srp/alg13.bin");
+    assert_eq!(
+        Message::parse(
+            &reply(r.submit(remote.clone(), raw, 0, &mut rng).unwrap()),
+            Context::Unicast
+        )
+        .unwrap()
+        .flags
+            & 15,
+        5
+    );
+    let prefix = snac_rs::wire::Prefix::new("2001:db8:1::".parse().unwrap(), 64).unwrap();
+    r.set_srp_sources(&[prefix]).unwrap();
+    assert_eq!(
+        Message::parse(
+            &reply(r.submit(remote, raw, 0, &mut rng).unwrap()),
+            Context::Unicast
+        )
+        .unwrap()
+        .flags
+            & 15,
+        0
+    );
+    assert!(r.take_srp_changed());
+    assert!(!r.take_srp_changed());
+    let client = Client::udp("[fe80::2]:40000".parse().unwrap());
+    let mut removal = Message::parse(
+        include_bytes!("fixtures/srp/alg13-remove.bin"),
+        Context::Unicast,
+    )
+    .unwrap();
+    removal.additional[0].data = Rdata::Opt(vec![(2, vec![0; 8])]);
+    let raw = common_srp_release(removal);
+    for _ in 0..2 {
+        assert_eq!(
+            Message::parse(
+                &reply(r.submit(client.clone(), &raw, 1000, &mut rng).unwrap()),
+                Context::Unicast
+            )
+            .unwrap()
+            .flags
+                & 15,
+            0
+        );
+    }
+    assert!(r
+        .registry()
+        .unwrap()
+        .key(&"host.default.service.arpa.".parse().unwrap(), 1000)
+        .is_none());
+    let prefixes: Vec<_> = (0..64)
+        .map(|n| snac_rs::wire::Prefix::new(format!("fd00:{n:x}::").parse().unwrap(), 64).unwrap())
+        .collect();
+    r.set_srp_sources(&prefixes).unwrap();
+    let mut overflow = prefixes;
+    overflow.push(prefix);
+    assert!(r.set_srp_sources(&overflow).is_err());
+}
+fn common_srp_release(m: Message) -> Vec<u8> {
+    // Shared test signer is independent of the live dispatch/verification code.
+    common::srp::sign(m)
 }
