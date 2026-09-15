@@ -597,3 +597,53 @@ fn review_11_router_churn_reclaims_expired_headers_but_keeps_zero_lifetime_mo() 
         assert_eq!(r.lifecycle, Lifecycle::Running);
     }
 }
+
+#[test]
+fn review_12_service_dad_replacement_survives_future_advertisements() {
+    let mut d = driver();
+    for s in &mut d.router.links {
+        s.state = AilState::BeginAdvertising;
+    }
+    d.step(0, &mut ScriptedRandom::new([])).unwrap();
+    d.step(1, &mut ScriptedRandom::new([])).unwrap();
+    let prefix = d.router.identity.prefix(Link::Stub);
+    let rejected = d.router.identity.address(Link::Stub, prefix);
+    d.accept(
+        incoming(&d, Link::Stub, ns("::", rejected, None)),
+        2,
+        &mut ScriptedRandom::new([77]),
+    )
+    .unwrap();
+    d.step(1002, &mut ScriptedRandom::new([])).unwrap();
+    for now in [3000, 6000, 160000, 320000] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+        assert!(!d.router.owned.contains_key(&(Link::Stub, rejected)));
+        let addresses: Vec<_> = d
+            .router
+            .owned
+            .iter()
+            .filter(|((l, _), a)| *l == Link::Stub && a.prefix == Some(prefix))
+            .collect();
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].1.state, snac_rs::router::DadState::Ready);
+        assert!(d.router.memberships(Link::Stub).len() <= 4);
+    }
+}
+#[test]
+fn review_12_exhausted_dad_stops_affected_link() {
+    let mut d = driver();
+    d.start(0, &mut ScriptedRandom::new([])).unwrap();
+    for (now, random) in [(1, 77), (2, 88), (3, 99)] {
+        let target = d.router.identity.link_local(Link::Stub);
+        d.accept(
+            incoming(&d, Link::Stub, ns("::", target, None)),
+            now,
+            &mut ScriptedRandom::new([random]),
+        )
+        .unwrap();
+    }
+    d.step(1000, &mut ScriptedRandom::new([])).unwrap();
+    assert!(!d.router.links[1].up);
+    assert!(d.io.groups[1].is_empty());
+    assert!(d.router.links[0].up);
+}
