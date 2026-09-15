@@ -572,3 +572,136 @@ fn s07_reassembly_byte_budget_is_independent_of_context_count() {
     assert!(r.input(&overflow, 60001).is_err());
     assert_eq!(r.context_count(), 0);
 }
+
+#[test]
+fn s07_driver_connection_budget_is_shared_between_links() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    for link in [Link::Ail, Link::Stub] {
+        let own = d.router.identity.link_local(link);
+        for n in 0..32 {
+            d.stack_mut(link)
+                .unwrap()
+                .connect(
+                    own.into(),
+                    40000 + n,
+                    format!("fe80::{:x}", n + 100).parse().unwrap(),
+                    1053,
+                    1000,
+                )
+                .unwrap();
+        }
+    }
+    let own = d.router.identity.link_local(Link::Ail);
+    assert!(d
+        .stack_mut(Link::Ail)
+        .unwrap()
+        .connect(own.into(), 40100, "fe80::ffff".parse().unwrap(), 1053, 1000)
+        .is_err());
+    assert_eq!(
+        d.stack_mut(Link::Ail).unwrap().connections().len()
+            + d.stack_mut(Link::Stub).unwrap().connections().len(),
+        64
+    );
+}
+#[test]
+fn s07_failed_dad_transmission_never_creates_a_ready_listener_address() {
+    use snac_rs::io::PacketIo;
+    struct Blocked {
+        memory: MemoryIo,
+        blocked: bool,
+    }
+    impl PacketIo for Blocked {
+        fn info(&self, l: Link) -> &LinkInfo {
+            self.memory.info(l)
+        }
+        fn receive(&mut self, t: std::time::Duration) -> std::io::Result<Option<Received>> {
+            self.memory.receive(t)
+        }
+        fn send(&mut self, l: Link, b: &[u8]) -> std::io::Result<()> {
+            if self.blocked && b.len() > 40 && b[8..24] == [0; 16] && b[40] == 135 {
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            self.memory.send(l, b)
+        }
+        fn join(&mut self, l: Link, a: std::net::Ipv6Addr) -> std::io::Result<()> {
+            self.memory.join(l, a)
+        }
+        fn leave(&mut self, l: Link, a: std::net::Ipv6Addr) -> std::io::Result<()> {
+            self.memory.leave(l, a)
+        }
+        fn link_up(&self, l: Link) -> std::io::Result<bool> {
+            self.memory.link_up(l)
+        }
+    }
+    let d = service_driver();
+    let mut info = d.io.info.clone();
+    for i in &mut info {
+        i.kind = FrameKind::RawIpv6;
+    }
+    let mut d = Driver::new(
+        d.router,
+        Blocked {
+            memory: MemoryIo::new(info),
+            blocked: true,
+        },
+    )
+    .unwrap();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    for l in [Link::Ail, Link::Stub] {
+        assert!(!d.router.address_ready(l, d.router.identity.link_local(l)));
+        assert!(d.stack_mut(l).unwrap().addresses().is_empty());
+    }
+    d.io.blocked = false;
+    d.step(2000, &mut r).unwrap();
+    for l in [Link::Ail, Link::Stub] {
+        assert!(!d.router.address_ready(l, d.router.identity.link_local(l)));
+    }
+    d.step(3000, &mut r).unwrap();
+    for l in [Link::Ail, Link::Stub] {
+        assert!(d.router.address_ready(l, d.router.identity.link_local(l)));
+    }
+}
+#[test]
+fn s07_peer_service_address_journal_accepts_two_bounded_endpoint_sets() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    for link in [Link::Ail, Link::Stub] {
+        let mut opts = vec![];
+        for n in 0..20 {
+            opts.extend(common::pio(
+                &format!("fd99:{}:{n:x}::", link.index() + 1),
+                64,
+                0xc0,
+                1800,
+                3600,
+            ));
+        }
+        d.accept(
+            service_rx(
+                link,
+                common::nd_packet("fe80::99", "ff02::1", common::ra(0, 1800, &opts)),
+            ),
+            1001,
+            &mut r,
+        )
+        .unwrap();
+    }
+    d.step(1001, &mut r).unwrap();
+    d.step(2001, &mut r).unwrap();
+    let bytes = d.router.checkpoint(2001, 100).unwrap();
+    let restored = Router::restore(&bytes, 0, 101, &mut r)
+        .expect("32 slots apply per endpoint, not across both endpoints");
+    assert_eq!(restored.owned.len(), 42);
+    assert!(restored
+        .owned
+        .iter()
+        .filter(|(_, a)| a.prefix.is_some())
+        .all(|(_, a)| a.state == DadState::Tentative));
+}
