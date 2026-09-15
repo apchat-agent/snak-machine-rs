@@ -233,3 +233,140 @@ fn s07_udp_tcp_use_ready_addresses_and_share_bounded_port_ownership() {
             .is_err());
     }
 }
+
+fn syn(source: &str, destination: &str, port: u16) -> Vec<u8> {
+    let mut b = port.to_be_bytes().to_vec();
+    b.extend(1053u16.to_be_bytes());
+    b.extend(1u32.to_be_bytes());
+    b.extend([0; 4]);
+    b.extend([0x50, 2, 0xff, 0xff, 0, 0, 0, 0]);
+    let c = common::sum(common::ip(source), common::ip(destination), 6, &b);
+    b[16..18].copy_from_slice(&c.to_be_bytes());
+    common::packet(source, destination, 6, 64, &b)
+}
+#[test]
+fn s07_socket_address_and_buffer_caps_reject_overflow_and_expire_half_opens() {
+    let mut b = stack("fd11:22::1");
+    let addresses: Vec<_> = (1..=32)
+        .map(|i| format!("fd11:22::{i:x}").parse::<IpAddr>().unwrap())
+        .collect();
+    b.set_addresses(&addresses).unwrap();
+    let mut more = addresses.clone();
+    more.push("fd11:22::100".parse().unwrap());
+    assert!(b.set_addresses(&more).is_err());
+    assert_eq!(b.addresses(), addresses);
+    for port in 1053..1061 {
+        b.listen_tcp(port).unwrap();
+        b.listen_udp(port).unwrap();
+    }
+    assert!(b.listen_tcp(1061).is_err());
+    assert!(b.listen_udp(1061).is_err());
+    b.send_udp(
+        addresses[0],
+        1053,
+        "fd11:22::100".parse().unwrap(),
+        40000,
+        &vec![1; 4096],
+    )
+    .unwrap();
+    assert!(b
+        .send_udp(
+            addresses[0],
+            1053,
+            "fd11:22::100".parse().unwrap(),
+            40000,
+            b"x"
+        )
+        .is_err());
+    for n in 0..65 {
+        b.input(
+            &syn(&format!("fd11:33::{:x}", n + 1), "fd11:22::1", 40000),
+            0,
+        )
+        .unwrap();
+        b.poll(0).unwrap();
+        while b.output().is_some() {}
+    }
+    assert_eq!(b.connections().len(), 64);
+    b.poll(10000).unwrap();
+    assert!(b.connections().is_empty());
+    for n in 0..5 {
+        b.input(&syn("fd11:33::1", "fd11:22::1", 40000 + n), 10001)
+            .unwrap();
+        b.poll(10001).unwrap();
+        while b.output().is_some() {}
+    }
+    assert_eq!(b.connections().len(), 4);
+}
+fn udp6(bytes: &[u8]) -> Vec<u8> {
+    let mut b = vec![0x9c, 0x40, 4, 0x1d];
+    b.extend(((bytes.len() + 8) as u16).to_be_bytes());
+    b.extend([0, 0]);
+    b.extend(bytes);
+    let c = common::sum(common::ip("fd11:22::1"), common::ip("fd11:22::2"), 17, &b);
+    b[6..8].copy_from_slice(&c.to_be_bytes());
+    common::packet("fd11:22::1", "fd11:22::2", 17, 64, &b)
+}
+fn fragment6(packet: &[u8], id: u32, offset: usize, end: usize, more: bool) -> Vec<u8> {
+    let mut payload = vec![packet[6], 0];
+    payload.extend(((offset as u16) | u16::from(more)).to_be_bytes());
+    payload.extend(id.to_be_bytes());
+    payload.extend(&packet[40 + offset..40 + end]);
+    common::packet("fd11:22::1", "fd11:22::2", 44, 64, &payload)
+}
+#[test]
+fn s07_fragmented_udp_is_reassembled_before_listener_delivery() {
+    let mut b = stack("fd11:22::2");
+    b.listen_udp(1053).unwrap();
+    let data = vec![42; 2000];
+    let p = udp6(&data);
+    b.input(&fragment6(&p, 17, 1024, 2008, false), 0).unwrap();
+    b.poll(0).unwrap();
+    assert!(b.receive_udp().is_none());
+    b.input(&fragment6(&p, 17, 0, 1024, true), 1).unwrap();
+    b.poll(1).unwrap();
+    assert_eq!(b.receive_udp().unwrap().bytes, data);
+    // ND belongs to Router even when its destination is an endpoint address.
+    let nd = common::nd_packet("fe80::99", "fd11:22::2", common::ra(0, 1800, &[]));
+    assert!(b.input(&nd, 2).is_err());
+}
+
+#[test]
+fn s07_reassembly_rejects_overlap_truncation_and_bounds_contexts() {
+    use snac_rs::ip_reassembly::Reassembler;
+    let p = udp6(&vec![42; 2000]);
+    let first = fragment6(&p, 1, 0, 1024, true);
+    let last = fragment6(&p, 1, 1024, 2008, false);
+    let mut r = Reassembler::default();
+    for n in 0..first.len() {
+        assert!(r.input(&first[..n], 0).is_err());
+    }
+    assert_eq!(r.context_count(), 0);
+    assert!(r.input(&first, 0).unwrap().is_none());
+    assert!(r.input(&first, 1).is_err());
+    assert_eq!(r.context_count(), 0);
+    assert!(r.input(&last, 2).unwrap().is_none());
+    assert_eq!(r.input(&first, 3).unwrap().unwrap(), p);
+    for id in 0..64 {
+        assert!(r
+            .input(&fragment6(&p, id, 0, 1024, true), 10)
+            .unwrap()
+            .is_none());
+    }
+    assert!(r.input(&fragment6(&p, 64, 0, 1024, true), 10).is_err());
+    assert_eq!(r.context_count(), 64);
+    assert!(r.retained_bytes() <= 4 * 1024 * 1024);
+    r.expire(60010);
+    assert_eq!(r.context_count(), 0);
+    assert_eq!(r.retained_bytes(), 0);
+    // Atomic fragment is independent of a pending non-atomic datagram with the same ID.
+    r.input(&first, 60011).unwrap();
+    let tiny = udp6(b"atomic");
+    assert_eq!(
+        r.input(&fragment6(&tiny, 1, 0, tiny.len() - 40, false), 60012)
+            .unwrap()
+            .unwrap(),
+        tiny
+    );
+    assert_eq!(r.context_count(), 1);
+}
