@@ -53,7 +53,11 @@ impl Message {
             }
         }
         let b = &udp[8..];
-        if b[..3] != [2, 1, 6] || b[236..240] != [99, 130, 83, 99] {
+        if b[..3] != [2, 1, 6]
+            || b[236..240] != [99, 130, 83, 99]
+            || b[28] & 1 != 0
+            || b[28..34] == [0; 6]
+        {
             return Err(invalid());
         }
         let mut options = BTreeMap::new();
@@ -223,6 +227,9 @@ fn addresses(b: &[u8], cap: usize) -> io::Result<Vec<Ipv4Addr>> {
         .collect()
 }
 fn routes(b: &[u8]) -> io::Result<Vec<Route>> {
+    if b.is_empty() {
+        return Err(invalid());
+    }
     let mut at = 0;
     let mut out = vec![];
     while at < b.len() {
@@ -267,6 +274,7 @@ fn search(b: &[u8]) -> io::Result<Vec<Vec<Vec<u8>>>> {
     }
     let mut out = vec![];
     let mut cursor = 0;
+    let mut boundaries = std::collections::BTreeSet::new();
     while cursor < b.len() {
         let start = cursor;
         if out.len() >= 16 {
@@ -278,13 +286,14 @@ fn search(b: &[u8]) -> io::Result<Vec<Vec<Vec<u8>>>> {
         let mut size = 1;
         for _ in 0..128 {
             let n = *b.get(at).ok_or_else(invalid)? as usize;
+            boundaries.insert(at);
             if n == 0 {
                 cursor = consumed.unwrap_or(at + 1);
                 break;
             }
             if n & 0xc0 == 0xc0 {
                 let ptr = ((n & 63) << 8) | usize::from(*b.get(at + 1).ok_or_else(invalid)?);
-                if ptr >= at {
+                if ptr >= at || !boundaries.contains(&ptr) {
                     return Err(invalid());
                 }
                 consumed.get_or_insert(at + 2);

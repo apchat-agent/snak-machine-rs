@@ -346,3 +346,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   DNS addresses to eight, search data to 1024 bytes/16 names and routes to 64.
   No new dependency; typed configuration/lease/option state is planned in S06.
   Hostile parser cases and the acquisition/client integration follow.
+- S06 hostile RED `84184bc`: full `cargo test --no-fail-fast` fails on a
+  multicast BOOTP client MAC. GREEN passes **107 tests**, rejects invalid
+  hardware identities, compression pointers into label payloads and empty
+  classless-route options. Tests cover all truncations, UDP ports/length/
+  checksum, cookie, conflicting duplicates, recursive overload, oversized
+  concatenation, pointer loops and exact DNS/search/route capacities. The
+  name-boundary index is transient and bounded by the 1024-byte search input.
+  No dependency. All-feature clippy passes.
