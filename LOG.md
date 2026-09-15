@@ -495,3 +495,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   This can reduce segment sizes on other connections in that stack; it does
   not increase path MTU or change routing. No dependency. IPv6 retains its
   1280-byte minimum at the output boundary.
+- S07 hostile/transport RED `detailed in git log` executes a failure on
+  accepting an unspecified-source fragment before reassembly. GREEN passes
+  **134 tests** and all-feature clippy. Endpoint admission rejects invalid
+  IPv4/IPv6 sources and expired hop limits before fragment retention.
+  A real TCP connection through Ethernet Driver/ND recovers a lost SYN,
+  reversed and duplicate data segments, delivers 6000 exact bytes and handles
+  reset. Loopback tests exercise four connections per client, short accepted
+  writes, TCP buffer refusal, UDP entry/byte floods and idle expiry. No new
+  fields or dependency. Remaining S07 scheduler/PMTU negative fixtures follow.

@@ -311,12 +311,24 @@ impl Stack {
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<()> {
         // Check ownership before retaining even the first fragment.
         let destination = match b.first().map(|v| v >> 4) {
-            Some(6) => IpAddr::V6(
-                envelope(FrameKind::RawIpv6, b)
-                    .map_err(|_| invalid())?
-                    .destination,
-            ),
-            Some(4) => IpAddr::V4(crate::ipv4::wire::Packet::parse(b)?.destination),
+            Some(6) => {
+                let e = envelope(FrameKind::RawIpv6, b).map_err(|_| invalid())?;
+                if e.source.is_unspecified()
+                    || e.source.is_multicast()
+                    || e.source.is_loopback()
+                    || e.hop_limit == 0
+                {
+                    return Err(invalid());
+                }
+                IpAddr::V6(e.destination)
+            }
+            Some(4) => {
+                let p = crate::ipv4::wire::Packet::parse(b)?;
+                if !crate::ipv4::unicast(p.source) || p.ttl == 0 {
+                    return Err(invalid());
+                }
+                IpAddr::V4(p.destination)
+            }
             _ => return Err(invalid()),
         };
         if !self.addresses.contains(&destination) {
