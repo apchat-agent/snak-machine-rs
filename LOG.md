@@ -42,3 +42,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 19 osnr-budget GREEN — 19 passed; AIL capacity drops deprecated then earliest-invalid OSNR entries per draft permission; no pagination. Export lifetime caps remain independent of preferred lifetime.
 - 20 stub-default RED — 20 tests specified; cargo test failed for the new contract (see paired test commit).
 - 20 stub-default GREEN — 20 passed; Effective default lives once in AilRoute, header processed before default RIO; two planned configuration switches affect advertisements; failed next hops cease backing defaults.
+- 21 other-stub-routes RED — 21 tests specified; cargo test failed for the new contract (see paired test commit).
+- 21 other-stub-routes GREEN — 21 passed; Nondefault RIO lifetimes survive omitted options and zero router headers; alternate paths prevent false withdrawal, reflected connected OSNRs excluded; three successful zero-RIO sends retire a withdrawal.

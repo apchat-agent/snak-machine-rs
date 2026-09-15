@@ -58,6 +58,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub withdrawals: BTreeMap<(Link, Prefix), u8>,
     pub routes: BTreeMap<(Ipv6Addr, Prefix), Route>,
     pub no_stub_default: bool,
     pub always_advertise_ail_routes: bool,
@@ -84,6 +85,7 @@ impl Router {
             })
         }
         Ok(Self {
+            withdrawals: BTreeMap::new(),
             routes: BTreeMap::new(),
             no_stub_default: false,
             always_advertise_ail_routes: false,
@@ -394,6 +396,16 @@ impl Router {
         {
             state.state = AilState::Suitable;
         }
+        for o in &nd.options {
+            if let Some(r) = Rio::decode(o.bytes) {
+                if r.lifetime == 0 {
+                    if let Some(count) = self.withdrawals.get_mut(&(tx.link, r.prefix)) {
+                        *count = count.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        self.withdrawals.retain(|_, count| *count > 0);
         for o in nd.options {
             if let Some(p) = Pio::decode(o.bytes) {
                 state.last_valid = Lifetime::from_secs(now, p.valid);

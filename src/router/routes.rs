@@ -29,8 +29,22 @@ impl Router {
         }
         for o in &nd.options {
             if let Some(r) = Rio::decode(o.bytes) {
-                if r.prefix.length == 0 {
+                if r.prefix.length == 0
+                    || (r.prefix.routable() && !self.on_link.contains_key(&(Link::Stub, r.prefix)))
+                {
                     self.routes.remove(&(key.address, r.prefix));
+                    if r.prefix.length > 0
+                        && r.lifetime == 0
+                        && !self
+                            .routes
+                            .iter()
+                            .any(|((a, p), v)| *p == r.prefix && self.usable_route(*a, v, now))
+                    {
+                        self.withdrawals.insert((Link::Stub, r.prefix), 3);
+                    }
+                    if r.lifetime > 0 {
+                        self.withdrawals.remove(&(Link::Stub, r.prefix));
+                    }
                     if r.lifetime > 0 {
                         self.routes.insert(
                             (key.address, r.prefix),
@@ -68,16 +82,37 @@ impl Router {
             .unwrap_or(0)
     }
     pub(super) fn stub_routes(&self, now: Time) -> Vec<Rio> {
-        if self.default_lifetime(now) > 0 && !self.always_advertise_ail_routes {
-            return vec![];
+        let mut routes: BTreeMap<Prefix, u32> = BTreeMap::new();
+        if self.default_lifetime(now) == 0 || self.always_advertise_ail_routes {
+            for ((l, p), v) in &self.on_link {
+                if *l == Link::Ail && v.valid.live(now) {
+                    routes.insert(*p, v.valid.remaining(now).min(1800));
+                }
+            }
         }
-        self.on_link
-            .iter()
-            .filter(|((l, _), p)| *l == Link::Ail && p.valid.live(now))
-            .map(|((_, prefix), p)| Rio {
-                prefix: *prefix,
+        for ((a, p), r) in &self.routes {
+            if p.length > 0
+                && self.usable_route(*a, r, now)
+                && !self.on_link.contains_key(&(Link::Stub, *p))
+            {
+                let lifetime = r.valid.remaining(now).min(1800);
+                routes
+                    .entry(*p)
+                    .and_modify(|l| *l = (*l).max(lifetime))
+                    .or_insert(lifetime);
+            }
+        }
+        for ((l, p), _) in &self.withdrawals {
+            if *l == Link::Stub {
+                routes.entry(*p).or_insert(0);
+            }
+        }
+        routes
+            .into_iter()
+            .map(|(prefix, lifetime)| Rio {
+                prefix,
                 preference: Preference::Low,
-                lifetime: p.valid.remaining(now).min(1800),
+                lifetime,
             })
             .collect()
     }
