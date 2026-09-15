@@ -177,3 +177,35 @@ fn unknown_completes_router_discovery() {
     assert!(nd.options.iter().all(|o| o.kind != 3));
     assert!(nd.options.iter().any(|o| o.kind == 24));
 }
+
+#[test]
+fn mo_comes_from_latest_eligible_non_snac_ra() {
+    let mut r = router(1);
+    let mut rng = ScriptedRandom::new([]);
+    for (t, source, flags, life, expected) in [
+        (1, "fe80::1", 0x80, 0, 0x80),
+        (2, "fe80::2", 0x40, 1, 0x40),
+        (3, "fe80::3", 0xc2, 0, 0x40),
+        (4, "fe80::4", 0, 1, 0),
+    ] {
+        r.receive(
+            Link::Ail,
+            &nd_packet(source, "ff02::1", ra(flags, life, &[])),
+            t,
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(r.snapshot(Link::Ail, t).encode().unwrap()[45], expected | 2);
+    }
+    assert_eq!(r.snapshot(Link::Ail, 1004).encode().unwrap()[45], 0x82);
+    assert_eq!(r.snapshot(Link::Ail, 900000).encode().unwrap()[45], 0x82);
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::1", "ff02::1", ra(0x40, 0, &[])),
+        900001,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(r.snapshot(Link::Ail, 900002).encode().unwrap()[45], 0x42);
+    assert_eq!(r.snapshot(Link::Stub, 900002).encode().unwrap()[45], 0);
+}
