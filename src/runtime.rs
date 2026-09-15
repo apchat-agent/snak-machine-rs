@@ -9,6 +9,7 @@ pub struct Driver<I> {
     pub router: Router,
     pub io: I,
     pub ipv4: crate::ipv4::Ipv4,
+    dhcp: Option<crate::ipv4::dhcp::Client>,
     groups: [BTreeSet<Ipv6Addr>; 2],
     mdns4: bool,
 }
@@ -33,6 +34,7 @@ impl<I: PacketIo> Driver<I> {
             router,
             io,
             ipv4,
+            dhcp: None,
             groups: Default::default(),
             mdns4: false,
         })
@@ -155,7 +157,11 @@ impl<I: PacketIo> Driver<I> {
             let _ = self.sync_groups();
             return Err(e);
         }
-        self.dispatch(tx, now, rng)
+        self.dispatch(tx, now, rng)?;
+        if self.io.info(Link::Ail).kind == crate::wire::FrameKind::Ethernet {
+            self.dhcp = Some(crate::ipv4::dhcp::Client::new(self.ipv4.mac, now, rng)?);
+        }
+        Ok(())
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         self.sync_groups()?;
@@ -208,14 +214,9 @@ impl<I: PacketIo> Driver<I> {
             if rx.direction == Direction::OwnEgress {
                 continue;
             }
-            match self
-                .router
-                .receive_frame(rx.link, rx.kind, &rx.bytes, now, rng)
-            {
-                Ok(tx) => self.dispatch(tx, now, rng)?,
-                Err(e) => eprintln!("{now}ms {:?}: {e}", rx.link),
-            }
+            self.accept(rx, now, rng)?;
         }
+        self.poll_dhcp(now, rng)?;
         let tx = self.router.tick(now, rng)?;
         self.dispatch(tx, now, rng)?;
         self.poll_ipv4(now, rng)?;
@@ -249,6 +250,9 @@ impl<I: PacketIo> Driver<I> {
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if rx.direction != Direction::OwnEgress {
+            if self.receive_dhcp(&rx, now, rng)? {
+                return Ok(());
+            }
             match self
                 .router
                 .receive_frame(rx.link, rx.kind, &rx.bytes, now, rng)
@@ -257,6 +261,132 @@ impl<I: PacketIo> Driver<I> {
                 Err(e) => eprintln!("{now}ms {:?}: {e}", rx.link),
             }
             self.poll_ipv4(now, rng)?;
+        }
+        Ok(())
+    }
+    pub fn ipv4_configuration(&self) -> Option<&crate::ipv4::dhcp::Configuration> {
+        self.dhcp.as_ref().and_then(|c| c.configuration())
+    }
+    fn receive_dhcp(
+        &mut self,
+        rx: &crate::io::Received,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<bool> {
+        use crate::{
+            io::families::{ethernet_family, Family},
+            ipv4::{
+                dhcp::wire::Message,
+                wire::{Arp, Packet},
+            },
+            wire::FrameKind,
+        };
+        let frame = &rx.bytes;
+        if self.dhcp.is_none()
+            || rx.link != Link::Ail
+            || rx.kind != FrameKind::Ethernet
+            || !self.router.links[0].up
+            || matches!(
+                self.router.lifecycle,
+                Lifecycle::Stopped | Lifecycle::Stopping | Lifecycle::Degraded
+            )
+            || frame.len() < 14
+            || frame[6..12] == self.ipv4.mac
+            || frame[6] & 1 != 0
+            || (frame[0] & 1 == 0 && frame[..6] != self.ipv4.mac)
+        {
+            return Ok(false);
+        }
+        match ethernet_family(frame) {
+            Some(Family::Arp) if Arp::parse(frame).is_ok() => {
+                let out = self.dhcp.as_mut().unwrap().receive_arp(frame, now, rng)?;
+                self.dispatch_dhcp(out, now, rng)?;
+                self.sync_ipv4_configuration()?;
+            }
+            Some(Family::Ipv4) => {
+                if let Ok(p) = Packet::parse(&frame[14..]) {
+                    if p.protocol == 17 && p.payload.len() >= 8 && p.payload[..4] == [0, 67, 0, 68]
+                    {
+                        if let Ok(m) = Message::parse(p.bytes) {
+                            if p.destination.is_broadcast()
+                                || p.destination == m.address
+                                || self.ipv4.address.is_some_and(|(a, _)| a == p.destination)
+                            {
+                                self.dhcp.as_mut().unwrap().receive(p.bytes, now, rng)?;
+                                self.sync_ipv4_configuration()?;
+                            }
+                        }
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+    fn sync_ipv4_configuration(&mut self) -> io::Result<()> {
+        let Some(client) = &self.dhcp else {
+            return Ok(());
+        };
+        if let Some(c) = client.configuration() {
+            if self.ipv4.address != Some((c.address, c.length)) {
+                self.ipv4.configure(c.address, c.length, None)?;
+            }
+            if self.ipv4.routes() != c.routes {
+                self.ipv4.set_routes(&c.routes)?;
+            }
+        } else {
+            self.ipv4.unavailable();
+        }
+        Ok(())
+    }
+    fn poll_dhcp(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        let Some(client) = &mut self.dhcp else {
+            return Ok(());
+        };
+        let out = if matches!(
+            self.router.lifecycle,
+            Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Degraded
+        ) {
+            client.stop(now, rng)?
+        } else {
+            client.set_link(self.router.links[0].up, now, rng)?;
+            client.poll(now, rng)?
+        };
+        self.dispatch_dhcp(out, now, rng)?;
+        self.sync_ipv4_configuration()
+    }
+    fn dispatch_dhcp(
+        &mut self,
+        out: Vec<crate::ipv4::dhcp::Output>,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        use crate::ipv4::dhcp::OutputKind;
+        for output in out {
+            let result = match output.kind {
+                OutputKind::Arp => self.io.send(Link::Ail, &output.packet),
+                OutputKind::Broadcast => {
+                    let mut frame = vec![255; 6];
+                    frame.extend(self.ipv4.mac);
+                    frame.extend([8, 0]);
+                    frame.extend(output.packet);
+                    self.io.send(Link::Ail, &frame)
+                }
+                OutputKind::Unicast => self.send_ipv4(&output.packet, now, rng),
+            };
+            if let Err(e) = result {
+                eprintln!("{now}ms IPv4 acquisition transmit failed: {e}");
+                self.dhcp.as_mut().unwrap().set_link(false, now, rng)?;
+                self.ipv4.unavailable();
+                if !matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    self.router.shutdown(now, rng)?;
+                }
+                break;
+            }
         }
         Ok(())
     }

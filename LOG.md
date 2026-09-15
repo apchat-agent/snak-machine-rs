@@ -378,3 +378,24 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   saturating conflict counter implement the planned RFC 3927 reducer. No
   dependency or design change. References: RFC 2131 §§4.4.1/4.4.5, RFC 3927
   §§2.1–2.5, RFC 3397 search compression, RFC 3442 route precedence.
+- S06 Driver RED `74085bc` executes and fails because no DHCPDISCOVER is sent
+  and acquisition failures do not enter paced shutdown. Supplemental RED
+  `6bf78c1` retains all baseline ND assertions while removing their implicit
+  IPv6-only EtherType assumption, documented in PLAN2 ADDENDUM 2.
+- Baseline test changes: `review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay`
+  and `review_08_incoming_ra_during_dad_never_uses_tentative_source` formerly
+  unwrapped IPv6 parsing for every AIL frame. They now select IPv6 EtherType
+  before parsing ICMPv6; the exact RS count and NS existence, DAD, scheduling
+  and lifecycle assertions are unchanged. Draft §§6/6.2 require the new IPv4
+  packet path. With production edits temporarily removed, all retained 72
+  tests pass and only the two S06 Driver behaviors fail.
+- GREEN: **116 tests pass**. Ethernet Driver startup enables the client;
+  checked AIL DHCP and ARP enter acquisition, acquired configuration updates
+  routes, and DNS/search configuration is exposed for S09. Wrong-link and
+  self-egress input are excluded. Hard acquisition send failure clears
+  readiness and starts paced shutdown; carrier recovery reacquires. Actual
+  emitted Ethernet DISCOVER/REQUEST/probes/announcements are inspected.
+  The one optional Driver client is planned state; no dependency added.
+- Needs privileged acceptance: DHCPv4 interoperability, IPv4LL ARP conflicts,
+  server next-hop delivery and carrier transitions over real TAP/pcap links.
+  Tests use memory Ethernet peers and require no privileged ports/interfaces.

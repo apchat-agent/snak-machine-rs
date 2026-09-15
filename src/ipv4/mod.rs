@@ -23,7 +23,7 @@ pub struct Ipv4 {
     arp_window: u64,
     arp_sent: u8,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Route {
     pub network: Ipv4Addr,
     pub length: u8,
@@ -79,6 +79,9 @@ impl Ipv4 {
     }
     pub fn route_count(&self) -> usize {
         self.routes.len()
+    }
+    pub fn routes(&self) -> &[Route] {
+        &self.routes
     }
     pub fn set_routes(&mut self, routes: &[Route]) -> io::Result<()> {
         let (address, length) = self
