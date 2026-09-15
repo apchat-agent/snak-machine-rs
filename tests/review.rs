@@ -858,3 +858,50 @@ fn review_15_release_uses_previous_randomized_interval() {
         }
     }
 }
+
+#[test]
+fn review_16_checkpoint_writes_follow_semantic_changes_and_bounded_heartbeat() {
+    #[derive(Default)]
+    struct CountingStore {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+    impl StateStore for CountingStore {
+        fn load(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+            Ok(Some(self.bytes.clone()))
+        }
+        fn save(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+            self.writes += 1;
+            self.bytes = bytes.to_vec();
+            Ok(())
+        }
+    }
+    let mut r = router();
+    let p = r.identity.prefix(Link::Stub);
+    r.on_link.insert(
+        (Link::Stub, p),
+        OnLink {
+            valid: Lifetime::Until(1800123),
+            preferred: Lifetime::Until(1800123),
+        },
+    );
+    let mut writer = snac_rs::persist::CheckpointWriter::default();
+    let mut store = CountingStore::default();
+    for now in (0..100000).step_by(100) {
+        writer
+            .save(&r, &mut store, now, 100000 + now / 1000)
+            .unwrap();
+    }
+    assert_eq!(store.writes, 1);
+    r.on_link.get_mut(&(Link::Stub, p)).unwrap().valid = Lifetime::Until(1900000);
+    writer.save(&r, &mut store, 100000, 100100).unwrap();
+    assert_eq!(store.writes, 2);
+    r.identity.iids[1] += 1;
+    writer.save(&r, &mut store, 100001, 100100).unwrap();
+    assert_eq!(store.writes, 3);
+    writer.save(&r, &mut store, 400001, 100400).unwrap();
+    assert_eq!(store.writes, 4);
+    let restored = Router::restore(&store.bytes, 0, 100500, &mut ScriptedRandom::new([])).unwrap();
+    assert_eq!(restored.identity, r.identity);
+    assert_eq!(restored.on_link[&(Link::Stub, p)].valid.remaining(0), 1400);
+}
