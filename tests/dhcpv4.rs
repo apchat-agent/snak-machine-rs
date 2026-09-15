@@ -170,3 +170,145 @@ fn s06_option_overload_compression_and_table_limits() {
         assert_eq!(valid(&reply(&body(2, XID, &opts))), count == 64);
     }
 }
+
+use snac_rs::{
+    ipv4::dhcp::{Client, Output, OutputKind, State},
+    time::{RandomSource, ScriptedRandom},
+};
+fn client_kind(o: &Output) -> u8 {
+    assert_ne!(o.kind, OutputKind::Arp);
+    assert_eq!(&o.packet[20..24], &[0, 68, 0, 67]);
+    assert_eq!(checksum(&o.packet[..20]), 0);
+    let b = &o.packet[28..];
+    assert_eq!(&b[..3], &[1, 1, 6]);
+    let mut at = 240;
+    while at < b.len() {
+        let code = b[at];
+        at += 1;
+        if code == 0 {
+            continue;
+        }
+        if code == 255 {
+            break;
+        }
+        let n = b[at] as usize;
+        at += 1;
+        if code == 53 {
+            return b[at];
+        }
+        at += n;
+    }
+    panic!("client omitted message type")
+}
+fn offer(c: &mut Client, kind: u8, now: u64, rng: &mut impl RandomSource) {
+    c.receive(&reply(&body(kind, c.xid(), &parameters())), now, rng)
+        .unwrap();
+}
+fn acquire(c: &mut Client, rng: &mut impl RandomSource) {
+    assert_eq!(client_kind(&c.poll(1000, rng).unwrap()[0]), 1);
+    offer(c, 2, 1001, rng);
+    assert_eq!(client_kind(&c.poll(2001, rng).unwrap()[0]), 3);
+    offer(c, 5, 2002, rng);
+    assert!(c.configuration().is_none());
+    let mut probes = 0;
+    let mut announcements = 0;
+    for now in (2100..=10000).step_by(100) {
+        for o in c.poll(now, rng).unwrap() {
+            if o.kind == OutputKind::Arp {
+                assert_eq!(&o.packet[12..22], &[8, 6, 0, 1, 8, 0, 6, 4, 0, 1]);
+                if o.packet[28..32] == [0; 4] {
+                    probes += 1;
+                } else {
+                    announcements += 1;
+                }
+            }
+        }
+    }
+    assert_eq!((probes, announcements), (3, 2));
+    assert_eq!(c.configuration().unwrap().address, ip("192.0.2.10"));
+}
+#[test]
+fn s06_client_offer_ack_conflict_checks_renew_rebind_expire_and_release() {
+    let mut rng = ScriptedRandom::new([]);
+    let mut c = Client::new(MAC, 0, &mut rng).unwrap();
+    acquire(&mut c, &mut rng);
+    let lease = c.lease().unwrap().clone();
+    assert_eq!(c.state(), State::Bound);
+    let out = c.poll(lease.t1, &mut rng).unwrap();
+    assert_eq!(out[0].kind, OutputKind::Unicast);
+    assert_eq!(client_kind(&out[0]), 3);
+    assert_eq!(&out[0].packet[40..44], &[192, 0, 2, 10]);
+    assert_eq!(c.state(), State::Renewing);
+    offer(&mut c, 5, lease.t1 + 1, &mut rng);
+    let lease = c.lease().unwrap().clone();
+    assert_eq!(c.state(), State::Bound);
+    assert_eq!(
+        c.poll(lease.t2, &mut rng).unwrap()[0].kind,
+        OutputKind::Broadcast
+    );
+    assert_eq!(c.state(), State::Rebinding);
+    c.poll(lease.expires, &mut rng).unwrap();
+    assert!(c.configuration().is_none());
+    let mut c = Client::new(MAC, 0, &mut rng).unwrap();
+    acquire(&mut c, &mut rng);
+    let release = c.stop(10000, &mut rng).unwrap();
+    assert_eq!(client_kind(&release[0]), 7);
+    assert!(c.configuration().is_none());
+}
+#[test]
+fn s06_client_reboot_revalidates_and_drops_wrong_transactions_and_nak() {
+    let mut rng = ScriptedRandom::new([]);
+    let mut c = Client::new(MAC, 0, &mut rng).unwrap();
+    acquire(&mut c, &mut rng);
+    let lease = c.lease().unwrap().clone();
+    let mut c = Client::new(MAC, 10000, &mut rng).unwrap();
+    c.restore(lease, 10000, &mut rng).unwrap();
+    assert!(c.configuration().is_none());
+    assert_eq!(c.state(), State::Reboot);
+    assert_eq!(client_kind(&c.poll(10000, &mut rng).unwrap()[0]), 3);
+    for kind in [2, 5, 6] {
+        c.receive(
+            &reply(&body(kind, c.xid() ^ 1, &parameters())),
+            10001,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!(c.state(), State::Reboot);
+    let mut wrong = body(5, c.xid(), &parameters());
+    wrong[33] ^= 1;
+    c.receive(&reply(&wrong), 10001, &mut rng).unwrap();
+    assert!(c.configuration().is_none());
+    offer(&mut c, 6, 10002, &mut rng);
+    assert_eq!(c.state(), State::Selecting);
+    assert!(c.configuration().is_none());
+}
+#[test]
+fn s06_offer_table_is_bounded_and_retries_cover_rng_extremes() {
+    struct Edge(bool);
+    impl RandomSource for Edge {
+        fn fill(&mut self, b: &mut [u8]) -> std::io::Result<()> {
+            b.fill(1);
+            Ok(())
+        }
+        fn sample(&mut self, max: u64) -> std::io::Result<u64> {
+            Ok(if self.0 { max } else { 0 })
+        }
+    }
+    for high in [false, true] {
+        let mut rng = Edge(high);
+        let mut c = Client::new(MAC, 0, &mut rng).unwrap();
+        let first = if high { 10000 } else { 1000 };
+        assert!(c.poll(first - 1, &mut rng).unwrap().is_empty());
+        assert_eq!(client_kind(&c.poll(first, &mut rng).unwrap()[0]), 1);
+        let retry = first + if high { 5000 } else { 3000 };
+        assert!(c.poll(retry - 1, &mut rng).unwrap().is_empty());
+        assert_eq!(client_kind(&c.poll(retry, &mut rng).unwrap()[0]), 1);
+        for n in 1..=1000 {
+            let mut b = body(2, c.xid(), &parameters());
+            b[245..249].copy_from_slice(&[192, 0, (n / 254) as u8, (n % 254 + 1) as u8]);
+            c.receive(&reply(&b), retry, &mut rng).unwrap();
+        }
+        assert_eq!(c.offer_count(), 8);
+    }
+}
