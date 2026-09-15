@@ -1,0 +1,2 @@
+[env]
+SMOLTCP_IFACE_MAX_ADDR_COUNT = "32"

@@ -72,3 +72,56 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - `chore(review-nits)` rejects duplicate IAIDs, validates/rate-limits Echo replies and documents resource budgets, topology recovery and native acceptance limits. A separate F09 test commit expands the already-fixed adapter/Driver boundary coverage. `REVIEW-RESPONSE.md` maps every numbered finding to red/green commits and records remaining unnumbered observations.
 - Final validation: `cargo test` and `cargo test --features pcap` each pass **72 tests**; `cargo build` and `cargo build --features pcap` are clean; `cargo fmt --check` and `cargo clippy --all-targets --all-features -- -D warnings` pass. Both `aarch64-apple-darwin` and `x86_64-apple-darwin` pass `cargo check --all-targets --features pcap`. No native interfaces opened, no privileged smoke tests, no push. The pre-existing untracked `.gitignore` remains untouched.
 - Local test transcripts: `/tmp/review-*-red.log` and `/tmp/step4-*.log` (also copied into `.lane/step4-validation/`). These are disposable local evidence; the committed regression tests and commit pairs are authoritative.
+
+## Task 6 — PLAN2 conformance completion
+
+- S01 RED — `b7e0ff7`; `cargo test` exited 101 for the intended initial API
+  seam: missing `service_io` and the planned TCP/TLS/PKI crates. The six Python
+  audit fixtures also failed to import the absent auditor. The separately run
+  `cargo test --locked --test adapters --test forwarding --test review --test
+  scenarios --test wire` passed all **72 baseline tests** at this red commit.
+  Only tests, test support and the provisional requirements inventory were
+  committed in RED.
+- S01 GREEN — **77 Rust tests passed**, including the untouched 72 baseline
+  tests and five new service/audit tests. The audit test runs **six Python
+  cases** (not added again to the Rust test count). Actual IPv6 TCP handshake
+  and bidirectional bytes, independent TCP checksums, scoped/truncated input,
+  packet/byte capacity, explicit-provider TLS 1.2/1.3 handshakes with split
+  records, application data, malformed identities and hostile records pass.
+  One TCP socket has fixed 64 KiB receive and send buffers; the combined IP
+  queues have 64-packet/64-KiB limits, tested at capacity and beyond. This is
+  the S01 endpoint seam, not a DNS listener or Driver service integration.
+- S01 audits — `scripts/conformance_audit.py` checks all **103 R rows**, **112
+  physical keyword lines** and **10 C rows**, code/test citations, runnable
+  test names, duplicate/missing IDs, ignored tests and closure milestones.
+  Provisional mode passes; `--require-complete` correctly exits 1 with **45
+  unfinished rows**, including the ten supplemental commitments. No service
+  requirement is newly declared closed. `tests/requirements.tsv` is the
+  provisional inventory; REVIEW.md remains the historical review.
+- S01 dependencies — added exactly PLAN2's nine direct pins, all with default
+  features disabled: smoltcp 0.12.0 for userspace TCP/UDP; rustls 0.23.45 for
+  TLS; rustls-rustcrypto 0.0.2-alpha for pure Rust TLS cryptography; p256 0.13.2
+  for SRP algorithm 13/certificate signing; p384 0.13.1, ed25519-dalek 2.2.0
+  and ed448-goldilocks-plus 0.16.0 for recommended SRP algorithms 14–16;
+  x509-cert 0.2.5 for certificate construction; sha1 0.10.7 for the planned
+  NSEC3 view. These latter service primitives are pinned prerequisites, not
+  claims that their services already run. Cargo.lock preserves Appendix A's
+  active transitive versions; no new dev/build dependency. The dependency
+  audit passes all three targets: 113 active package/version pairs on Linux
+  and x86_64 macOS, 112 on aarch64 macOS (the x86 derive crate is inactive).
+  No active ring, aws-lc, cc, native TLS or new system-library build.
+- S01 surprises — Cargo metadata retains optional webpki/ring/cc edges that
+  `cargo tree --edges normal,build` proves inactive. The policy checker uses
+  the actual tree for activation and metadata for package properties, and
+  explicitly reports inactive lock entries. The TLS test's DNS-name fixture
+  needed the pinned DER crate's `Ia5String::new` constructor; its assertions
+  and wire behavior are unchanged. No fields beyond PLAN2 were added: the
+  endpoint/interface/socket handle and bounded packet queues are the planned
+  transport state; `SMOLTCP_IFACE_MAX_ADDR_COUNT=32` is set in Cargo config.
+- S01 validation — default and pcap `cargo test` each pass 77 tests; both
+  `cargo build` variants, `cargo fmt --check`, clippy across all targets and
+  features with `-D warnings`, and Apple aarch64/x86_64 all-target checks with
+  pcap pass. Rust **1.85.0** passes both all-feature build and all-target check
+  with the lockfile. Evidence is in `.lane/step6-validation/s01-*.log`;
+  committed tests and paired commits are the durable evidence. No interfaces
+  opened, no privileged execution and no push.

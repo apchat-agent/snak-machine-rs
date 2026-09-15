@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "scripts"))
 import conformance_audit as ca
 import dependency_audit as da

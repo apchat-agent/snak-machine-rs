@@ -45,7 +45,7 @@ pub fn identity() -> (Vec<u8>, Vec<u8>) {
     .unwrap();
     builder
         .add_extension(&SubjectAltName(vec![GeneralName::DnsName(
-            "localhost".try_into().unwrap(),
+            x509_cert::der::asn1::Ia5String::new("localhost").unwrap(),
         )]))
         .unwrap();
     let cert = builder.build::<DerSignature>().unwrap().to_der().unwrap();
