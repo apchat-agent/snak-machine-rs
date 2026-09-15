@@ -384,3 +384,49 @@ fn ail_prefix_arbitration_follows_draft() {
         );
     }
 }
+
+#[test]
+fn deprecation_counts_down_then_omits() {
+    let mut r = providing(23);
+    let mut rng = ScriptedRandom::new([]);
+    let own = r.identity.prefix(Link::Ail);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::9", "2001:db8::"),
+        12000,
+        &mut rng,
+    )
+    .unwrap();
+    for (elapsed, valid, present) in [
+        (0, 1800, true),
+        (100000, 1700, true),
+        (1594000, 206, true),
+        (1595000, 205, false),
+        (1800000, 0, false),
+    ] {
+        let now = 12000 + elapsed;
+        let p = r
+            .snapshot(Link::Ail, now)
+            .pios
+            .into_iter()
+            .find(|p| p.prefix == own);
+        assert_eq!(p.is_some(), present);
+        if let Some(p) = p {
+            assert_eq!((p.preferred, p.valid), (0, valid));
+            let packet = r.snapshot(Link::Ail, now).encode().unwrap();
+            r.transmitted(
+                &snac_rs::router::Tx {
+                    link: Link::Ail,
+                    packet,
+                },
+                now,
+                true,
+                &mut rng,
+            )
+            .unwrap();
+        }
+    }
+    assert!(r.on_link[&(Link::Ail, own)].valid.live(1811999));
+    assert!(!r.on_link[&(Link::Ail, own)].valid.live(1812000));
+    assert_eq!(r.links[0].deprecate_at, Some(12000));
+}
