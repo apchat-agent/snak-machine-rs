@@ -1007,7 +1007,7 @@ fn s13_truncated_known_answer_continuations_are_source_scoped_and_expire_under_f
         "different sender cannot suppress this query"
     );
     continuation.source = d.source;
-    e.receive(&continuation, true, &mut p, &source, 3350, &mut rng)
+    e.receive(&continuation, true, &mut p, &source, 3450, &mut rng)
         .unwrap();
     assert!(e.poll(&p, &source, 3500).unwrap().is_none());
     for i in 0..128 {
