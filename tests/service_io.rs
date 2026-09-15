@@ -991,3 +991,69 @@ fn s07_saturated_service_work_does_not_starve_a_router_advertisement() {
     assert_eq!(first.1[54], 134);
     assert!(!d.router.links[1].scheduler.due(deadline));
 }
+
+#[test]
+fn s07_pmtu_rejects_unmatched_or_impossible_quotes_and_expires() {
+    for case in 0..4 {
+        let mut a = stack("192.0.2.1");
+        let mut b = stack("198.51.100.2");
+        b.listen_tcp(1053).unwrap();
+        let id = a
+            .connect(
+                "192.0.2.1".parse().unwrap(),
+                40000,
+                "198.51.100.2".parse().unwrap(),
+                1053,
+                0,
+            )
+            .unwrap();
+        for now in (0..1000).step_by(10) {
+            stacks(&mut a, &mut b, now);
+        }
+        a.send_tcp(id, &[42; 2000]).unwrap();
+        a.poll(1000).unwrap();
+        let mut quote = vec![];
+        while let Some(p) = a.output() {
+            if p.len() > 576 {
+                quote = p;
+            }
+        }
+        assert!(!quote.is_empty());
+        if case == 0 {
+            quote[20] ^= 1;
+        }
+        if case == 1 {
+            quote[2..4].copy_from_slice(&40u16.to_be_bytes());
+            quote[10..12].fill(0);
+            let c = sum4(&quote[..20]);
+            quote[10..12].copy_from_slice(&c.to_be_bytes());
+        }
+        let mut error = vec![3, 4, 0, 0, 0, 0, 2, 64];
+        error.extend(&quote[..28]);
+        let c = sum4(&error);
+        error[2..4].copy_from_slice(&c.to_be_bytes());
+        if case == 2 {
+            error[2] ^= 1;
+        }
+        a.input(&ip4([192, 0, 2, 254], [192, 0, 2, 1], 1, &error), 1001)
+            .unwrap();
+        a.poll(1001).unwrap();
+        while a.output().is_some() {}
+        let now = if case == 3 { 601002 } else { 1002 };
+        a.poll(now).unwrap();
+        while a.output().is_some() {}
+        a.listen_udp(40002).unwrap();
+        a.send_udp(
+            "192.0.2.1".parse().unwrap(),
+            40002,
+            "198.51.100.2".parse().unwrap(),
+            40003,
+            &[42; 1000],
+        )
+        .unwrap();
+        a.poll(now).unwrap();
+        let packet = a.output().unwrap();
+        assert_eq!(packet.len(), 1028, "PMTU case {case}");
+        assert_eq!(packet[6] & 0x20, 0);
+    }
+}
