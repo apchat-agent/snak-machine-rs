@@ -386,3 +386,56 @@ fn s05_classless_routes_have_atomic_capacity_and_longest_prefix_selection() {
     assert_eq!(state.next_hop(ip("10.1.2.3")), Some(ip("192.0.2.253")));
     assert_eq!(state.next_hop(ip("10.2.2.3")), Some(ip("192.0.2.254")));
 }
+
+#[test]
+fn s05_arp_flood_rate_and_conflicting_unsolicited_reply() {
+    let own = [2, 0, 0, 0, 0, 1];
+    let peer = [2, 0, 0, 0, 0, 2];
+    let mut s = Ipv4::new(own);
+    s.configure(ip("192.0.2.1"), 24, None).unwrap();
+    let request = arp(1, peer, ip("192.0.2.2"), ip("192.0.2.1"));
+    let replies: usize = (0..1000)
+        .map(|_| s.receive(&request, 0).unwrap().len())
+        .sum();
+    assert_eq!(replies, 32, "global ARP output budget per second");
+    assert_eq!(s.receive(&request, 1000).unwrap().len(), 1);
+    let poisoned = arp(2, [2, 9, 9, 9, 9, 9], ip("192.0.2.2"), ip("192.0.2.1"));
+    s.receive(&poisoned, 1001).unwrap();
+    let p = packet(ip("192.0.2.1"), ip("192.0.2.2"), 17, &[0; 8]);
+    assert_eq!(&s.send(&p, 1002).unwrap()[0][..6], &peer);
+    let mut unicast_request = request;
+    unicast_request[..6].copy_from_slice(&own);
+    assert!(
+        Arp::parse(&unicast_request).is_ok(),
+        "request target hardware is unspecified"
+    );
+}
+
+#[test]
+fn s05_inbound_byte_bound_and_hostile_frame_filtering() {
+    let mut s = Ipv4::default();
+    s.configure(ip("192.0.2.1"), 24, None).unwrap();
+    let mut frame = vec![2, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 2, 8, 0];
+    frame.extend(packet(
+        ip("192.0.2.2"),
+        ip("192.0.2.1"),
+        17,
+        &vec![0; 65515],
+    ));
+    for _ in 0..5 {
+        s.receive(&frame, 0).unwrap();
+    }
+    assert_eq!(s.pending_input(), (4, 262140));
+    s.unavailable();
+    s.configure(ip("192.0.2.1"), 24, None).unwrap();
+    for n in 0..frame.len() {
+        s.receive(&frame[..n], 0).unwrap();
+    }
+    assert_eq!(s.pending_input(), (0, 0));
+    for at in [0, 6, 26, 30] {
+        let mut b = frame.clone();
+        b[at] = 255;
+        s.receive(&b, 0).unwrap();
+    }
+    assert_eq!(s.pending_input(), (0, 0));
+}
