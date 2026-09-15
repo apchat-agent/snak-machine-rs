@@ -452,3 +452,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Needs privileged acceptance: actual Ethernet peers reaching the userspace
   UDP/TCP addresses, service DAD and source addressing on peer prefixes.
   Native sockets/interfaces are not substituted for the production IP stack.
+- S07 loopback RED `5725a38`: `cargo test` confirms the initial loopback
+  adapter seam is absent. GREEN passes **126 tests** and all-feature clippy.
+  Nonblocking UDP/TCP adapters exchange the same bytes over ephemeral
+  127.0.0.1 and ::1 ports, including TCP half-close. No public peer, real
+  interface or privileged port is used. The adapter bounds connections,
+  per-peer admission, per-direction byte queues, UDP work and per-poll work.
+  Its readiness/EOF/close/queue state is planned transport state; no dependency.
+- Independent reassembly byte-cap evidence fills 63 nearly maximal contexts
+  then refuses another before the 64-context bound, with no retained growth.
+  Expiry releases all charged memory; offset overflow fails before retention.
