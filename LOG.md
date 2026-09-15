@@ -6,3 +6,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 01 envelope GREEN — 1 passed; checked borrowed envelopes, Ethernet padding and payload bounds; no router state yet.
 - 02 nd-validation RED — 2 tests specified; cargo test failed for the new contract (see paired test commit).
 - 02 nd-validation GREEN — 2 passed; Shared ND validation rejects a malformed final TLV before any consumer can update state; transit fragment metadata is separate.
+- 03 pio RED — 3 tests specified; cargo test failed for the new contract (see paired test commit).
+- 03 pio GREEN — 3 passed; Lifetime admission uses the received preferred value; non-/64 on-link evidence remains available for routing.

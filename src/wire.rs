@@ -207,3 +207,80 @@ pub fn decode_nd<'a>(e: &Envelope<'a>) -> Result<Nd<'a>, WireError> {
         options,
     })
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Prefix {
+    pub address: Ipv6Addr,
+    pub length: u8,
+}
+impl Prefix {
+    pub fn new(address: Ipv6Addr, length: u8) -> Option<Self> {
+        if length > 128 {
+            return None;
+        }
+        let mask = if length == 0 {
+            0
+        } else {
+            u128::MAX << (128 - length)
+        };
+        Some(Self {
+            address: Ipv6Addr::from(u128::from(address) & mask),
+            length,
+        })
+    }
+    pub fn contains(self, address: Ipv6Addr) -> bool {
+        Self::new(address, self.length) == Some(self)
+    }
+    pub fn ula(self) -> bool {
+        self.address.octets()[0] & 0xfe == 0xfc
+    }
+    pub fn routable(self) -> bool {
+        self.length > 0
+            && !link_local(self.address)
+            && !self.address.is_multicast()
+            && !self.address.is_unspecified()
+            && !self.address.is_loopback()
+    }
+}
+pub fn u32_at(b: &[u8], n: usize) -> u32 {
+    u32::from_be_bytes(b[n..n + 4].try_into().unwrap())
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pio {
+    pub prefix: Prefix,
+    pub flags: u8,
+    pub preferred: u32,
+    pub valid: u32,
+}
+impl Pio {
+    pub fn decode(b: &[u8]) -> Option<Self> {
+        if b.len() != 32 || b[0] != 3 || b[1] != 4 {
+            return None;
+        }
+        Some(Self {
+            prefix: Prefix::new(Ipv6Addr::from(<[u8; 16]>::try_from(&b[16..32]).ok()?), b[2])?,
+            flags: b[3],
+            preferred: u32_at(b, 8),
+            valid: u32_at(b, 4),
+        })
+    }
+    pub fn on_link(self) -> bool {
+        self.flags & 0x80 != 0
+    }
+    pub fn suitable(self) -> bool {
+        self.prefix.length == 64
+            && self.prefix.routable()
+            && self.on_link()
+            && self.flags & 0x50 != 0
+            && self.preferred >= 1800
+            && self.preferred <= self.valid
+    }
+    pub fn encode(self) -> Vec<u8> {
+        let mut b = vec![3, 4, self.prefix.length, self.flags];
+        b.extend(self.valid.to_be_bytes());
+        b.extend(self.preferred.to_be_bytes());
+        b.extend([0; 4]);
+        b.extend(self.prefix.address.octets());
+        b
+    }
+}
