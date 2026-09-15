@@ -992,3 +992,107 @@ fn review_nits_echo_replies_have_valid_sources_and_bounded_rate() {
         );
     }
 }
+
+#[test]
+fn review_09_native_packet_drops_and_backend_shutdown_reach_driver() {
+    use snac_rs::io::{Device, NativeFraming, PacketIo, PacketPort};
+    use std::{collections::VecDeque, io, time::Duration};
+    struct Port(VecDeque<io::Result<Vec<u8>>>);
+    impl PacketPort for Port {
+        fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+            self.0.pop_front().transpose()
+        }
+        fn send(&mut self, b: &[u8]) -> io::Result<usize> {
+            Ok(b.len())
+        }
+    }
+    struct NativeIo {
+        device: Device<Port>,
+        memory: MemoryIo,
+    }
+    impl PacketIo for NativeIo {
+        fn info(&self, l: Link) -> &LinkInfo {
+            self.memory.info(l)
+        }
+        fn receive(&mut self, _: Duration) -> io::Result<Option<Received>> {
+            Ok(self.device.receive()?.map(|bytes| Received {
+                link: Link::Ail,
+                bytes,
+                kind: FrameKind::RawIpv6,
+                direction: Direction::Ingress,
+            }))
+        }
+        fn send(&mut self, l: Link, b: &[u8]) -> io::Result<()> {
+            self.memory.send(l, b)
+        }
+        fn join(&mut self, l: Link, g: std::net::Ipv6Addr) -> io::Result<()> {
+            self.memory.join(l, g)
+        }
+        fn leave(&mut self, l: Link, g: std::net::Ipv6Addr) -> io::Result<()> {
+            self.memory.leave(l, g)
+        }
+    }
+    let r = router();
+    let mut ipv6 = vec![0, 0, 0, 30];
+    ipv6.extend(nd_packet(
+        "fe80::99",
+        &r.identity.link_local(Link::Ail).to_string(),
+        vec![128, 0, 0, 0, 1, 2, 3, 4],
+    ));
+    let info = [Link::Ail, Link::Stub].map(|l| LinkInfo {
+        name: format!("native-{l:?}"),
+        index: l.index() as u32 + 1,
+        kind: FrameKind::RawIpv6,
+        mtu: 1500,
+        mac: None,
+    });
+    let backend = NativeIo {
+        device: Device::new(
+            Port(VecDeque::from([
+                Ok(vec![0, 0, 0, 2, 0x45]),
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "truncated pcap capture",
+                )),
+                Ok(ipv6),
+            ])),
+            NativeFraming::Utun,
+            None,
+        ),
+        memory: MemoryIo::new(info),
+    };
+    let mut d = Driver::new(r, backend).unwrap();
+    for s in &mut d.router.links {
+        s.state = AilState::BeginAdvertising;
+    }
+    for now in [0, 1, 2] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    assert_eq!(d.io.device.discarded, 2);
+    assert_eq!(d.router.lifecycle, Lifecycle::Running);
+    assert!(d.io.memory.output.iter().any(|(_, p)| p[40] == 129));
+    d.io.memory.output.clear();
+    d.io.device
+        .port
+        .0
+        .push_back(Err(io::Error::other("device lost")));
+    for now in [3, 3000, 6000, 9000, 12000] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    assert_eq!(d.router.lifecycle, Lifecycle::Stopped);
+    assert!(d.io.memory.groups.iter().all(|g| g.is_empty()));
+    assert!(d.io.memory.output.iter().any(|(_, p)| p[40] == 134));
+    for (_, p) in &d.io.memory.output {
+        let e = envelope(FrameKind::RawIpv6, p).unwrap();
+        if let Ok(nd) = decode_nd(&e) {
+            if nd.kind == 134 {
+                assert_eq!(&nd.body[6..8], &[0, 0]);
+                assert!(nd
+                    .options
+                    .iter()
+                    .filter_map(|o| Rio::decode(o.bytes))
+                    .all(|r| r.lifetime == 0));
+            }
+        }
+    }
+}
