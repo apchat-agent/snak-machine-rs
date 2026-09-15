@@ -526,3 +526,70 @@ fn s06_driver_acquisition_transmit_failure_keeps_readiness_false_and_stops_clean
         Lifecycle::Stopping | Lifecycle::Stopped
     ));
 }
+
+#[test]
+fn s06_driver_releases_a_resolved_lease_before_shutdown_clears_configuration() {
+    let mut r = ScriptedRandom::new([]);
+    let mut d = driver(&mut r);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    let discover = &d
+        .io
+        .output
+        .iter()
+        .find(|(_, b)| b.len() > 300 && b[12..14] == [8, 0])
+        .unwrap()
+        .1;
+    let xid = u32::from_be_bytes(discover[46..50].try_into().unwrap());
+    receive(
+        &mut d,
+        Link::Ail,
+        ether(reply(&body(2, xid, &parameters()))),
+        1001,
+        &mut r,
+    );
+    d.step(2001, &mut r).unwrap();
+    receive(
+        &mut d,
+        Link::Ail,
+        ether(reply(&body(5, xid, &parameters()))),
+        2002,
+        &mut r,
+    );
+    for now in (2100..=10000).step_by(100) {
+        d.step(now, &mut r).unwrap();
+    }
+    assert_eq!(d.ipv4_configuration().unwrap().dns, vec![ip("192.0.2.53")]);
+    let mut a = conflict(ip("192.0.2.1"), false);
+    a[38..42].copy_from_slice(&[192, 0, 2, 10]);
+    receive(&mut d, Link::Ail, a, 10001, &mut r);
+    d.io.output.clear();
+    d.router.shutdown(10002, &mut r).unwrap();
+    d.step(10002, &mut r).unwrap();
+    let release =
+        d.io.output
+            .iter()
+            .find(|(l, b)| *l == Link::Ail && b.len() > 300 && b[12..14] == [8, 0])
+            .expect("release must precede removal of the IPv4 address");
+    assert_eq!(
+        client_kind(&Output {
+            kind: OutputKind::Unicast,
+            packet: release.1[14..].to_vec()
+        }),
+        7
+    );
+    assert!(!d.ipv4.ready());
+    assert!(d.ipv4_configuration().is_none());
+}
+#[test]
+fn s06_dhcp_datagrams_with_expired_ttl_or_reserved_client_flags_are_rejected() {
+    let mut p = reply(&body(2, XID, &parameters()));
+    p[8] = 0;
+    p[10..12].fill(0);
+    let c = checksum(&p[..20]);
+    p[10..12].copy_from_slice(&c.to_be_bytes());
+    assert!(Message::parse(&p).is_err());
+    let mut b = body(2, XID, &parameters());
+    b[11] = 1;
+    assert!(Message::parse(&reply(&b)).is_err());
+}
