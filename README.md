@@ -152,3 +152,18 @@ cargo check --target x86_64-apple-darwin --all-targets --features pcap
 
 These checks do not link or execute macOS binaries. Actual Linux TAP/pcap and
 macOS utun/BPF runtime behavior remains subject to the manual acceptance tests.
+
+## Status
+
+See [STATUS.md](STATUS.md) for what is implemented, what was never exercised,
+and what a follow-up should pick up first.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. `draft-ietf-snac-simple-12.txt` is an IETF Internet-Draft and
+is governed by the IETF Trust Legal Provisions, not by the licenses above.
