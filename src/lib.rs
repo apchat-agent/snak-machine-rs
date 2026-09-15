@@ -1,3 +1,4 @@
+pub mod dns;
 pub mod ip_reassembly;
 pub mod ipv4;
 pub mod wire;

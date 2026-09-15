@@ -517,3 +517,23 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   optional bounded deadline beyond PLAN2's literal field layout, necessary
   to prevent a transient error from permanently reducing all endpoint traffic.
   No dependency. All retained baseline assertions pass.
+- S07 transport/scheduler step is complete; all-feature clippy is clean.
+  Later S23 integration exercises service behavior over these endpoints.
+
+### S08 — shared DNS wire codec (in progress)
+
+- RED `6138c0d`: `cargo test` fails on the missing DNS codec API. GREEN
+  passes **143 tests** and all-feature clippy. Literal DNS/UPDATE/EDNS/DNSSEC
+  records, binary/mixed-case labels and TCP split/coalesced frames round-trip.
+  Names retain original octets and use separate case-insensitive indexes;
+  checked backward pointers can only reference previously decoded boundaries.
+  Original wire bytes and record spans remain separate for SIG(0) verification.
+- Unknown RDATA is retained only in the original wire image; encoding refuses
+  its relocation. SRV target compression is accepted for UPDATE and mDNS,
+  rejected in unicast queries/replies (RFC 9665 section 3.2.5.4). Shared
+  validation covers fixed lengths, options, NSEC bitmaps, SVCB parameter order,
+  truncation at every byte and a bounded exhaustive mutation pass.
+- Planned framing state has a 65535-byte message limit, 65537 charged bytes
+  including its length prefix, and 32 queued frames; limit rejection is atomic.
+  Message records, pointer provenance and decoding work are independently
+  bounded. No field outside the planned codec/provenance state; no dependency.
