@@ -550,3 +550,22 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   sections 6.1 and 18.14; unicast retains RFC 4034's prohibition. The shared
   codec has no new dependency or state outside PLAN2's codec ownership.
   S08 is complete.
+
+### S09 — resolver and infrastructure DNS configuration (in progress)
+
+- RED `903b156`: `cargo test` confirms the absent forwarding resolver API.
+  GREEN passes **152 tests** and all-feature clippy. Real ephemeral loopback
+  UDP/TCP peers exchange resolver-generated query bytes, including TC retry
+  and framed TCP responses. Matching includes exchange, source endpoint,
+  local source port, protocol, transaction ID and the complete question.
+  Truncated, wrong-source, wrong-question and stale replies leave work pending.
+- AAAA-without-AAAA triggers A lookup for NOERROR, SERVFAIL and REFUSED;
+  NXDOMAIN and the explicit override suppress it. Original CNAME chains and
+  RCODE survive; canonical A records are deduplicated in Additional. A lookup
+  timeout returns the original answer. CNAME chains stop at 16 or on a loop.
+  Forwarded AD is cleared. Cache TTL decay, SOA-derived negative expiry,
+  transaction deadlines and TCP/UDP response limits share one resolver path.
+- State uses PLAN2's query/waiter/cache/upstream ownership, with conservative
+  charged buffer/index overhead and deterministic capacity checks. Native
+  packet/stream adapters execute returned actions; the production service
+  dispatcher is integrated in later S09/S23 fixtures. No dependency.
