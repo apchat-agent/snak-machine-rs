@@ -559,11 +559,11 @@ fn s14_native_signed_srp_udp_drives_ail_probe_browse_update_and_expiry() {
     });
     d.accept(
         frame(packet(true, &browse.encode().unwrap())),
-        3000,
+        3800,
         &mut rng,
     )
     .unwrap();
-    d.step(3020, &mut rng).unwrap();
+    d.step(3820, &mut rng).unwrap();
     let reply =
         d.io.output
             .iter()
