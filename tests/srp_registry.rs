@@ -166,13 +166,15 @@ fn s12_delete_host_removes_services_and_subtypes_but_retains_requested_key_claim
     release.additional[0].data = Rdata::Opt(vec![(2, vec![0; 8])]);
     let release = verified(&r, release, 2000);
     r.apply(&release, &mut store, 2000, NOW + 2).unwrap();
-    assert_eq!(r.counts(), (0, 0, 0));
-    assert_eq!(
-        Registry::restore(store.0.as_ref().unwrap(), 0, NOW + 2)
-            .unwrap()
-            .counts(),
-        (0, 0, 0)
+    assert_eq!((r.counts().0, r.counts().1), (0, 0));
+    let restored = Registry::restore(store.0.as_ref().unwrap(), 0, NOW + 2).unwrap();
+    assert_eq!((restored.counts().0, restored.counts().1), (0, 0));
+    assert!(
+        restored.replay_count() > 0,
+        "released ownership retains only bounded acknowledgments"
     );
+    r.expire(32000);
+    assert_eq!(r.counts(), (0, 0, 0));
 }
 
 #[test]
