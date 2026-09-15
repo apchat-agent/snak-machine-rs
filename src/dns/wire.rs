@@ -878,3 +878,36 @@ impl TcpFrames {
         self.bytes
     }
 }
+
+#[cfg(test)]
+mod compression_tests {
+    use super::*;
+    #[test]
+    fn s13_compression_dictionary_has_entry_and_owned_byte_limits() {
+        let mut d = Dictionary::default();
+        let mut out = vec![];
+        for n in 0..1025 {
+            d.write_name(&format!("n{n}.").parse().unwrap(), &mut out)
+                .unwrap();
+        }
+        assert_eq!(d.entries.len(), 1024);
+        assert!(d.bytes <= 65536);
+        let mut d = Dictionary::default();
+        let mut out = vec![];
+        for n in 0..=255u8 {
+            let mut labels = vec![vec![7]; 127];
+            labels[0] = vec![n];
+            d.write_name(&Name::from_labels(labels).unwrap(), &mut out)
+                .unwrap();
+        }
+        assert!(d.entries.len() < 1024);
+        assert!(d.bytes <= 65536);
+        assert!(d.bytes > 65536 - 255);
+        let before = (d.entries.len(), d.bytes);
+        let labels = vec![vec![8]; 127];
+        d.write_name(&Name::from_labels(labels).unwrap(), &mut out)
+            .unwrap();
+        assert!(d.entries.len() >= before.0);
+        assert!(d.bytes <= 65536);
+    }
+}

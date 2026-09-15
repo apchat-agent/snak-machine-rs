@@ -334,3 +334,61 @@ fn s08_mdns_embedded_names_are_typed_for_proxy_rewriting() {
         assert!(Message::parse(&m.encode().unwrap(), Context::Unicast).is_ok());
     }
 }
+
+#[test]
+fn s13_mdns_compresses_embedded_names_and_preserves_binary_labels() {
+    let mut m = Message::new(0, 0x8400);
+    let host: Name = "Mixed.Host.local.".parse().unwrap();
+    m.questions.push(Question {
+        name: host.clone(),
+        kind: 255,
+        class: 0x8001,
+    });
+    let instance = Name::from_labels(vec![
+        vec![0xff, 0xc0, 0],
+        b"_x".to_vec(),
+        b"_tcp".to_vec(),
+        b"local".to_vec(),
+    ])
+    .unwrap();
+    m.answers.push(Record {
+        name: instance.clone(),
+        kind: 33,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Srv {
+            priority: 0,
+            weight: 0,
+            port: 80,
+            target: host.clone(),
+        },
+    });
+    m.answers.push(Record {
+        name: instance.clone(),
+        kind: 16,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![0xc0, 0, 255]]),
+    });
+    m.answers.push(Record {
+        name: host.clone(),
+        kind: 47,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Nsec {
+            next: host,
+            bitmap: vec![0, 4, 0, 0, 0, 8],
+        },
+    });
+    let plain = m.encode().unwrap();
+    let compressed = m.encode_context(Context::Mdns).unwrap();
+    assert!(compressed.len() + 20 < plain.len());
+    let decoded = Message::parse(&compressed, Context::Mdns).unwrap();
+    assert_eq!(decoded.questions, m.questions);
+    assert_eq!(decoded.answers, m.answers);
+    assert_eq!(decoded.answers[0].name.labels(), instance.labels());
+    assert!(Message::parse(&compressed, Context::Unicast).is_err());
+    for n in 0..compressed.len() {
+        assert!(Message::parse(&compressed[..n], Context::Mdns).is_err());
+    }
+}
