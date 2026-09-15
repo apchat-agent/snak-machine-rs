@@ -336,3 +336,202 @@ fn s09_positive_negative_cache_ttl_and_timeout_are_bounded() {
     let m = Message::parse(&reply(r.tick(100002, &mut rng).unwrap()), Context::Unicast).unwrap();
     assert_eq!(m.flags & 15, 5);
 }
+
+#[test]
+fn s09_pending_waiter_upstream_and_byte_caps_are_atomic() {
+    let (mut r, mut rng) = setup();
+    let eps: Vec<_> = (1..=8)
+        .map(|n| format!("192.0.2.{n}:53").parse().unwrap())
+        .collect();
+    r.set_upstreams(&eps).unwrap();
+    let mut ninth = eps.clone();
+    ninth.push("192.0.2.9:53".parse().unwrap());
+    assert!(r.set_upstreams(&ninth).is_err());
+    assert_eq!(r.upstreams(), eps);
+    for n in 0..128 {
+        r.submit(
+            client((n / 4 + 1) as u16),
+            &query(&format!("p{n}.test."), 1, 1),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!(r.pending_count(), 128);
+    assert!(r
+        .submit(client(100), &query("overflow.test.", 1, 1), 0, &mut rng)
+        .is_err());
+    for n in 0..128 {
+        assert!(r
+            .submit(
+                client((n / 4 + 1) as u16),
+                &query(&format!("p{n}.test."), 1, 2),
+                0,
+                &mut rng
+            )
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!(r.waiter_count(), 256);
+    assert!(r
+        .submit(client(101), &query("p0.test.", 1, 3), 0, &mut rng)
+        .is_err());
+    assert!(r.pending_bytes() <= 4 * 1024 * 1024);
+    r.tick(10000, &mut rng).unwrap();
+    assert_eq!(r.waiter_count(), 0);
+    let (mut r, mut rng) = setup();
+    for n in 0..8 {
+        r.submit(
+            client(1),
+            &query(&format!("client{n}.test."), 1, 1),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert!(r
+        .submit(client(1), &query("clientoverflow.test.", 1, 1), 0, &mut rng)
+        .is_err());
+    let mut filled = 0;
+    for n in 1..128 {
+        let mut m =
+            Message::parse(&query(&format!("large{n}.test."), 1, 1), Context::Unicast).unwrap();
+        m.additional.push(Record {
+            name: ".".parse().unwrap(),
+            kind: 41,
+            class: 4096,
+            ttl: 0,
+            data: Rdata::Opt(vec![(65000, vec![9; 60000])]),
+        });
+        if r.submit(client((n + 2) as u16), &m.encode().unwrap(), 0, &mut rng)
+            .is_err()
+        {
+            break;
+        }
+        filled += 1;
+    }
+    assert!(filled > 0 && filled < 100);
+    assert!(r.pending_bytes() <= 4 * 1024 * 1024);
+}
+#[test]
+fn s09_cache_entry_and_byte_caps_evict_without_touching_live_queries() {
+    let (mut r, mut rng) = setup();
+    for n in 0..1025 {
+        let q = upstream(
+            r.submit(
+                client((n % 16 + 1) as u16),
+                &query(&format!("cache{n}.test."), 1, 1),
+                n * 50,
+                &mut rng,
+            )
+            .unwrap(),
+        );
+        receive(&mut r, &q, &response(&q, 0, Some(1)), n * 50, &mut rng);
+    }
+    assert_eq!(r.cache_sets(), 1024);
+    assert!(r.cache_bytes() <= 4 * 1024 * 1024);
+    assert!(matches!(
+        r.submit(client(1), &query("cache0.test.", 1, 1), 51251, &mut rng)
+            .unwrap()[0],
+        Action::Upstream(_)
+    ));
+    let (mut r, mut rng) = setup();
+    for n in 0..110 {
+        let q = upstream(
+            r.submit(
+                Client::tcp(client((n % 16 + 1) as u16).address, n as usize),
+                &query(&format!("blob{n}.test."), 16, 1),
+                n,
+                &mut rng,
+            )
+            .unwrap(),
+        );
+        let mut m = Message::parse(&response(&q, 0, None), Context::Unicast).unwrap();
+        m.answers.push(Record {
+            name: m.questions[0].name.clone(),
+            kind: 16,
+            class: 1,
+            ttl: 60,
+            data: Rdata::Txt(vec![vec![9; 250]; 170]),
+        });
+        receive(&mut r, &q, &m.encode().unwrap(), n, &mut rng);
+    }
+    assert!(r.cache_sets() < 110);
+    assert!(r.cache_bytes() <= 4 * 1024 * 1024);
+    r.tick(60110, &mut rng).unwrap();
+    assert_eq!(r.cache_sets(), 0);
+}
+#[test]
+fn s09_edns_extended_rcode_and_bad_version() {
+    let (mut r, mut rng) = setup();
+    let mut m = Message::parse(&query("version.test.", 1, 10), Context::Unicast).unwrap();
+    m.additional.push(Record {
+        name: ".".parse().unwrap(),
+        kind: 41,
+        class: 1232,
+        ttl: 0x10000,
+        data: Rdata::Opt(vec![]),
+    });
+    let b = reply(
+        r.submit(client(1), &m.encode().unwrap(), 0, &mut rng)
+            .unwrap(),
+    );
+    let m = Message::parse(&b, Context::Unicast).unwrap();
+    assert_eq!(m.flags & 15, 0);
+    assert_eq!(m.additional[0].ttl >> 24, 1);
+    assert_eq!((m.additional[0].ttl >> 16) & 255, 0);
+    let q = upstream(
+        r.submit(client(1), &query("extended.test.", 28, 1), 1, &mut rng)
+            .unwrap(),
+    );
+    let mut m = Message::parse(&response(&q, 3, None), Context::Unicast).unwrap();
+    m.additional.push(Record {
+        name: ".".parse().unwrap(),
+        kind: 41,
+        class: 1232,
+        ttl: 1 << 24,
+        data: Rdata::Opt(vec![]),
+    });
+    let a = upstream(receive(&mut r, &q, &m.encode().unwrap(), 2, &mut rng));
+    let m = Message::parse(
+        &reply(receive(&mut r, &a, &response(&a, 0, Some(1)), 3, &mut rng)),
+        Context::Unicast,
+    )
+    .unwrap();
+    assert_eq!(
+        m.additional.iter().find(|r| r.kind == 41).unwrap().ttl >> 24,
+        1
+    );
+    assert_eq!(m.flags & 15, 3);
+    assert!(m.additional.iter().any(|r| r.kind == 1));
+}
+#[test]
+fn s09_rate_table_is_bounded_and_expires() {
+    let (mut r, mut rng) = setup();
+    for n in 1..=32 {
+        let q = upstream(
+            r.submit(client(n), &query("rate.test.", 1, n), 0, &mut rng)
+                .unwrap(),
+        );
+        receive(&mut r, &q, &response(&q, 5, None), 0, &mut rng);
+    }
+    assert_eq!(r.rate_entries(), 32);
+    assert!(r
+        .submit(client(33), &query("rate.test.", 1, 1), 0, &mut rng)
+        .is_err());
+    for _ in 1..32 {
+        let q = upstream(
+            r.submit(client(1), &query("rate.test.", 1, 1), 0, &mut rng)
+                .unwrap(),
+        );
+        receive(&mut r, &q, &response(&q, 5, None), 0, &mut rng);
+    }
+    assert!(r
+        .submit(client(1), &query("rate.test.", 1, 1), 0, &mut rng)
+        .is_err());
+    r.tick(1000, &mut rng).unwrap();
+    assert_eq!(r.rate_entries(), 0);
+    assert!(r
+        .submit(client(33), &query("rate.test.", 1, 1), 1000, &mut rng)
+        .is_ok());
+}
