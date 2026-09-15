@@ -938,3 +938,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Duplicate-query suppression compares known-record membership (section 7.3),
   so harmless TTL aging does not defeat suppression. These are corrections
   within S13's specified RFC behavior, without design changes or dependencies.
+- S13 publication RED `dc1a64a`: full `cargo test` confirms the missing
+  publisher. GREEN passes **230 tests** and all-feature clippy. Publication
+  state retains digests, unique-name identities, sent history and timers; a
+  callback derives the current records from their authoritative owner. Stale
+  projections are refused. Three successful probes 250 ms apart precede two
+  announcements one second apart, including generated full NSEC bitmaps.
+- Unsigned-byte class/type/uncompressed-RDATA tie-breaking, one-second losing
+  retries, pre-probe stale-response rejection, established-name re-probing and
+  five-second failed-probe/rename backoff follow RFC 6762 sections 8–9. Shared
+  data replacement sends goodbyes; unique updates use cache flush. Withdrawal
+  and reconnect are exercised. Tests fill 128 datasets and independently 4096
+  derived records, rejecting additional publication atomically. Projected data,
+  sent indexes and bounded goodbye work are charged against four MiB.
+  No dependency; the fields implement the planned publication identities/timers.
