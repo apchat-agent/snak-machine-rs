@@ -30,6 +30,7 @@ impl Message {
         }
         let p = Packet::parse(bytes)?;
         if p.protocol != 17
+            || p.ttl == 0
             || p.fragment_offset != 0
             || p.more_fragments
             || p.payload.len() < 248
@@ -57,6 +58,8 @@ impl Message {
             || b[236..240] != [99, 130, 83, 99]
             || b[28] & 1 != 0
             || b[28..34] == [0; 6]
+            || b[10] & 0x7f != 0
+            || b[11] != 0
         {
             return Err(invalid());
         }

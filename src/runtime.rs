@@ -373,7 +373,17 @@ impl<I: PacketIo> Driver<I> {
                     frame.extend(output.packet);
                     self.io.send(Link::Ail, &frame)
                 }
-                OutputKind::Unicast => self.send_ipv4(&output.packet, now, rng),
+                OutputKind::Unicast => {
+                    // RELEASE is a control exchange while ordinary forwarding stops.
+                    if self.router.links[0].up {
+                        match self.ipv4.send(&output.packet, now) {
+                            Ok(frames) => self.dispatch_ipv4(frames, now, rng),
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
             };
             if let Err(e) = result {
                 eprintln!("{now}ms IPv4 acquisition transmit failed: {e}");

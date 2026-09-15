@@ -399,3 +399,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Needs privileged acceptance: DHCPv4 interoperability, IPv4LL ARP conflicts,
   server next-hop delivery and carrier transitions over real TAP/pcap links.
   Tests use memory Ethernet peers and require no privileged ports/interfaces.
+- S06 final RED `1e88c80`: full tests expose suppression of DHCPRELEASE by
+  the stopping lifecycle and acceptance of an expired-TTL DHCP reply. GREEN
+  passes **118 tests**, all-feature clippy and the macOS aarch64 all-target
+  pcap check. A resolved DHCP server receives RELEASE before configuration
+  is cleared; control release can run while ordinary forwarding stops.
+  IPv4 TTL and reserved BOOTP flags are checked. No new fields/dependencies.
+  S06 is complete; crash serialization of active DHCP state remains the S23
+  journal integration, while INIT-REBOOT validation itself is tested here.
