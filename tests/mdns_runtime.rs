@@ -209,3 +209,90 @@ fn s13_driver_reassembles_large_single_mdns_records_before_cache_delivery() {
         m.answers[0].data
     );
 }
+
+#[test]
+fn s13_driver_sends_publication_and_unicast_responses_from_current_owner_projection() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let records = response().answers;
+    let owned = records.clone();
+    d.set_mdns_source(move |_, _, _, _| owned.clone());
+    d.mdns
+        .publisher
+        .replace(1, &[], &records, 1000, &mut rng)
+        .unwrap();
+    d.io.output.clear();
+    for now in [1000, 1250, 1500, 1750, 2750] {
+        d.step(now, &mut rng).unwrap();
+    }
+    let sent: Vec<_> =
+        d.io.output
+            .iter()
+            .filter_map(|(l, f)| Datagram::parse(*l, &f[14..]).ok())
+            .collect();
+    assert_eq!(
+        sent.iter()
+            .filter(|d| d.message.flags & 0x8000 == 0)
+            .count(),
+        3
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|d| d.message.flags & 0x8000 != 0)
+            .count(),
+        2
+    );
+    assert!(d.mdns.publisher.ready(1));
+    d.io.output.clear();
+    let mut q = Message::new(321, 0);
+    let mut question = question();
+    question.class = 0x8001;
+    q.questions.push(question);
+    d.accept(frame(packet(true, &q.encode().unwrap())), 3000, &mut rng)
+        .unwrap();
+    d.step(3000, &mut rng).unwrap();
+    let (link, f) =
+        d.io.output
+            .iter()
+            .find(|(l, f)| Datagram::parse(*l, &f[14..]).is_ok())
+            .unwrap();
+    assert_eq!(*link, Link::Ail);
+    assert_eq!(f[..6], [2, 0, 0, 0, 0, 99]);
+    let answer = Datagram::parse(Link::Ail, &f[14..]).unwrap();
+    assert_eq!(answer.destination, "[fe80::2]:5353".parse().unwrap());
+    assert_eq!(answer.message.answers[0].data, records[0].data);
+    assert_eq!(answer.message.id, 0);
+    // A stale owner callback cannot emit the old records after a projection update.
+    d.set_mdns_source(|_, _, _, _| vec![]);
+    assert!(d.step(4000, &mut rng).is_err());
+}
+#[test]
+fn s13_unicast_probe_defense_is_admitted_only_for_the_probed_name_and_recent_send() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let records = response().answers;
+    let owned = records.clone();
+    d.set_mdns_source(move |_, _, _, _| owned.clone());
+    d.mdns
+        .publisher
+        .replace(1, &[], &records, 1000, &mut rng)
+        .unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let mut m = response();
+    m.answers[0].data = Rdata::A([192, 0, 2, 200]);
+    let own = d.router.identity.link_local(Link::Ail);
+    let mut p = packet(true, &m.encode().unwrap());
+    p[24..40].copy_from_slice(&own.octets());
+    p[46..48].fill(0);
+    let checksum = common::sum(common::ip("fe80::2"), own, 17, &p[40..]);
+    p[46..48].copy_from_slice(&checksum.to_be_bytes());
+    let mut rx = frame(p);
+    rx.bytes[..6].copy_from_slice(&d.ipv4.mac);
+    d.accept(rx, 1001, &mut rng).unwrap();
+    assert_eq!(d.mdns.publisher.take_conflict(), Some(1));
+    assert!(!d.mdns.publisher.ready(1));
+}
