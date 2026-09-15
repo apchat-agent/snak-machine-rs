@@ -217,7 +217,27 @@ impl Router {
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
         let mut out = self.tick_neighbors(now)?;
+        self.suppliers.retain(|_, s| {
+            s.valid.live(now) && s.preferred.live(now) && now < s.pio_at.saturating_add(600000)
+        });
+        self.on_link.retain(|_, p| p.valid.live(now));
         for link in [Link::Stub, Link::Ail] {
+            let fresh = self.suppliers.iter().any(|((k, _), _)| {
+                k.link == link
+                    && self
+                        .neighbors
+                        .get(k)
+                        .is_none_or(|n| n.state != NeighborState::Failed)
+            });
+            if self.state(link) == AilState::Suitable
+                && (!fresh
+                    || (self.links[link.index()].scheduler.due(now)
+                        && !self.confirmed_supplier(link, now)))
+            {
+                self.links[link.index()].state = AilState::BeginAdvertising;
+                self.links[link.index()].scheduler.changed(now, rng)?;
+            }
+
             let s = &mut self.links[link.index()];
             if s.state == AilState::Unknown {
                 if now >= s.discovery_end {

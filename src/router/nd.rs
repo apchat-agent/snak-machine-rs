@@ -142,7 +142,11 @@ impl Router {
     }
     pub(super) fn confirmed_supplier(&self, link: Link, now: Time) -> bool {
         self.suppliers.iter().any(|((k, _), s)| {
-            k.link == link && s.preferred.live(now) && s.valid.live(now) && self.reachable(*k, now)
+            k.link == link
+                && now < s.pio_at.saturating_add(600000)
+                && s.preferred.live(now)
+                && s.valid.live(now)
+                && self.reachable(*k, now)
         })
     }
 }

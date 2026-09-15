@@ -26,3 +26,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 11 nud-confirmation GREEN — 11 passed; RA/SLLAO learns presence and MAC only; NA override semantics and a single reachability deadline drive confirmation.
 - 12 nud-takeover RED — 12 tests specified; cargo test failed for the new contract (see paired test commit).
 - 12 nud-takeover GREEN — 12 passed; Three probes spaced by retransmission deadlines; alternate confirmed suppliers suppress takeover; failed entries retain no active retry timer.
+- 13 pio-staleness RED — 13 tests specified; cargo test failed for the new contract (see paired test commit).
+- 13 pio-staleness GREEN — 13 passed; Router header updates cannot refresh omitted PIOs; valid on-link coverage survives suitability expiry. Discovery fixture now explicitly confirms its supplier before the periodic opportunity.
