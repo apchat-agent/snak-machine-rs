@@ -296,3 +296,108 @@ fn s13_unicast_probe_defense_is_admitted_only_for_the_probed_name_and_recent_sen
     assert_eq!(d.mdns.publisher.take_conflict(), Some(1));
     assert!(!d.mdns.publisher.ready(1));
 }
+
+struct Flaky {
+    inner: MemoryIo,
+    armed: bool,
+    fragments: usize,
+    failed: bool,
+}
+impl snac_rs::io::PacketIo for Flaky {
+    fn info(&self, link: Link) -> &LinkInfo {
+        &self.inner.info[link.index()]
+    }
+    fn receive(&mut self, timeout: std::time::Duration) -> std::io::Result<Option<Received>> {
+        self.inner.receive(timeout)
+    }
+    fn send(&mut self, link: Link, b: &[u8]) -> std::io::Result<()> {
+        if self.armed && b.len() >= 62 && b[12..14] == [0x86, 0xdd] && b[20] == 44 && b[54] == 17 {
+            if self.fragments == 1 && !self.failed {
+                self.failed = true;
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
+            self.fragments += 1;
+        }
+        self.inner.send(link, b)
+    }
+    fn join(&mut self, link: Link, group: std::net::Ipv6Addr) -> std::io::Result<()> {
+        self.inner.join(link, group)
+    }
+    fn leave(&mut self, link: Link, group: std::net::Ipv6Addr) -> std::io::Result<()> {
+        self.inner.leave(link, group)
+    }
+    fn join_v4(&mut self, link: Link, group: std::net::Ipv4Addr) -> std::io::Result<()> {
+        self.inner.join_v4(link, group)
+    }
+    fn leave_v4(&mut self, link: Link, group: std::net::Ipv4Addr) -> std::io::Result<()> {
+        self.inner.leave_v4(link, group)
+    }
+    fn link_up(&self, link: Link) -> std::io::Result<bool> {
+        Ok(self.inner.up[link.index()])
+    }
+}
+#[test]
+fn s13_fragmented_transmit_resumes_at_failed_frame_and_respects_interface_mtu() {
+    let base = driver();
+    let mut d = Driver::new(
+        base.router,
+        Flaky {
+            inner: base.io,
+            armed: false,
+            fragments: 0,
+            failed: false,
+        },
+    )
+    .unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let data = vec![Record {
+        name: "large.local.".parse().unwrap(),
+        kind: 16,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![42; 250]; 30]),
+    }];
+    let owned = data.clone();
+    d.set_mdns_source(move |_, _, _, _| owned.clone());
+    d.mdns
+        .publisher
+        .replace(1, &[], &data, 1000, &mut rng)
+        .unwrap();
+    d.io.inner.output.clear();
+    d.io.armed = true;
+    d.step(1000, &mut rng).unwrap();
+    assert!(d.io.failed);
+    assert_eq!(d.io.fragments, 1);
+    d.step(1050, &mut rng).unwrap();
+    assert_eq!(d.io.fragments, 1);
+    d.step(1100, &mut rng).unwrap();
+    let fragments: Vec<_> =
+        d.io.inner
+            .output
+            .iter()
+            .filter(|(_, b)| b.len() >= 62 && b[20] == 44 && b[54] == 17)
+            .collect();
+    assert!(fragments.len() > 1);
+    assert!(fragments.iter().all(|(_, b)| b.len() <= 1514));
+    assert_eq!(
+        fragments
+            .iter()
+            .filter(|(_, b)| u16::from_be_bytes([b[56], b[57]]) & 0xfff8 == 0)
+            .count(),
+        1,
+        "already sent fragment is never repeated on retry"
+    );
+    let mut reassembly = snac_rs::ip_reassembly::Reassembler::default();
+    let mut complete = None;
+    for (_, b) in fragments {
+        if let Some(p) = reassembly.input(&b[14..], 1100).unwrap() {
+            complete = Some(p);
+        }
+    }
+    let packet = Datagram::parse(Link::Ail, &complete.unwrap()).unwrap();
+    assert_eq!(packet.message.authority.len(), 1);
+    assert_eq!(packet.message.authority[0].data, data[0].data);
+    assert!(!d.mdns.publisher.ready(1));
+}

@@ -1059,3 +1059,142 @@ fn s13_legacy_mdns_reply_encoding_uses_unicast_srv_rules() {
     .unwrap();
     Message::parse(&b[48..], Context::Unicast).unwrap();
 }
+
+#[test]
+fn s13_engine_charges_publication_questions_and_learned_records_to_one_budget() {
+    use snac_rs::{mdns::Engine, time::ScriptedRandom};
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    for i in 0..128 {
+        e.querier
+            .start(question(&format!("q{i}.local."), 1), 200000, 0, &mut rng)
+            .unwrap();
+    }
+    let mut accepted = 0;
+    for i in 0..128 {
+        let r = Record {
+            name: format!("p{i}.local.").parse().unwrap(),
+            kind: 16,
+            class: 1,
+            ttl: 120,
+            data: Rdata::Txt(vec![vec![7; 250]; 30]),
+        };
+        if e.replace(i, &[], &[r], 0, &mut rng).is_err() {
+            break;
+        }
+        accepted += 1;
+    }
+    assert!(
+        accepted > 0 && accepted < 128,
+        "publication byte limit precedes dataset count"
+    );
+    let before = e.publisher.counts();
+    let oversized: Vec<_> = (0..512)
+        .map(|i| Record {
+            name: format!("extra{i}.local.").parse().unwrap(),
+            kind: 16,
+            class: 1,
+            ttl: 120,
+            data: Rdata::Txt(vec![vec![8; 250]; 30]),
+        })
+        .collect();
+    assert!(e.replace(999, &[], &oversized, 0, &mut rng).is_err());
+    assert_eq!(e.publisher.counts(), before);
+    for i in 0..1200 {
+        e.querier
+            .cache
+            .receive(
+                &response(vec![a_record(&format!("c{i}.local."), 1, 120, false)]),
+                i,
+                &mut rng,
+            )
+            .unwrap();
+    }
+    assert!(e.querier.cache.counts().0 < 1024);
+    assert!(e.retained_bytes() <= 4 * 1024 * 1024);
+    assert_eq!(
+        e.publisher.counts(),
+        before,
+        "LRU cannot evict authoritative state"
+    );
+}
+#[test]
+fn s13_pending_response_reference_and_byte_bounds_are_independent() {
+    use snac_rs::{
+        mdns::{publish::Publisher, respond::Responder},
+        time::ScriptedRandom,
+    };
+    let mut rng = ScriptedRandom::new([]);
+    let mut p = Publisher::default();
+    let mut data: Vec<_> = (0..64)
+        .map(|i| a_record("shared.local.", i, 120, false))
+        .collect();
+    data.push(Record {
+        name: "shared.local.".parse().unwrap(),
+        kind: 16,
+        class: 1,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![]]),
+    });
+    p.replace(1, &[], &data, 0, &mut rng).unwrap();
+    let source = |_, _| data.clone();
+    for at in [0, 1000] {
+        let b = p.poll(&source, at).unwrap().unwrap();
+        p.sent(b.token, true, at);
+    }
+    let mut e = Responder::default();
+    for i in 0..64 {
+        let mut d = peer_query(question("shared.local.", 1));
+        d.source = format!("[fe80::{:x}]:5353", i + 2).parse().unwrap();
+        e.receive(&d, true, &mut p, &source, 2000, &mut rng)
+            .unwrap();
+    }
+    assert_eq!(e.counts().1, 4096);
+    assert_eq!(e.counts().0, 64);
+    let d = peer_query(question("shared.local.", 16));
+    assert!(e
+        .receive(&d, true, &mut p, &source, 2000, &mut rng)
+        .is_err());
+    assert_eq!(e.counts().1, 4096);
+    let mut e = Responder::default();
+    let mut d = peer_query(question("shared.local.", 16));
+    d.source.set_port(40000);
+    d.message.questions = vec![d.message.questions[0].clone(); 128];
+    for i in 0..3 {
+        d.message.id = i;
+        e.receive(&d, true, &mut p, &source, 2000, &mut rng)
+            .unwrap();
+    }
+    assert!(e
+        .receive(&d, true, &mut p, &source, 2000, &mut rng)
+        .is_err());
+    assert_eq!(e.counts().0, 3);
+    assert!(e.counts().2 <= 4 * 1024 * 1024);
+}
+#[test]
+fn s13_goodbye_work_is_bounded_by_dataset_slots_and_releases_all_allocations() {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let source = |id, _| vec![a_record(&format!("p{id}.local."), 1, 120, false)];
+    for id in 0..128 {
+        p.replace(id, &[], &source(id, 0), 0, &mut rng).unwrap();
+    }
+    for at in [0, 1000] {
+        for _ in 0..128 {
+            let b = p.poll(&source, at).unwrap().unwrap();
+            p.sent(b.token, true, at);
+        }
+    }
+    for id in 0..128 {
+        p.replace(id, &source(id, 0), &[], 2000, &mut rng).unwrap();
+    }
+    assert_eq!(p.goodbye_count(), 128);
+    assert_eq!(p.counts().0, 0);
+    for _ in 0..128 {
+        let b = p.poll(&source, 2000).unwrap().unwrap();
+        p.sent(b.token, true, 2000);
+    }
+    assert_eq!(p.goodbye_count(), 0);
+    assert_eq!(p.counts(), (0, 0, 0));
+}
