@@ -45,6 +45,8 @@ pub struct OnLink {
     pub preferred: Lifetime,
 }
 pub struct LinkState {
+    pub mtu: u32,
+    pub kind: FrameKind,
     pub up: bool,
     pub state: AilState,
     pub scheduler: RaScheduler,
@@ -62,6 +64,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub error_after: Option<Time>,
     pub pd_hints: BTreeMap<Prefix, Lifetime>,
     pub pd: pd::PdClient,
     pub pd_prefixes: BTreeMap<Prefix, pd::OwnedPrefix>,
@@ -82,6 +85,8 @@ impl Router {
         fn link(now: Time, rng: &mut impl RandomSource) -> io::Result<LinkState> {
             let first = now + rng.sample(1000)?;
             Ok(LinkState {
+                mtu: 1500,
+                kind: FrameKind::Ethernet,
                 up: true,
                 state: AilState::Unknown,
                 scheduler: RaScheduler::new(now, rng)?,
@@ -93,6 +98,7 @@ impl Router {
             })
         }
         Ok(Self {
+            error_after: None,
             pd_hints: BTreeMap::new(),
             pd: pd::PdClient::default(),
             pd_prefixes: BTreeMap::new(),
@@ -336,8 +342,12 @@ impl Router {
             link,
             source: self.identity.link_local(link),
             destination: "ff02::1".parse().unwrap(),
-            mac: Some(self.identity.macs[link.index()]),
-            mtu: 1500,
+            mac: if self.links[link.index()].kind == FrameKind::Ethernet {
+                Some(self.identity.macs[link.index()])
+            } else {
+                None
+            },
+            mtu: self.links[link.index()].mtu,
             mo: self
                 .headers
                 .iter()

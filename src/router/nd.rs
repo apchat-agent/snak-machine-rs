@@ -111,6 +111,20 @@ impl Router {
                 n.is_router = nd.body[4] & 0x80 != 0;
             }
         }
+        if nd.kind == 136 {
+            let target = Ipv6Addr::from(<[u8; 16]>::try_from(&nd.body[8..24]).unwrap());
+            let key = RouterKey {
+                link,
+                address: target,
+            };
+            if self.reachable(key, now) {
+                if let Some(pending) = self.neighbors.get_mut(&key).and_then(|n| n.pending.take()) {
+                    if let Ok(e) = envelope(FrameKind::RawIpv6, &pending.packet) {
+                        return self.forward(pending.link, &e, now);
+                    }
+                }
+            }
+        }
         Ok(vec![])
     }
 }
@@ -136,6 +150,11 @@ impl Router {
             if n.probes_sent >= 3 {
                 n.state = NeighborState::Failed;
                 n.deadline = None;
+                if let Some(pending) = n.pending.take() {
+                    if let Ok(e) = envelope(FrameKind::RawIpv6, &pending.packet) {
+                        out.extend(self.icmp_error(pending.link, &e, 1, 3, 0, now));
+                    }
+                }
             } else {
                 out.push(self.probe(key, now)?);
             }
