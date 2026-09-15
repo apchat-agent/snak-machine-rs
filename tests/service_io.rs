@@ -370,3 +370,145 @@ fn s07_reassembly_rejects_overlap_truncation_and_bounds_contexts() {
     );
     assert_eq!(r.context_count(), 1);
 }
+
+use snac_rs::{
+    io::{Direction, LinkInfo, MemoryIo, Received},
+    persist::{Identity, MemoryStore},
+    router::{DadState, Router},
+    runtime::Driver,
+    wire::{FrameKind, Prefix},
+    Link,
+};
+fn service_driver() -> Driver<MemoryIo> {
+    let mut r = ScriptedRandom::new([345]);
+    let id = Identity::load_or_create(&mut MemoryStore::default(), "services", &mut r).unwrap();
+    let router = Router::new(id, 0, &mut r).unwrap();
+    let info = [1, 2].map(|index| LinkInfo {
+        name: format!("mem{index}"),
+        index,
+        kind: FrameKind::Ethernet,
+        mtu: 1500,
+        mac: Some([2, 0, 0, 0, 0, index as u8]),
+    });
+    Driver::new(router, MemoryIo::new(info)).unwrap()
+}
+fn service_rx(link: Link, packet: Vec<u8>) -> Received {
+    let mut bytes = vec![0x33, 0x33, 0, 0, 0, 1, 2, 0, 0, 0, 0, 99, 0x86, 0xdd];
+    bytes.extend(packet);
+    Received {
+        link,
+        kind: FrameKind::Ethernet,
+        bytes,
+        direction: Direction::Ingress,
+    }
+}
+#[test]
+fn s07_service_addresses_follow_peer_osnr_and_autonomous_ail_prefixes() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    for (link, prefix) in [(Link::Ail, "2001:db8:1::"), (Link::Stub, "2001:db8:2::")] {
+        d.accept(
+            service_rx(
+                link,
+                common::nd_packet(
+                    "fe80::99",
+                    "ff02::1",
+                    common::ra(0, 1800, &common::pio(prefix, 64, 0xc0, 1800, 3600)),
+                ),
+            ),
+            1,
+            &mut r,
+        )
+        .unwrap();
+    }
+    d.step(1000, &mut r).unwrap();
+    for (link, prefix) in [(Link::Ail, "2001:db8:1::"), (Link::Stub, "2001:db8:2::")] {
+        let address = d
+            .router
+            .identity
+            .address(link, Prefix::new(common::ip(prefix), 64).unwrap());
+        assert_eq!(
+            d.router
+                .owned
+                .get(&(link, address))
+                .expect("owned address in peer prefix")
+                .state,
+            DadState::Tentative
+        );
+    }
+    d.step(2000, &mut r).unwrap();
+    for (link, prefix) in [(Link::Ail, "2001:db8:1::"), (Link::Stub, "2001:db8:2::")] {
+        let address = d
+            .router
+            .identity
+            .address(link, Prefix::new(common::ip(prefix), 64).unwrap());
+        assert!(d.router.address_ready(link, address));
+    }
+}
+
+#[test]
+fn s07_driver_udp_listener_uses_nd_and_bypasses_dhcpv6_dispatch() {
+    for link in [Link::Ail, Link::Stub] {
+        let mut d = service_driver();
+        let mut r = ScriptedRandom::new([]);
+        d.start(0, &mut r).unwrap();
+        d.step(1000, &mut r).unwrap();
+        let own = d.router.identity.link_local(link);
+        let peer = common::ip("fe80::99");
+        d.stack_mut(link).unwrap().listen_udp(1053).unwrap();
+        let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+        ns.extend(own.octets());
+        ns.extend([1, 1, 2, 0, 0, 0, 0, 99]);
+        d.accept(
+            service_rx(
+                link,
+                common::nd_packet(
+                    "fe80::99",
+                    &snac_rs::wire::solicited_node(own).to_string(),
+                    ns,
+                ),
+            ),
+            1001,
+            &mut r,
+        )
+        .unwrap();
+        assert!(d
+            .io
+            .output
+            .iter()
+            .any(|(l, b)| *l == link && b.len() > 54 && b[12..14] == [0x86, 0xdd] && b[54] == 136));
+        let mut client = stack("fe80::99");
+        client.listen_udp(40000).unwrap();
+        client
+            .send_udp(peer.into(), 40000, own.into(), 1053, b"through Driver")
+            .unwrap();
+        client.poll(1002).unwrap();
+        let mut rx = service_rx(link, client.output().unwrap());
+        rx.bytes[..6].copy_from_slice(&[2, 0, 0, 0, 0, 1 + link.index() as u8]);
+        d.accept(rx, 1002, &mut r).unwrap();
+        d.step(1002, &mut r).unwrap();
+        let request = d
+            .stack_mut(link)
+            .unwrap()
+            .receive_udp()
+            .expect("owned UDP reaches its listener");
+        assert_eq!(request.bytes, b"through Driver");
+        d.stack_mut(link)
+            .unwrap()
+            .send_udp(own.into(), 1053, peer.into(), 40000, b"reply through ND")
+            .unwrap();
+        d.io.output.clear();
+        d.step(1003, &mut r).unwrap();
+        let response = d
+            .io
+            .output
+            .iter()
+            .find(|(l, b)| *l == link && b.len() > 62 && b[12..14] == [0x86, 0xdd] && b[20] == 17)
+            .unwrap();
+        assert_eq!(&response.1[..6], &[2, 0, 0, 0, 0, 99]);
+        client.input(&response.1[14..], 1003).unwrap();
+        client.poll(1003).unwrap();
+        assert_eq!(client.receive_udp().unwrap().bytes, b"reply through ND");
+    }
+}
