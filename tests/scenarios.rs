@@ -614,3 +614,67 @@ fn osnr_export_is_one_bounded_advertisement() {
         .iter()
         .any(|x| x.prefix == Prefix::new(ip("fdab:5a::"), 64).unwrap()));
 }
+
+#[test]
+fn stub_default_never_outlives_infrastructure() {
+    let mut r = providing(33);
+    let mut rng = ScriptedRandom::new([]);
+    let mut opts = pio("2001:db8:12::", 56, 0x80, 0, 9000);
+    opts.extend(rio("::", 0, 0, 5000, 1));
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::9", "ff02::1", ra(0, 100, &opts)),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(r.snapshot(Link::Stub, 11000).default_lifetime, 1800);
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::9", "ff02::1", ra(0, 20, &[])),
+        12000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(r.snapshot(Link::Stub, 13000).default_lifetime, 19);
+    assert_eq!(r.snapshot(Link::Ail, 13000).default_lifetime, 0);
+    r.no_stub_default = true;
+    assert_eq!(r.snapshot(Link::Stub, 13000).default_lifetime, 0);
+    assert!(r
+        .snapshot(Link::Stub, 13000)
+        .rios
+        .iter()
+        .any(|x| x.prefix.length == 56));
+    r.no_stub_default = false;
+    r.always_advertise_ail_routes = true;
+    assert!(r
+        .snapshot(Link::Stub, 13000)
+        .rios
+        .iter()
+        .any(|x| x.prefix.length == 56));
+    assert_eq!(r.snapshot(Link::Stub, 32000).default_lifetime, 0);
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::9", "ff02::1", ra(0, 100, &[])),
+        33000,
+        &mut rng,
+    )
+    .unwrap();
+    r.neighbors
+        .get_mut(&RouterKey {
+            link: Link::Ail,
+            address: ip("fe80::9"),
+        })
+        .unwrap()
+        .state = NeighborState::Failed;
+    assert_eq!(r.snapshot(Link::Stub, 34000).default_lifetime, 0);
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::9", "ff02::1", ra(0, 0, &[])),
+        35000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(r.snapshot(Link::Stub, 35000).default_lifetime, 0);
+    assert!(!r.snapshot(Link::Ail, 35000).rios.is_empty());
+}
