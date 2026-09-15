@@ -228,21 +228,20 @@ impl Ipv4 {
         let mut out = vec![];
         if !a.sender.is_unspecified()
             && (self.neighbors.contains_key(&a.sender) || a.operation == 1)
+            && (self.neighbors.contains_key(&a.sender) || self.neighbors.len() < 256)
         {
-            if self.neighbors.contains_key(&a.sender) || self.neighbors.len() < 256 {
-                let n = self.neighbors.entry(a.sender).or_insert(Neighbor {
-                    mac: None,
-                    deadline: now,
-                    attempts: 0,
-                    queue: vec![],
-                });
-                for packet in std::mem::take(&mut n.queue) {
-                    out.push(ethernet(self.mac, a.sender_mac, &packet));
-                }
-                n.mac = Some(a.sender_mac);
-                n.deadline = now.saturating_add(60000);
-                n.attempts = 0;
+            let n = self.neighbors.entry(a.sender).or_insert(Neighbor {
+                mac: None,
+                deadline: now,
+                attempts: 0,
+                queue: vec![],
+            });
+            for packet in std::mem::take(&mut n.queue) {
+                out.push(ethernet(self.mac, a.sender_mac, &packet));
             }
+            n.mac = Some(a.sender_mac);
+            n.deadline = now.saturating_add(60000);
+            n.attempts = 0;
         }
         if a.operation == 1 {
             out.push(
