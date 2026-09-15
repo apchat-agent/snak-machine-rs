@@ -20,3 +20,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 08 identity GREEN — 8 passed; Only planned exact pins added (libc/getrandom and optional libloading); atomic file and directory sync, exclusive lock, corrupt state and entropy errors explicit. getrandom default Error lacks std::error::Error; mapped its message. Attachment changes allocate a new identity.
 - 09 discovery RED — 9 tests specified; cargo test failed for the new contract (see paired test commit).
 - 09 discovery GREEN — 9 passed; Two normalized link machines with finite discovery windows; raw packet validation precedes supplier updates. Send failures do not advance advertising state.
+- 10 mo-selection RED — 10 tests specified; cargo test failed for the new contract (see paired test commit).
+- 10 mo-selection GREEN — 10 passed; Header records contain only last receipt, SNAC, paired M/O bits and raw nonzero header deadline; zero-lifetime headers remain eligible.

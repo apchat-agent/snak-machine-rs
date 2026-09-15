@@ -44,7 +44,15 @@ pub struct LinkState {
     pub last_valid: Lifetime,
     pub deprecate_at: Option<Time>,
 }
+#[derive(Clone, Debug)]
+pub struct Header {
+    pub last_ra_at: Time,
+    pub snac: bool,
+    pub mo: u8,
+    pub header_lifetime: Option<Lifetime>,
+}
 pub struct Router {
+    pub headers: BTreeMap<RouterKey, Header>,
     pub identity: Identity,
     pub links: [LinkState; 2],
     pub suppliers: BTreeMap<(RouterKey, Prefix), Supplier>,
@@ -65,6 +73,7 @@ impl Router {
             })
         }
         Ok(Self {
+            headers: BTreeMap::new(),
             identity,
             links: [link(now, rng)?, link(now, rng)?],
             suppliers: BTreeMap::new(),
@@ -103,6 +112,24 @@ impl Router {
                 link,
                 address: e.source,
             };
+            let raw_life = u16::from_be_bytes([nd.body[6], nd.body[7]]);
+            self.headers.insert(
+                key,
+                Header {
+                    last_ra_at: now,
+                    snac: nd.body[5] & 2 != 0,
+                    mo: if link == Link::Ail && nd.body[5] & 2 == 0 {
+                        nd.body[5] & 0xc0
+                    } else {
+                        0
+                    },
+                    header_lifetime: if raw_life == 0 {
+                        None
+                    } else {
+                        Some(Lifetime::from_secs(now, raw_life as u32))
+                    },
+                },
+            );
             for o in &nd.options {
                 if let Some(p) = Pio::decode(o.bytes) {
                     if p.on_link() && p.prefix.routable() {
@@ -167,7 +194,14 @@ impl Router {
             destination: "ff02::1".parse().unwrap(),
             mac: Some(self.identity.macs[link.index()]),
             mtu: 1500,
-            mo: 0,
+            mo: self
+                .headers
+                .iter()
+                .filter(|(k, h)| {
+                    k.link == Link::Ail && !h.snac && h.header_lifetime.is_none_or(|l| l.live(now))
+                })
+                .max_by_key(|(_, h)| h.last_ra_at)
+                .map_or(0, |(_, h)| h.mo),
             default_lifetime: 0,
             pios,
             rios,
