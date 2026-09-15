@@ -66,3 +66,39 @@ fn s12_legacy_router_state_migrates_and_combined_journal_rejects_hostile_lengths
     assert_eq!(disk.0.borrow().0, before);
     assert!(Journal::open(MemoryStore(Some(vec![0; 8 * 1024 * 1024 + 1]))).is_err());
 }
+
+#[test]
+fn s12_srp_lease_and_ttl_cli_controls_are_checked() {
+    use snac_rs::config::Config;
+    let base = ["--backend", "tap", "--infra", "a", "--stub", "b"];
+    let c = Config::parse(base.into_iter().chain([
+        "--srp-max-lease",
+        "20000",
+        "--srp-max-key-lease",
+        "30000",
+        "--srp-min-ttl",
+        "2",
+        "--srp-max-ttl",
+        "4",
+    ]))
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        (
+            c.srp_policy.max_lease,
+            c.srp_policy.max_key_lease,
+            c.srp_policy.min_ttl,
+            c.srp_policy.max_ttl
+        ),
+        (20000, 30000, 2, 4)
+    );
+    for bad in [
+        ["--srp-max-lease", "0"],
+        ["--srp-max-key-lease", "1"],
+        ["--srp-min-ttl", "5000"],
+        ["--srp-max-ttl", "0"],
+        ["--srp-max-lease", "4294967296"],
+    ] {
+        assert!(Config::parse(base.into_iter().chain(bad)).is_err());
+    }
+}

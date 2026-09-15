@@ -335,3 +335,80 @@ fn s12_registry_byte_bound_refuses_atomically_before_host_limit() {
         "small bounded registrations still make progress"
     );
 }
+
+#[test]
+fn s12_lease_option_variant_and_configurable_ttl_policy_survive_negotiation() {
+    use snac_rs::srp::registry::LeasePolicy;
+    let mut r = Registry::default();
+    let mut store = MemoryStore::default();
+    for extended in [false, true] {
+        let mut m = update();
+        m.id += u16::from(extended);
+        let mut lease = 20000u32.to_be_bytes().to_vec();
+        if extended {
+            lease.extend(20000u32.to_be_bytes());
+        }
+        m.additional[0].data = Rdata::Opt(vec![(2, lease)]);
+        let u = verified(&r, m.clone(), 0);
+        let g = r.apply(&u, &mut store, 0, NOW).unwrap();
+        assert_eq!(g.lease, 7200);
+        assert_eq!(g.key_lease, if extended { 20000 } else { 7200 });
+        let reply = Message::parse(&g.response(&m).unwrap(), Context::Unicast).unwrap();
+        assert_eq!(reply.id, m.id);
+        assert_eq!(reply.flags, 0xa800);
+        assert_eq!(reply.questions, m.questions);
+        assert!(reply.answers.is_empty());
+        assert!(reply.authority.is_empty());
+        let Rdata::Opt(v) = &reply.additional[0].data else {
+            panic!()
+        };
+        assert_eq!(v[0].0, 2);
+        assert_eq!(v[0].1.len(), if extended { 8 } else { 4 });
+    }
+    let policy = LeasePolicy {
+        max_lease: 20000,
+        max_key_lease: 30000,
+        min_ttl: 2,
+        max_ttl: 4,
+    };
+    r.set_policy(policy).unwrap();
+    let mut m = update();
+    m.id += 10;
+    m.additional[0].data = Rdata::Opt(vec![(
+        2,
+        [25000u32.to_be_bytes(), 40000u32.to_be_bytes()].concat(),
+    )]);
+    let u = verified(&r, m, 0);
+    let g = r.apply(&u, &mut store, 0, NOW).unwrap();
+    assert_eq!((g.lease, g.key_lease), (20000, 30000));
+    assert_eq!(r.records(&u.host, 28, 0)[0].ttl, 4);
+    Registry::restore(store.0.as_ref().unwrap(), 0, NOW).unwrap();
+    assert!(r
+        .set_policy(LeasePolicy {
+            max_key_lease: 1,
+            ..policy
+        })
+        .is_err());
+    assert!(r
+        .set_policy(LeasePolicy {
+            min_ttl: 5,
+            ..policy
+        })
+        .is_err());
+    assert!(r
+        .set_policy(LeasePolicy {
+            max_lease: 0,
+            ..policy
+        })
+        .is_err());
+    let mut m = update();
+    m.id += 11;
+    m.additional[0].data = Rdata::Opt(vec![(2, [1u32.to_be_bytes(), 1u32.to_be_bytes()].concat())]);
+    let u = verified(&r, m, 0);
+    r.apply(&u, &mut store, 0, NOW).unwrap();
+    assert_eq!(
+        r.records(&u.host, 25, 0)[0].ttl,
+        1,
+        "KEY TTL cannot exceed granted key lease"
+    );
+}
