@@ -245,3 +245,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Validation: full tests, fmt and all-target/all-feature clippy pass; the
   aarch64-apple-darwin all-target pcap check passes. No privileged acceptance
   is needed for the filesystem logic; no network interface was opened.
+- S03 follow-up RED `a6b3d86`: `cargo test` exposed duplicate restoration of
+  a retired prefix's metadata and on-link record. GREEN uses the version 2
+  on-link record as the sole routing owner; version 1 retains its migration
+  behavior. **92 tests pass**, including exact retirement capacity (16) plus
+  one, atomic overflow refusal, and one old PIO after rotation/restart. No
+  new field, dependency or design change.

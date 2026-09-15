@@ -411,7 +411,7 @@ impl Router {
                     {
                         return Err(invalid());
                     }
-                    if valid.live(now) {
+                    if valid.live(now) && !version2 {
                         r.on_link.insert(
                             (link, prefix),
                             OnLink {
