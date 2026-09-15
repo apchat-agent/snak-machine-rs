@@ -1,5 +1,9 @@
 pub mod wire;
-use std::{collections::BTreeMap, io, net::Ipv4Addr};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+    net::Ipv4Addr,
+};
 use wire::{Arp, Packet};
 #[derive(Clone, Debug)]
 struct Neighbor {
@@ -13,6 +17,14 @@ pub struct Ipv4 {
     pub address: Option<(Ipv4Addr, u8)>,
     pub gateway: Option<Ipv4Addr>,
     neighbors: BTreeMap<Ipv4Addr, Neighbor>,
+    routes: Vec<Route>,
+    input: VecDeque<Vec<u8>>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Route {
+    pub network: Ipv4Addr,
+    pub length: u8,
+    pub gateway: Ipv4Addr,
 }
 impl Default for Ipv4 {
     fn default() -> Self {
@@ -26,6 +38,8 @@ impl Ipv4 {
             address: None,
             gateway: None,
             neighbors: BTreeMap::new(),
+            routes: vec![],
+            input: VecDeque::new(),
         }
     }
     pub fn configure(
@@ -36,6 +50,7 @@ impl Ipv4 {
     ) -> io::Result<()> {
         if length > 32
             || !unicast(address)
+            || !host_address(address, length)
             || gateway.is_some_and(|g| !unicast(g) || !same_prefix(address, g, length))
         {
             return Err(io::Error::other("invalid IPv4 address/route"));
@@ -43,12 +58,50 @@ impl Ipv4 {
         self.address = Some((address, length));
         self.gateway = gateway;
         self.neighbors.clear();
+        self.routes.clear();
+        self.input.clear();
         Ok(())
     }
     pub fn unavailable(&mut self) {
         self.address = None;
         self.gateway = None;
         self.neighbors.clear();
+        self.routes.clear();
+        self.input.clear();
+    }
+    pub fn ready(&self) -> bool {
+        self.address.is_some()
+    }
+    pub fn route_count(&self) -> usize {
+        self.routes.len()
+    }
+    pub fn set_routes(&mut self, routes: &[Route]) -> io::Result<()> {
+        let (address, length) = self
+            .address
+            .ok_or_else(|| io::Error::other("IPv4 unavailable"))?;
+        if routes.len() > 64
+            || routes.iter().any(|r| {
+                r.length > 32
+                    || (r.length != 0 && !unicast(r.network))
+                    || u32::from(r.network) & u32::MAX.checked_shr(r.length as u32).unwrap_or(0)
+                        != 0
+                    || (!r.gateway.is_unspecified()
+                        && (!unicast(r.gateway)
+                            || !host_address(r.gateway, length)
+                            || !same_prefix(address, r.gateway, length)))
+            })
+        {
+            return Err(io::Error::other("invalid IPv4 routes/capacity"));
+        }
+        self.routes = routes.to_vec();
+        self.neighbors.clear();
+        Ok(())
+    }
+    pub fn pending_input(&self) -> (usize, usize) {
+        (self.input.len(), self.input.iter().map(Vec::len).sum())
+    }
+    pub fn take_packet(&mut self) -> Option<Vec<u8>> {
+        self.input.pop_front()
     }
     pub fn next_hop(&self, destination: Ipv4Addr) -> Option<Ipv4Addr> {
         let (address, length) = self.address?;
@@ -62,6 +115,19 @@ impl Ipv4 {
             {
                 return None;
             }
+        }
+        if let Some(route) = self
+            .routes
+            .iter()
+            .filter(|r| same_prefix(r.network, destination, r.length))
+            .max_by_key(|r| r.length)
+            .filter(|r| r.length > length || !same_prefix(address, destination, length))
+        {
+            return Some(if route.gateway.is_unspecified() {
+                destination
+            } else {
+                route.gateway
+            });
         }
         if same_prefix(address, destination, length) {
             Some(destination)
@@ -113,7 +179,7 @@ impl Ipv4 {
         let first = !self.neighbors.contains_key(&next);
         let n = self.neighbors.entry(next).or_insert(Neighbor {
             mac: None,
-            deadline: now + 1000,
+            deadline: now.saturating_add(1000),
             attempts: 1,
             queue: vec![],
         });
@@ -128,6 +194,27 @@ impl Ipv4 {
         let Some((address, length)) = self.address else {
             return Ok(vec![]);
         };
+        if frame.len() < 14
+            || frame[6..12] == self.mac
+            || (frame[0] & 1 == 0 && frame[..6] != self.mac)
+        {
+            return Ok(vec![]);
+        }
+        if frame[12..14] == [8, 0] {
+            if let Ok(p) = Packet::parse(&frame[14..]) {
+                let (count, bytes) = self.pending_input();
+                if p.destination == address
+                    && unicast(p.source)
+                    && p.ttl > 0
+                    && frame[..6] == self.mac
+                    && count < 64
+                    && bytes + p.bytes.len() <= 256 * 1024
+                {
+                    self.input.push_back(p.bytes.to_vec());
+                }
+            }
+            return Ok(vec![]);
+        }
         let Ok(a) = Arp::parse(frame) else {
             return Ok(vec![]);
         };
@@ -219,4 +306,8 @@ pub fn unicast(ip: Ipv4Addr) -> bool {
 fn same_prefix(a: Ipv4Addr, b: Ipv4Addr, length: u8) -> bool {
     let mask = u32::MAX.checked_shl(32 - length as u32).unwrap_or(0);
     u32::from(a) & mask == u32::from(b) & mask
+}
+fn host_address(address: Ipv4Addr, length: u8) -> bool {
+    let mask = u32::MAX.checked_shr(length as u32).unwrap_or(0);
+    length >= 31 || (u32::from(address) & mask != 0 && u32::from(address) & mask != mask)
 }

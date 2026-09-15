@@ -310,3 +310,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   packet/byte queue limits, retry exhaustion, late responses and 4999 spoofed
   replies without retained growth. No fields or dependencies added. Driver
   integration and remaining wire edge fixtures follow before S06.
+- S05 Driver/route RED `b8aed94`: executable wire-edge test first fails on
+  accepting a subnet's network address as local IPv4; the Driver/route initial
+  API fixtures then confirm missing seams. GREEN passes **102 tests**.
+  Driver sends actual Ethernet ARP/IPv4, drains the S04 family handoff when
+  IPv4 is configured, bounds checked IP input to 64 packets/256 KiB, and
+  clears acquisition/queues/routes on carrier loss or unusable lifecycle.
+  Classless routes use longest-prefix selection, with 64-entry atomic admission.
+  Probe replies may have a zero target IP; reserved sender addresses are
+  rejected. The literal header checksum is independent of the encoder.
+- Fields: Driver owns the planned IPv4 reducer; its bounded inbound datagrams
+  are the handoff to later service/NAT consumers. The classless route vector
+  is PLAN2's per-destination routing state. No dependency or design deviation.
+  macOS aarch64 all-target pcap check passes. Clippy found a collapsible nested
+  condition in the initial S05 reducer; its cleanup follows separately.
+- Needs privileged acceptance: real Ethernet ARP resolution, classless next-hop
+  output and carrier loss on TAP/pcap. This step uses memory Ethernet peers.

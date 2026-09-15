@@ -136,13 +136,8 @@ impl Arp {
             || frame[6..12] != sender_mac
             || (operation == 2 && sender.is_unspecified())
             || (frame[0] & 1 == 0 && frame[..6] != frame[32..38])
-            || sender.is_multicast()
-            || sender.is_broadcast()
-            || sender.is_loopback()
-            || target.is_multicast()
-            || target.is_broadcast()
-            || target.is_unspecified()
-            || target.is_loopback()
+            || (!sender.is_unspecified() && !super::unicast(sender))
+            || (!super::unicast(target) && !(operation == 2 && target.is_unspecified()))
         {
             return Err(invalid());
         }

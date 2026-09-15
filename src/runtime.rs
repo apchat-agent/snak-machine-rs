@@ -8,6 +8,7 @@ use std::{collections::BTreeSet, io, net::Ipv6Addr, time::Duration};
 pub struct Driver<I> {
     pub router: Router,
     pub io: I,
+    pub ipv4: crate::ipv4::Ipv4,
     groups: [BTreeSet<Ipv6Addr>; 2],
     mdns4: bool,
 }
@@ -27,12 +28,74 @@ impl<I: PacketIo> Driver<I> {
                 router.links[link.index()].mac = Some(mac);
             }
         }
+        let ipv4 = crate::ipv4::Ipv4::new(router.links[0].mac.unwrap_or(router.identity.macs[0]));
         Ok(Self {
             router,
             io,
+            ipv4,
             groups: Default::default(),
             mdns4: false,
         })
+    }
+    pub fn send_ipv4(
+        &mut self,
+        packet: &[u8],
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        if !self.router.links[0].up
+            || !matches!(
+                self.router.lifecycle,
+                Lifecycle::Running | Lifecycle::Starting
+            )
+            || self.io.info(Link::Ail).kind != crate::wire::FrameKind::Ethernet
+        {
+            return Err(io::Error::other("IPv4 link unavailable"));
+        }
+        let frames = self.ipv4.send(packet, now)?;
+        self.dispatch_ipv4(frames, now, rng)
+    }
+    fn dispatch_ipv4(
+        &mut self,
+        frames: Vec<Vec<u8>>,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        for frame in frames {
+            if let Err(e) = self.io.send(Link::Ail, &frame) {
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) {
+                    continue;
+                }
+                self.ipv4.unavailable();
+                self.router.set_link(Link::Ail, false, now, rng)?;
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+    fn poll_ipv4(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        if !self.router.links[0].up
+            || !matches!(
+                self.router.lifecycle,
+                Lifecycle::Running | Lifecycle::Starting
+            )
+        {
+            self.ipv4.unavailable();
+            while self.router.ail_frames.pop().is_some() {}
+            return Ok(());
+        }
+        if !self.ipv4.ready() {
+            return Ok(());
+        }
+        while let Some(frame) = self.router.ail_frames.pop() {
+            let frames = self.ipv4.receive(&frame, now)?;
+            self.dispatch_ipv4(frames, now, rng)?;
+        }
+        let frames = self.ipv4.poll(now);
+        self.dispatch_ipv4(frames, now, rng)
     }
     fn sync_groups(&mut self) -> io::Result<()> {
         let mdns4 = self.router.lifecycle != Lifecycle::Stopped
@@ -155,6 +218,7 @@ impl<I: PacketIo> Driver<I> {
         }
         let tx = self.router.tick(now, rng)?;
         self.dispatch(tx, now, rng)?;
+        self.poll_ipv4(now, rng)?;
         self.sync_groups()
     }
     pub fn receive(
@@ -192,6 +256,7 @@ impl<I: PacketIo> Driver<I> {
                 Ok(tx) => self.dispatch(tx, now, rng)?,
                 Err(e) => eprintln!("{now}ms {:?}: {e}", rx.link),
             }
+            self.poll_ipv4(now, rng)?;
         }
         Ok(())
     }
