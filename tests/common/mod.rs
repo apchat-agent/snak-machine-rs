@@ -114,3 +114,5 @@ pub fn dhcp_packet(
     udp[6..8].copy_from_slice(&c.to_be_bytes());
     packet("fe80::feed", dest, 17, 1, &udp)
 }
+
+pub mod srp;
