@@ -33,4 +33,5 @@ pub mod time;
 
 pub mod service_io;
 
+pub mod mdns;
 pub mod srp;

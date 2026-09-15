@@ -893,3 +893,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   64 KiB of owned keys and can still reuse earlier suffixes. Both independent
   bounds are filled and tested. The byte counter measures this planned codec
   work state; no dependency.
+- S13 transport RED `0d11b23`: `cargo test` confirms the missing mDNS
+  datagram codec. GREEN passes **218 tests** and all-feature clippy. Independent
+  IPv4/IPv6 packet fixtures validate AIL scope, UDP lengths/checksums, ports,
+  hop limit, every truncation and selected hostile mutations. RFC 6762's
+  receive rules ignore reserved flags/response IDs while refusing other opcodes
+  and RCODEs. IPv4's optional zero UDP checksum remains protocol-valid.
+- Incoming/outgoing datagrams enforce the RFC's 9000-byte IP limit and bounded
+  per-message work (128 questions, 512 resource records); both limits are filled.
+  The codec consumes complete reassembled IP datagrams and emits compressed DNS
+  with checked IPv4/IPv6 headers and TTL/hop limit 255. Unicast-response source
+  checks and cache/query logic belong to the engine below. No field/dependency.
