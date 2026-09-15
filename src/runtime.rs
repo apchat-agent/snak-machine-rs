@@ -278,7 +278,10 @@ impl<I: PacketIo> Driver<I> {
         self.dhcp.as_ref().and_then(|c| c.configuration())
     }
     pub fn stack_mut(&mut self, link: Link) -> Option<&mut crate::service_io::stack::Stack> {
-        self.stacks.as_mut().map(|stacks| &mut stacks[link.index()])
+        let stacks = self.stacks.as_mut()?;
+        let remaining = 64usize.saturating_sub(stacks[1 - link.index()].connections().len());
+        stacks[link.index()].set_connection_limit(remaining);
+        Some(&mut stacks[link.index()])
     }
     fn receive_service(&mut self, rx: &crate::io::Received, now: Time) -> io::Result<bool> {
         use crate::wire::{envelope, hop_options, transport, FrameKind};
@@ -355,7 +358,13 @@ impl<I: PacketIo> Driver<I> {
                     addresses.push(a.into());
                 }
             }
+            let remaining = 64usize.saturating_sub(
+                self.stacks.as_ref().unwrap()[1 - link.index()]
+                    .connections()
+                    .len(),
+            );
             let stack = &mut self.stacks.as_mut().unwrap()[link.index()];
+            stack.set_connection_limit(remaining);
             if stack.addresses() != addresses {
                 stack.set_addresses(&addresses)?;
             }

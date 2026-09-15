@@ -132,6 +132,7 @@ impl Router {
                     (
                         (l, identity.link_local(l)),
                         OwnedAddress {
+                            probe_sent: true,
                             prefix: None,
                             state: DadState::Ready,
                             deadline: None,
@@ -721,6 +722,22 @@ impl Router {
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if !success {
+            if let Ok(e) = envelope(FrameKind::RawIpv6, &tx.packet) {
+                if e.source.is_unspecified() {
+                    if let Ok(nd) = decode_nd(&e) {
+                        if nd.kind == 135 {
+                            let target =
+                                Ipv6Addr::from(<[u8; 16]>::try_from(&nd.body[8..24]).unwrap());
+                            if let Some(a) = self.owned.get_mut(&(tx.link, target)) {
+                                if a.state == DadState::Tentative {
+                                    a.probe_sent = false;
+                                    a.deadline = Some(now.saturating_add(1000));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return Ok(());
         }
         let Ok(e) = envelope(FrameKind::RawIpv6, &tx.packet) else {
@@ -798,6 +815,7 @@ impl Router {
                     self.owned
                         .entry((tx.link, address))
                         .or_insert(OwnedAddress {
+                            probe_sent: false,
                             prefix: Some(p.prefix),
                             state: DadState::Tentative,
                             deadline: Some(now),

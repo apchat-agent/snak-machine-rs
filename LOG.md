@@ -462,3 +462,24 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Independent reassembly byte-cap evidence fills 63 nearly maximal contexts
   then refuses another before the 64-context bound, with no retained growth.
   Expiry releases all charged memory; offset overflow fails before retention.
+- S07 readiness/bounds RED `a011617` executes three intended failures:
+  more than 64 connections across the two stacks, readiness after a failed
+  DAD send, and rejection of two valid endpoint address sets on restore.
+  RED `5b98701` additionally demonstrates restored addresses becoming ready
+  without emitting DAD, then introduces the missing probe-status field in
+  the two existing ready-address fixtures. Their assertions are unchanged.
+- GREEN passes **130 tests** and all-feature clippy. Connection admission
+  shares 64 slots across both links. DAD transmission progress is independent
+  of the identity-conflict attempt count; failed sends retry and reboot
+  repeats DAD while retaining the chosen IID and attempt count. The journal
+  permits 31 service addresses plus the link-local address per endpoint.
+- Field beyond PLAN2's explicit layout: `OwnedAddress.probe_sent` separates
+  the fact that a DAD probe has been issued from the number of identity
+  attempts. Failed native transmission clears it, and restore initializes
+  it false; overloading `attempts` would erase conflict history. The stack's
+  connection admission allowance enforces PLAN2's shared limit. No dependency.
+- Fixture correction RED `a95efeb`: the journal scenario also advertises two
+  local ULAs during supplier reachability checking. Its full expected set is
+  44 addresses (40 peer, two local ULA, two link-local), not the initially
+  guessed 42. It now checks all original keys after restore. Production was
+  removed for its RED run; the absent probe-status seam still failed as intended.

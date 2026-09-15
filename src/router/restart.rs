@@ -343,11 +343,12 @@ impl Router {
                     let attempts = u8::try_from(parse(attempts)?).map_err(|_| invalid())?;
                     if !p.contains(address)
                         || attempts > 3
-                        || owned_addresses.len() >= 32
+                        || owned_addresses.keys().filter(|(l, _)| *l == link).count() >= 31
                         || owned_addresses
                             .insert(
                                 (link, address),
                                 OwnedAddress {
+                                    probe_sent: false,
                                     prefix: Some(p),
                                     state: DadState::Tentative,
                                     deadline: Some(now),

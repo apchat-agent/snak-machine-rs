@@ -45,6 +45,7 @@ pub struct Stack {
     now: u64,
     reassembly: crate::ip_reassembly::Reassembler,
     fragment_id: u32,
+    connection_limit: usize,
 }
 impl Stack {
     pub fn new(now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -66,6 +67,7 @@ impl Stack {
             now,
             reassembly: Default::default(),
             fragment_id: u32::from_le_bytes(seed[..4].try_into().unwrap()),
+            connection_limit: CONNECTIONS,
         })
     }
     pub fn set_addresses(&mut self, addresses: &[IpAddr]) -> io::Result<()> {
@@ -168,7 +170,7 @@ impl Stack {
             || port == 0
             || dest_port == 0
             || self.port_owned(6, port)
-            || self.connections.len() >= CONNECTIONS
+            || self.connections.len() >= self.connection_limit
             || self.peer_count(destination) >= 4
         {
             return Err(capacity());
@@ -209,6 +211,9 @@ impl Stack {
     }
     pub fn connections(&self) -> Vec<usize> {
         self.connections.keys().copied().collect()
+    }
+    pub(crate) fn set_connection_limit(&mut self, limit: usize) {
+        self.connection_limit = limit.min(CONNECTIONS);
     }
     pub fn endpoints(&self, id: usize) -> Option<(std::net::SocketAddr, std::net::SocketAddr)> {
         let c = self.connections.get(&id)?;
@@ -396,7 +401,7 @@ impl Stack {
         for (port, h) in accepted {
             let remote = self.sockets.get::<tcp::Socket>(h).remote_endpoint();
             if remote.is_some_and(|r| {
-                self.connections.len() < CONNECTIONS && self.peer_count(r.addr.into()) < 4
+                self.connections.len() < self.connection_limit && self.peer_count(r.addr.into()) < 4
             }) {
                 self.insert_connection(h, now)?;
             } else {

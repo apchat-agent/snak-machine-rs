@@ -8,6 +8,7 @@ pub enum DadState {
 }
 #[derive(Clone, Debug)]
 pub struct OwnedAddress {
+    pub probe_sent: bool,
     pub prefix: Option<Prefix>,
     pub state: DadState,
     pub deadline: Option<Time>,
@@ -56,6 +57,7 @@ impl Router {
         self.owned.insert(
             (link, address),
             OwnedAddress {
+                probe_sent: true,
                 prefix: if link_local(address) {
                     None
                 } else {
@@ -96,8 +98,9 @@ impl Router {
                 continue;
             }
             if a.state == DadState::Tentative && a.deadline.is_some_and(|t| now >= t) {
-                if a.attempts == 0 {
-                    a.attempts = 1;
+                if a.attempts == 0 || !a.probe_sent {
+                    a.attempts = a.attempts.max(1);
+                    a.probe_sent = true;
                     a.deadline = Some(now + 1000);
                     let mut b = vec![135, 0, 0, 0, 0, 0, 0, 0];
                     b.extend(address.octets());
