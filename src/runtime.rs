@@ -1,4 +1,5 @@
 mod dns;
+mod mdns;
 use crate::{
     io::{Direction, PacketIo},
     router::{Lifecycle, Router, Tx},
@@ -11,6 +12,9 @@ pub struct Driver<I> {
     pub io: I,
     pub ipv4: crate::ipv4::Ipv4,
     pub dns: crate::dns::resolver::Resolver,
+    pub mdns: crate::mdns::Engine,
+    mdns_output: Option<mdns::Output>,
+    mdns_fragment_id: u32,
     pub dns_discovery: crate::dns::upstream::Discovery,
     dns_service: crate::dns::service::Service,
     dns_info: Option<crate::dns::upstream::InformationClient>,
@@ -42,6 +46,9 @@ impl<I: PacketIo> Driver<I> {
             ipv4,
             dns: crate::dns::resolver::Resolver::new(true),
             dns_discovery: Default::default(),
+            mdns: Default::default(),
+            mdns_output: None,
+            mdns_fragment_id: 0,
             dns_service: Default::default(),
             dns_info: None,
             dhcp: None,
@@ -254,6 +261,7 @@ impl<I: PacketIo> Driver<I> {
         self.poll_ipv4(now, rng)?;
         self.poll_dns_configuration(now, rng)?;
         self.poll_services(now, rng)?;
+        self.poll_mdns(now, rng)?;
         self.sync_groups()
     }
     pub fn receive(
@@ -284,6 +292,9 @@ impl<I: PacketIo> Driver<I> {
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if rx.direction != Direction::OwnEgress {
+            if self.receive_mdns(&rx, now, rng)? {
+                return Ok(());
+            }
             if self.receive_dns_configuration(&rx, now) {
                 return Ok(());
             }
@@ -316,6 +327,8 @@ impl<I: PacketIo> Driver<I> {
     pub fn next_deadline(&mut self, now: Time) -> Time {
         let mut next = self.router.next_deadline(now);
         for deadline in [
+            self.mdns.querier.next_deadline(now),
+            self.mdns_output.as_ref().map(|o| o.retry),
             self.dns.next_deadline(),
             self.dns_discovery.next_deadline(),
             self.dns_info.as_ref().map(|c| c.next_deadline()),

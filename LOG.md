@@ -968,3 +968,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   seconds even under a stream; tests fill the pending table and reject overflow.
   Extra fields are the planned response coalescing/suppression timers and
   identities. No dependency. Native AIL transport wiring follows.
+- S13 live-query RED `c8d5792`: full `cargo test` confirms missing Driver
+  transport. GREEN passes **236 tests** and all-feature clippy. Production
+  Driver fixtures acquire IPv4LL, emit checked IPv4/IPv6 mDNS multicast, accept
+  independent AIL answers, and reject stub/own-egress/bad-hop/bad-MAC traffic.
+  Link loss clears learned records and leaves both groups. A fragmented large
+  TXT answer is reassembled before cache delivery through the existing AIL
+  endpoint pool; fragmented messages containing multiple RRs are rejected.
+- The sender emits at most 32 frames per poll, retains its cursor on transient
+  write failure and reports completion only after every family/fragment has
+  been sent. Only one DNS message's IP fragments are materialized at a time,
+  below the 64-KiB UDP work bound. Added cursor/fragment-ID fields implement
+  planned packet work and successful-send feedback. No dependency. Publication
+  response delivery, aggregate limits and final S13 edge fixtures follow.
+- **needs privileged acceptance:** native AIL IPv4/IPv6 multicast membership,
+  reception, MTU fragmentation and interoperability with external mDNS peers.
+  The platform calls are already at the PacketIo edge; all logic above runs
+  rootlessly using independent Ethernet/IP fixtures.

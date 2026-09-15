@@ -390,6 +390,11 @@ impl Stack {
             self.sockets.remove(h);
         }
     }
+    // The runtime validates AIL mDNS ownership/hop/source before using the
+    // same reassembly pool as other local AIL service traffic.
+    pub(crate) fn reassemble_mdns(&mut self, b: &[u8], now: u64) -> io::Result<Option<Vec<u8>>> {
+        self.reassembly.input(b, now)
+    }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<()> {
         // Check ownership before retaining even the first fragment.
         let destination = match b.first().map(|v| v >> 4) {
