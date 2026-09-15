@@ -102,3 +102,22 @@ fn s12_srp_lease_and_ttl_cli_controls_are_checked() {
         assert!(Config::parse(base.into_iter().chain(bad)).is_err());
     }
 }
+
+#[test]
+fn s12_original_binary_identity_is_preserved_during_journal_upgrade() {
+    let mut memory = MemoryStore::default();
+    let id = snac_rs::persist::Identity::load_or_create(
+        &mut memory,
+        "legacy",
+        &mut snac_rs::time::ScriptedRandom::new(1..100),
+    )
+    .unwrap();
+    let bytes = id.encode().unwrap();
+    let (mut router, mut srp) = Journal::open(memory).unwrap();
+    assert_eq!(router.load().unwrap().unwrap(), bytes);
+    srp.save(b"new-registrations").unwrap();
+    assert_eq!(
+        snac_rs::persist::Identity::decode(&router.load().unwrap().unwrap()).unwrap(),
+        id
+    );
+}

@@ -412,3 +412,85 @@ fn s12_lease_option_variant_and_configurable_ttl_policy_survive_negotiation() {
         "KEY TTL cannot exceed granted key lease"
     );
 }
+
+#[test]
+fn s12_journal_checks_semantics_even_with_a_recomputed_checksum() {
+    use sha1::{Digest, Sha1};
+    let mut r = Registry::default();
+    let mut store = MemoryStore::default();
+    let u = verified(&r, update(), 0);
+    r.apply(&u, &mut store, 0, NOW).unwrap();
+    let bytes = store.0.unwrap();
+    let mut record = Message::new(0, 0);
+    record.answers = r.records(&u.services[0].name, 33, 0);
+    let old = record.encode().unwrap();
+    if let Rdata::Srv { target, .. } = &mut record.answers[0].data {
+        *target = "Evil.default.service.arpa.".parse().unwrap();
+    }
+    let new = record.encode().unwrap();
+    assert_eq!(new.len(), old.len());
+    let offset = bytes.windows(old.len()).position(|w| w == old).unwrap();
+    let mut bad = bytes.clone();
+    bad[offset..offset + new.len()].copy_from_slice(&new);
+    let end = bad.len() - 20;
+    let checksum = Sha1::digest(&bad[..end]);
+    bad[end..].copy_from_slice(&checksum);
+    assert!(
+        Registry::restore(&bad, 0, NOW).is_err(),
+        "a service may refer only to its stored host"
+    );
+    let mut bad = bytes.clone();
+    let offset = bad
+        .windows(u.key.bytes.len())
+        .position(|w| w == u.key.bytes)
+        .unwrap();
+    bad[offset..offset + u.key.bytes.len()].fill(0);
+    let end = bad.len() - 20;
+    let checksum = Sha1::digest(&bad[..end]);
+    bad[end..].copy_from_slice(&checksum);
+    assert!(
+        Registry::restore(&bad, 0, NOW).is_err(),
+        "persisted key material must be a valid public key"
+    );
+}
+#[test]
+fn s12_refresh_replaces_subtypes_and_preserves_unexpired_claims() {
+    let mut r = Registry::default();
+    let mut store = MemoryStore::default();
+    let mut m = update();
+    let u = verified(&r, m.clone(), 0);
+    r.apply(&u, &mut store, 0, NOW).unwrap();
+    let subtype = u.services[0].discovery[1].name.clone();
+    assert_eq!(r.records(&subtype, 12, 0).len(), 1);
+    m.id += 1;
+    m.authority.pop();
+    let u2 = verified(&r, m, 1000);
+    r.apply(&u2, &mut store, 1000, NOW + 1).unwrap();
+    assert!(r.records(&subtype, 12, 1000).is_empty());
+    assert_eq!(
+        r.records(&u.services[0].discovery[0].name, 12, 1000).len(),
+        1
+    );
+    let wrong = include_bytes!("fixtures/srp/alg14.bin");
+    r.expire(7201000);
+    let mut jobs = CryptoBudget::default();
+    assert_eq!(
+        Validator::new(&[])
+            .unwrap()
+            .verify(wrong, NOW, &mut jobs, |n| r.key(n, 7201000).cloned())
+            .unwrap_err(),
+        Error::YxDomain
+    );
+    assert_eq!(
+        jobs.remaining(),
+        8,
+        "unexpired ownership conflict precedes signature work"
+    );
+    r.expire(1209601000);
+    let next = Validator::new(&[])
+        .unwrap()
+        .verify(wrong, NOW, &mut jobs, |n| r.key(n, 1209601000).cloned())
+        .unwrap();
+    r.apply(&next, &mut store, 1209601000, NOW).unwrap();
+    assert_eq!(r.key(&u.host, 1209601000).unwrap().algorithm, 14);
+}
