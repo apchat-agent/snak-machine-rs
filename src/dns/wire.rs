@@ -638,11 +638,21 @@ fn svcb_valid(params: &[(u16, Vec<u8>)]) -> io::Result<()> {
     Ok(())
 }
 fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
+    write_data_with(d, b, &mut |name, out| {
+        name.write(out);
+        Ok(())
+    })
+}
+fn write_data_with(
+    d: &Rdata,
+    b: &mut Vec<u8>,
+    write_name: &mut impl FnMut(&Name, &mut Vec<u8>) -> io::Result<()>,
+) -> io::Result<()> {
     match d {
         Rdata::Empty => {}
         Rdata::A(a) => b.extend(a),
         Rdata::Aaaa(a) => b.extend(a),
-        Rdata::Name(n) => n.write(b),
+        Rdata::Name(n) => write_name(n, b)?,
         Rdata::Srv {
             priority,
             weight,
@@ -652,15 +662,15 @@ fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
             for x in [priority, weight, port] {
                 b.extend(x.to_be_bytes());
             }
-            target.write(b);
+            write_name(target, b)?;
         }
         Rdata::Preference { preference, name } => {
             b.extend(preference.to_be_bytes());
-            name.write(b);
+            write_name(name, b)?;
         }
         Rdata::TwoNames { first, second } => {
-            first.write(b);
-            second.write(b);
+            write_name(first, b)?;
+            write_name(second, b)?;
         }
         Rdata::Px {
             preference,
@@ -668,8 +678,8 @@ fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
             mapx400,
         } => {
             b.extend(preference.to_be_bytes());
-            map822.write(b);
-            mapx400.write(b);
+            write_name(map822, b)?;
+            write_name(mapx400, b)?;
         }
         Rdata::Txt(v) => {
             for s in v {
@@ -689,8 +699,8 @@ fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
             expire,
             minimum,
         } => {
-            mname.write(b);
-            rname.write(b);
+            write_name(mname, b)?;
+            write_name(rname, b)?;
             for x in [serial, refresh, retry, expire, minimum] {
                 b.extend(x.to_be_bytes());
             }
@@ -727,7 +737,7 @@ fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
         }
         Rdata::Opt(v) => write_options(v, b)?,
         Rdata::Nsec { next, bitmap } => {
-            next.write(b);
+            write_name(next, b)?;
             b.extend(bitmap);
         }
         Rdata::Svcb {

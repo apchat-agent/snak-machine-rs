@@ -875,3 +875,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   binary identity into the combined journal. S12 is complete. Rootless signed
   success is exercised over UDP/TCP/DoT, with durable failure/retry and restart;
   native/external-client acceptance remains listed above. S13 follows.
+
+### S13 — mDNS transport, cache and publication engine (in progress)
+
+- Encoder refactor keeps **213 tests** and all-feature clippy green. The
+  existing RDATA writer now accepts a name-writing callback so mDNS can use
+  its required record-specific compression rules. Unicast output remains byte
+  identical, and SIG/SVCB name fields retain their compression prohibition.
+  No field or dependency. Compression and hostile transport fixtures follow.
