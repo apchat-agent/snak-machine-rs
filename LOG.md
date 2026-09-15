@@ -32,3 +32,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 14 ail-arbitration GREEN — 14 passed; Equal prefixes remain co-advertised; comparison uses canonical network-order prefixes, with no MAC election field.
 - 15 deprecation RED — 15 tests specified; cargo test failed for the new contract (see paired test commit).
 - 15 deprecation GREEN — 15 passed; Frozen deprecation origin, saturating lifetime, PIO inclusion at 206 but omission at 205; direct route survives until its advertised valid deadline. Failed attempts no longer refresh on-link deadlines.
+- 16 deprecation-recovery RED — 16 tests specified; cargo test failed for the new contract (see paired test commit).
+- 16 deprecation-recovery GREEN — 16 passed; Recovery resets advertising mode and countdown while preserving the saved prefix identity.

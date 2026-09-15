@@ -106,6 +106,7 @@ impl Router {
         if nd.kind == 133 {
             if self.state(link) == AilState::Suitable && !self.confirmed_supplier(link, now) {
                 self.links[link.index()].state = AilState::BeginAdvertising;
+                self.links[link.index()].deprecate_at = None;
                 self.links[link.index()].scheduler.changed(now, rng)?;
             }
             self.links[link.index()]
@@ -254,12 +255,13 @@ impl Router {
                         .get(k)
                         .is_none_or(|n| n.state != NeighborState::Failed)
             });
-            if self.state(link) == AilState::Suitable
+            if matches!(self.state(link), AilState::Suitable | AilState::Deprecating)
                 && (!fresh
                     || (self.links[link.index()].scheduler.due(now)
                         && !self.confirmed_supplier(link, now)))
             {
                 self.links[link.index()].state = AilState::BeginAdvertising;
+                self.links[link.index()].deprecate_at = None;
                 self.links[link.index()].scheduler.changed(now, rng)?;
             }
 
