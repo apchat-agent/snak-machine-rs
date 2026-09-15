@@ -621,3 +621,96 @@ fn s09_tcp_disconnect_cancels_only_its_waiters() {
     r.cancel_connection(12);
     assert_eq!(r.pending_count(), 0);
 }
+
+#[test]
+fn s09_local_service_arpa_policy_preserves_dnssec_ds_exception() {
+    for name in [
+        "service.arpa.",
+        "unknown.service.arpa.",
+        "default.service.arpa.",
+    ] {
+        for kind in [1, 28, 2, 43] {
+            for do_bit in [false, true] {
+                let (mut r, mut rng) = setup();
+                let mut m = Message::parse(&query(name, kind, 1), Context::Unicast).unwrap();
+                if do_bit {
+                    m.additional.push(Record {
+                        name: ".".parse().unwrap(),
+                        kind: 41,
+                        class: 1232,
+                        ttl: 0x8000,
+                        data: Rdata::Opt(vec![]),
+                    });
+                }
+                let out = r
+                    .submit(client(1), &m.encode().unwrap(), 0, &mut rng)
+                    .unwrap();
+                assert_eq!(
+                    matches!(out[0], Action::Upstream(_)),
+                    kind == 43 && do_bit,
+                    "{name} {kind} {do_bit}"
+                );
+            }
+        }
+    }
+    let (mut r, mut rng) = setup();
+    let zones: Vec<_> = (0..8)
+        .map(|n| format!("owned{n}.test.").parse().unwrap())
+        .collect();
+    r.set_local_zones(&zones).unwrap();
+    let mut extra = zones.clone();
+    extra.push("overflow.test.".parse().unwrap());
+    assert!(r.set_local_zones(&extra).is_err());
+    let m = Message::parse(
+        &reply(
+            r.submit(client(1), &query("host.owned0.test.", 1, 1), 0, &mut rng)
+                .unwrap(),
+        ),
+        Context::Unicast,
+    )
+    .unwrap();
+    assert_eq!(m.flags & 15, 3);
+    assert!(r
+        .submit(client(1), &query("unowned.test.", 1, 1), 0, &mut rng)
+        .unwrap()
+        .iter()
+        .any(|a| matches!(a, Action::Upstream(_))));
+}
+#[test]
+fn s09_authoritative_answers_share_canonical_a_and_size_rules() {
+    let (r, _) = setup();
+    let query = query("alias.owned.test.", 28, 80);
+    let mut m = Message::parse(&query, Context::Unicast).unwrap();
+    m.flags = 0x8580;
+    m.answers.push(Record {
+        name: m.questions[0].name.clone(),
+        kind: 5,
+        class: 1,
+        ttl: 10,
+        data: Rdata::Name("target.owned.test.".parse().unwrap()),
+    });
+    let mut calls = 0;
+    let a = r
+        .answer_local(client(1), &query, &m.encode().unwrap(), |q| {
+            calls += 1;
+            assert_eq!(q.name, "target.owned.test.".parse().unwrap());
+            assert_eq!(q.kind, 1);
+            let mut a = Message::new(0, 0x8580);
+            a.questions.push(q.clone());
+            a.answers.push(Record {
+                name: q.name.clone(),
+                kind: 1,
+                class: 1,
+                ttl: 10,
+                data: Rdata::A([192, 0, 2, 9]),
+            });
+            a.encode()
+        })
+        .unwrap();
+    let result = Message::parse(&reply(vec![a]), Context::Unicast).unwrap();
+    assert_eq!(calls, 1);
+    assert_eq!(result.answers, m.answers);
+    assert_eq!(result.additional[0].data, Rdata::A([192, 0, 2, 9]));
+    assert_ne!(result.flags & 0x400, 0);
+    assert_eq!(result.id, 80);
+}
