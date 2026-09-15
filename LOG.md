@@ -24,3 +24,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 10 mo-selection GREEN — 10 passed; Header records contain only last receipt, SNAC, paired M/O bits and raw nonzero header deadline; zero-lifetime headers remain eligible.
 - 11 nud-confirmation RED — 11 tests specified; cargo test failed for the new contract (see paired test commit).
 - 11 nud-confirmation GREEN — 11 passed; RA/SLLAO learns presence and MAC only; NA override semantics and a single reachability deadline drive confirmation.
+- 12 nud-takeover RED — 12 tests specified; cargo test failed for the new contract (see paired test commit).
+- 12 nud-takeover GREEN — 12 passed; Three probes spaced by retransmission deadlines; alternate confirmed suppliers suppress takeover; failed entries retain no active retry timer.

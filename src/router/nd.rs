@@ -114,3 +114,35 @@ impl Router {
         Ok(vec![])
     }
 }
+
+impl Router {
+    pub(super) fn tick_neighbors(&mut self, now: Time) -> io::Result<Vec<Tx>> {
+        let keys: Vec<_> = self
+            .neighbors
+            .iter()
+            .filter(|(_, n)| {
+                n.deadline.is_some_and(|t| now >= t) && n.state != NeighborState::Failed
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        let mut out = vec![];
+        for key in keys {
+            let n = self.neighbors.get_mut(&key).unwrap();
+            if n.state == NeighborState::Reachable {
+                n.probes_sent = 0;
+            }
+            if n.probes_sent >= 3 {
+                n.state = NeighborState::Failed;
+                n.deadline = None;
+            } else {
+                out.push(self.probe(key, now)?);
+            }
+        }
+        Ok(out)
+    }
+    pub(super) fn confirmed_supplier(&self, link: Link, now: Time) -> bool {
+        self.suppliers.iter().any(|((k, _), s)| {
+            k.link == link && s.preferred.live(now) && s.valid.live(now) && self.reachable(*k, now)
+        })
+    }
+}

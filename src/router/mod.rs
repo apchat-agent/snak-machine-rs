@@ -104,6 +104,10 @@ impl Router {
             return Ok(vec![]);
         };
         if nd.kind == 133 {
+            if self.state(link) == AilState::Suitable && !self.confirmed_supplier(link, now) {
+                self.links[link.index()].state = AilState::BeginAdvertising;
+                self.links[link.index()].scheduler.changed(now, rng)?;
+            }
             self.links[link.index()]
                 .scheduler
                 .receive_rs(&e, now, rng)?;
@@ -212,7 +216,7 @@ impl Router {
         }
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
-        let mut out = vec![];
+        let mut out = self.tick_neighbors(now)?;
         for link in [Link::Stub, Link::Ail] {
             let s = &mut self.links[link.index()];
             if s.state == AilState::Unknown {
