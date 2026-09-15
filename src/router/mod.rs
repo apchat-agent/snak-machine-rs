@@ -60,6 +60,7 @@ pub struct Header {
 }
 pub struct Router {
     pub pd: pd::PdClient,
+    pub pd_prefixes: BTreeMap<Prefix, pd::OwnedPrefix>,
     pub withdrawals: BTreeMap<(Link, Prefix), u8>,
     pub routes: BTreeMap<(Ipv6Addr, Prefix), Route>,
     pub no_stub_default: bool,
@@ -88,6 +89,7 @@ impl Router {
         }
         Ok(Self {
             pd: pd::PdClient::default(),
+            pd_prefixes: BTreeMap::new(),
             withdrawals: BTreeMap::new(),
             routes: BTreeMap::new(),
             no_stub_default: false,
@@ -135,6 +137,7 @@ impl Router {
             && e.next_header == 17
         {
             self.pd.receive(&e, &self.identity.duid, now, rng)?;
+            self.sync_pd(now, rng)?;
             return Ok(self
                 .pd
                 .poll(
@@ -270,6 +273,10 @@ impl Router {
                 }
             }
         }
+        if link == Link::Stub {
+            pios.extend(self.delegated_pios(now));
+            pios.sort_by_key(|p| p.prefix);
+        }
         let mut rios: Vec<Rio> = if link == Link::Ail {
             self.on_link
                 .iter()
@@ -329,17 +336,19 @@ impl Router {
             if !self.address_ready(link, self.identity.link_local(link)) {
                 continue;
             }
-            let fresh = self.suppliers.iter().any(|((k, _), _)| {
-                k.link == link
-                    && self
-                        .neighbors
-                        .get(k)
-                        .is_none_or(|n| n.state != NeighborState::Failed)
-            });
+            let fresh = (link == Link::Stub && !self.pd.selected(now).is_empty())
+                || self.suppliers.iter().any(|((k, _), _)| {
+                    k.link == link
+                        && self
+                            .neighbors
+                            .get(k)
+                            .is_none_or(|n| n.state != NeighborState::Failed)
+                });
             if matches!(self.state(link), AilState::Suitable | AilState::Deprecating)
                 && (!fresh
                     || (self.links[link.index()].scheduler.due(now)
-                        && !self.confirmed_supplier(link, now)))
+                        && !self.confirmed_supplier(link, now)
+                        && !(link == Link::Stub && !self.pd.selected(now).is_empty())))
             {
                 self.links[link.index()].state = AilState::BeginAdvertising;
                 self.links[link.index()].deprecate_at = None;

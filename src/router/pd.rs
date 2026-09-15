@@ -21,6 +21,8 @@ pub struct Exchange {
 }
 #[derive(Debug)]
 pub struct PdClient {
+    pub leases: BTreeMap<LeaseKey, Lease>,
+    pub releases: Vec<Release>,
     pub offers: Vec<Message>,
     pub requested: Vec<Delegation>,
     pub state: PdState,
@@ -30,6 +32,8 @@ pub struct PdClient {
 impl Default for PdClient {
     fn default() -> Self {
         Self {
+            leases: BTreeMap::new(),
+            releases: vec![],
             offers: vec![],
             requested: vec![],
             state: PdState::Dormant,
@@ -87,11 +91,12 @@ impl PdClient {
         {
             self.start(now, rng)?;
         }
+        let mut out = self.poll_releases(now, source, duid, rng)?;
         let Some(e) = &mut self.exchange else {
-            return Ok(vec![]);
+            return Ok(out);
         };
         if now < e.next {
-            return Ok(vec![]);
+            return Ok(out);
         }
         let mut b = vec![e.kind];
         b.extend(e.xid);
@@ -136,7 +141,8 @@ impl PdClient {
         };
         e.next = now + e.interval;
         e.count = e.count.saturating_add(1);
-        Ok(vec![packet])
+        out.push(packet);
+        Ok(out)
     }
 }
 
@@ -168,11 +174,18 @@ impl PdClient {
     ) -> io::Result<()> {
         let Ok(b) = udp_payload(e) else { return Ok(()) };
         let Ok(m) = decode(b) else { return Ok(()) };
+        if m.kind == 7 && m.client == duid {
+            self.releases
+                .retain(|r| r.exchange.xid != m.xid || r.exchange.server != m.server);
+        }
         let Some(exchange) = &self.exchange else {
             return Ok(());
         };
         if m.xid != exchange.xid || m.client != duid {
             return Ok(());
+        }
+        if m.kind == 7 && self.state == PdState::Requesting && m.server == exchange.server {
+            return self.install(m, now, rng);
         }
         if self.state == PdState::Soliciting && m.kind == 2 {
             if let Some(max) = m.sol_max_rt {
@@ -196,5 +209,260 @@ impl PdClient {
             }
         }
         Ok(())
+    }
+}
+
+pub type LeaseKey = (u32, Prefix);
+#[derive(Clone, Debug)]
+pub struct Lease {
+    pub server: Vec<u8>,
+    pub preferred: Lifetime,
+    pub valid: Lifetime,
+    pub t1: Lifetime,
+    pub t2: Lifetime,
+    pub used: bool,
+}
+#[derive(Clone, Debug)]
+pub struct Release {
+    pub exchange: Exchange,
+    pub prefixes: Vec<Delegation>,
+}
+#[derive(Clone, Debug)]
+pub struct OwnedPrefix {
+    pub lease: LeaseKey,
+    pub deprecate_at: Option<Time>,
+    pub last_valid: Lifetime,
+}
+impl PdClient {
+    pub fn selected(&self, now: Time) -> Vec<LeaseKey> {
+        let mut result = vec![];
+        for ula in [false, true] {
+            if let Some((key, _)) = self
+                .leases
+                .iter()
+                .filter(|((_, p), l)| {
+                    p.length <= 64
+                        && p.routable()
+                        && p.ula() == ula
+                        && l.valid.live(now)
+                        && l.preferred.live(now)
+                })
+                .max_by_key(|(key, l)| (l.preferred, std::cmp::Reverse(**key)))
+            {
+                result.push(*key);
+            }
+        }
+        result
+    }
+    fn install(&mut self, m: Message, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        if m.status != 0 {
+            return Ok(());
+        }
+        for d in m.delegations {
+            let key = (d.iaid, d.prefix);
+            if d.valid == 0 {
+                self.leases.remove(&key);
+                continue;
+            }
+            let used = self.leases.get(&key).is_some_and(|l| l.used);
+            let t1 = if d.t1 == 0 {
+                (d.preferred / 2).max(1)
+            } else {
+                d.t1
+            };
+            let t2 = if d.t2 == 0 {
+                (d.preferred.saturating_mul(4) / 5).max(t1)
+            } else {
+                d.t2
+            };
+            self.leases.insert(
+                key,
+                Lease {
+                    server: m.server.clone(),
+                    preferred: Lifetime::from_secs(now, d.preferred),
+                    valid: Lifetime::from_secs(now, d.valid),
+                    t1: Lifetime::from_secs(now, t1.min(t2)),
+                    t2: Lifetime::from_secs(now, t2),
+                    used,
+                },
+            );
+        }
+        let selected = self.selected(now);
+        for key in &selected {
+            self.leases.get_mut(key).unwrap().used = true;
+        }
+        let unused: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, l)| !l.used)
+            .map(|(k, l)| (*k, l.clone()))
+            .collect();
+        let mut prefixes = vec![];
+        for ((iaid, prefix), l) in unused {
+            prefixes.push(Delegation {
+                iaid,
+                prefix,
+                t1: 0,
+                t2: 0,
+                preferred: l.preferred.remaining(now),
+                valid: l.valid.remaining(now),
+            });
+            self.leases.remove(&(iaid, prefix));
+        }
+        if !prefixes.is_empty() {
+            let mut xid = [0; 3];
+            rng.fill(&mut xid)?;
+            self.releases.push(Release {
+                exchange: Exchange {
+                    kind: 8,
+                    xid,
+                    started: now,
+                    next: now,
+                    interval: 1000,
+                    count: 0,
+                    server: m.server,
+                },
+                prefixes,
+            });
+        }
+        self.state = PdState::Bound;
+        self.exchange = None;
+        self.requested.clear();
+        Ok(())
+    }
+    fn poll_releases(
+        &mut self,
+        now: Time,
+        source: Ipv6Addr,
+        duid: &[u8],
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Vec<u8>>> {
+        let mut out = vec![];
+        for release in &mut self.releases {
+            let e = &mut release.exchange;
+            if e.count >= 4 || now < e.next {
+                continue;
+            }
+            let mut b = vec![8];
+            b.extend(e.xid);
+            b.extend(option(1, duid));
+            b.extend(option(2, &e.server));
+            b.extend(option(
+                8,
+                &((now.saturating_sub(e.started) / 10).min(65535) as u16).to_be_bytes(),
+            ));
+            for iaid in [1u32, 2] {
+                let mut ia = iaid.to_be_bytes().to_vec();
+                ia.extend([0; 8]);
+                for d in release.prefixes.iter().filter(|d| d.iaid == iaid) {
+                    ia.extend(delegation_option(d));
+                }
+                if ia.len() > 12 {
+                    b.extend(option(25, &ia));
+                }
+            }
+            out.push(
+                udp_packet(source, "ff02::1:2".parse().unwrap(), 546, 547, &b)
+                    .map_err(|_| io::Error::other("Release encoding"))?,
+            );
+            e.count += 1;
+            e.next = now + e.interval * 9 / 10 + rng.sample(e.interval / 5)?;
+            e.interval *= 2;
+        }
+        self.releases
+            .retain(|r| r.exchange.count < 4 || now < r.exchange.next);
+        Ok(out)
+    }
+}
+impl Router {
+    pub(super) fn sync_pd(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        let selected = self.pd.selected(now);
+        let mut changed = false;
+        for key in &selected {
+            let prefix = Prefix::new(key.1.address, 64).unwrap();
+            let lease = &self.pd.leases[key];
+            if !self.pd_prefixes.contains_key(&prefix) {
+                changed = true;
+            }
+            self.pd_prefixes
+                .entry(prefix)
+                .or_insert(OwnedPrefix {
+                    lease: *key,
+                    deprecate_at: None,
+                    last_valid: Lifetime::Until(now),
+                })
+                .deprecate_at = None;
+            self.on_link.insert(
+                (Link::Stub, prefix),
+                OnLink {
+                    valid: lease.valid,
+                    preferred: lease.preferred,
+                },
+            );
+        }
+        for p in self.pd_prefixes.values_mut() {
+            if !selected.contains(&p.lease) && p.deprecate_at.is_none() {
+                p.deprecate_at = Some(now);
+                changed = true;
+            }
+        }
+        let invalid: Vec<_> = self
+            .pd_prefixes
+            .iter()
+            .filter(|(_, p)| {
+                !self
+                    .pd
+                    .leases
+                    .get(&p.lease)
+                    .is_some_and(|l| l.valid.live(now))
+            })
+            .map(|(p, _)| *p)
+            .collect();
+        for p in invalid {
+            self.pd_prefixes.remove(&p);
+            self.on_link.remove(&(Link::Stub, p));
+            self.withdrawals.insert((Link::Ail, p), 3);
+            changed = true;
+        }
+        if !selected.is_empty()
+            && matches!(
+                self.state(Link::Stub),
+                AilState::Advertising | AilState::BeginAdvertising
+            )
+        {
+            self.links[1].state = AilState::Deprecating;
+            self.links[1].deprecate_at = Some(now);
+            changed = true;
+        }
+        if changed {
+            self.links[0].scheduler.changed(now, rng)?;
+            self.links[1].scheduler.changed(now, rng)?;
+        }
+        Ok(())
+    }
+    pub(super) fn delegated_pios(&self, now: Time) -> Vec<Pio> {
+        self.pd_prefixes
+            .iter()
+            .filter_map(|(prefix, p)| {
+                let l = self.pd.leases.get(&p.lease)?;
+                let mut valid = l.valid.remaining(now).min(1800);
+                let preferred = if let Some(at) = p.deprecate_at {
+                    valid = valid.min(Lifetime::from_secs(at, 1800).remaining(now));
+                    0
+                } else {
+                    l.preferred.remaining(now).min(valid)
+                };
+                if valid == 0 || (p.deprecate_at.is_some() && valid < 206) {
+                    None
+                } else {
+                    Some(Pio {
+                        prefix: *prefix,
+                        flags: 0xc0,
+                        preferred,
+                        valid,
+                    })
+                }
+            })
+            .collect()
     }
 }
