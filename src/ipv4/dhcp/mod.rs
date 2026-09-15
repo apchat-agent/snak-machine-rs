@@ -61,6 +61,10 @@ pub struct Client {
     next: u64,
     started: u64,
     retry: u64,
+    link_local: Option<Configuration>,
+    fallback_at: u64,
+    conflicts: u32,
+    defended_at: Option<u64>,
 }
 impl Client {
     pub fn new(mac: [u8; 6], now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -77,6 +81,10 @@ impl Client {
             next: now.saturating_add(1000 + rng.sample(9000)?),
             started: now,
             retry: 4000,
+            link_local: None,
+            fallback_at: now.saturating_add(60000),
+            conflicts: 0,
+            defended_at: None,
         })
     }
     pub fn xid(&self) -> u32 {
@@ -89,7 +97,10 @@ impl Client {
         self.offers.len()
     }
     pub fn configuration(&self) -> Option<&Configuration> {
-        self.active.as_ref().map(|l| &l.config)
+        self.active
+            .as_ref()
+            .map(|l| &l.config)
+            .or(self.link_local.as_ref())
     }
     pub fn lease(&self) -> Option<&Lease> {
         self.active.as_ref()
@@ -222,6 +233,17 @@ impl Client {
         {
             self.restart(now, rng)?;
         }
+        if self.probe.is_none() && self.configuration().is_none() && now >= self.fallback_at {
+            let address = Ipv4Addr::from(
+                u32::from(Ipv4Addr::new(169, 254, 1, 0)) + rng.sample(254 * 256 - 1)? as u32,
+            );
+            self.probe = Some(Probe {
+                address,
+                lease: None,
+                sent: 0,
+                next: now.saturating_add(rng.sample(1000)?),
+            });
+        }
         if let Some(p) = self.probe.as_mut() {
             if now >= p.next {
                 let sender = if p.sent < 3 {
@@ -247,7 +269,19 @@ impl Client {
                     2000
                 });
                 if p.sent == 4 {
-                    self.active = p.lease.take();
+                    if let Some(lease) = p.lease.take() {
+                        self.active = Some(lease);
+                        self.link_local = None;
+                    } else {
+                        self.link_local = Some(Configuration {
+                            address: p.address,
+                            length: 16,
+                            routes: vec![],
+                            dns: vec![],
+                            search: vec![],
+                        });
+                    }
+                    self.defended_at = None;
                 }
                 if p.sent == 5 {
                     self.probe = None;
@@ -300,13 +334,98 @@ impl Client {
         };
         self.state = State::Stopped;
         self.active = None;
+        self.link_local = None;
         self.selected = None;
         self.probe = None;
         self.offers.clear();
         Ok(out)
     }
+    pub fn set_link(&mut self, up: bool, now: u64, rng: &mut impl RandomSource) -> io::Result<()> {
+        if up && self.state == State::Stopped {
+            self.restart(now, rng)?;
+            self.next = now.saturating_add(1000 + rng.sample(9000)?);
+            self.fallback_at = now.saturating_add(60000);
+        } else if !up {
+            self.state = State::Stopped;
+            self.active = None;
+            self.link_local = None;
+            self.probe = None;
+            self.selected = None;
+            self.offers.clear();
+            self.defended_at = None;
+        }
+        Ok(())
+    }
+    pub fn receive_arp(
+        &mut self,
+        frame: &[u8],
+        now: u64,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Output>> {
+        let Ok(a) = Arp::parse(frame) else {
+            return Ok(vec![]);
+        };
+        if a.sender_mac == self.mac || self.state == State::Stopped {
+            return Ok(vec![]);
+        }
+        let candidate = self
+            .probe
+            .as_ref()
+            .filter(|p| {
+                p.sent < 4
+                    && (a.sender == p.address
+                        || (a.sender.is_unspecified() && a.target == p.address))
+            })
+            .map(|p| p.address);
+        let active = self
+            .configuration()
+            .filter(|c| a.sender == c.address)
+            .map(|c| c.address);
+        if candidate.is_none() && active.is_none() {
+            return Ok(vec![]);
+        }
+        if let Some(address) = active {
+            if self
+                .defended_at
+                .is_none_or(|t| now >= t.saturating_add(10000))
+            {
+                self.defended_at = Some(now);
+                return Ok(vec![Output {
+                    kind: OutputKind::Arp,
+                    packet: Arp {
+                        operation: 1,
+                        sender_mac: self.mac,
+                        sender: address,
+                        target_mac: [0; 6],
+                        target: address,
+                    }
+                    .encode([255; 6]),
+                }]);
+            }
+        }
+        let lease = if candidate.is_some() {
+            self.probe.take().and_then(|p| p.lease)
+        } else {
+            self.probe = None;
+            self.active.take()
+        };
+        self.defended_at = None;
+        if let Some(lease) = lease {
+            self.selected = Some(lease);
+            let out = self.message(4, now)?;
+            self.restart(now, rng)?;
+            self.next = now.saturating_add(10000);
+            return Ok(vec![out]);
+        }
+        self.link_local = None;
+        self.conflicts = self.conflicts.saturating_add(1);
+        self.fallback_at = now.saturating_add(if self.conflicts >= 10 { 60000 } else { 0 });
+        Ok(vec![])
+    }
     fn message(&self, kind: u8, now: u64) -> io::Result<Output> {
-        let ciaddr = if kind == 7 || matches!(self.state, State::Renewing | State::Rebinding) {
+        let ciaddr = if kind == 7
+            || (kind == 3 && matches!(self.state, State::Renewing | State::Rebinding))
+        {
             self.active
                 .as_ref()
                 .map(|l| l.config.address)
@@ -314,7 +433,7 @@ impl Client {
         } else {
             Ipv4Addr::UNSPECIFIED
         };
-        let unicast = kind == 7 || self.state == State::Renewing;
+        let unicast = kind == 7 || (kind == 3 && self.state == State::Renewing);
         let destination = if unicast {
             self.active.as_ref().unwrap().server
         } else {

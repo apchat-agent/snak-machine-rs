@@ -365,3 +365,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   eight offers plus a flood. Fields are the planned single active lease,
   selected candidate, probe progress, eight offers and exchange timers.
   No dependency; IPv4LL/conflict handling and Driver integration remain S06.
+- S06 IPv4LL RED `0b7cf09`: behavioral timeout fixture runs and fails on
+  missing fallback; conflict/native-lifecycle seams then fail compilation.
+  GREEN passes **114 tests** and all-feature clippy. After DHCP timeout,
+  IPv4LL selects the inclusive RFC 3927 range, probes and announces, without
+  a default route; DHCP continues and supersedes it only after ACK probing.
+  ARP conflicts defend an active address once per ten seconds, then relinquish;
+  repeated acquisition conflicts impose a one-minute backoff. DHCP candidate
+  conflicts send DECLINE and wait ten seconds. Carrier loss removes readiness
+  and reconnect repeats acquisition. Both random range endpoints are tested.
+- Fields: one IPv4LL configuration/candidate, fallback/defense timers and a
+  saturating conflict counter implement the planned RFC 3927 reducer. No
+  dependency or design change. References: RFC 2131 §§4.4.1/4.4.5, RFC 3927
+  §§2.1–2.5, RFC 3397 search compression, RFC 3442 route precedence.
