@@ -836,3 +836,226 @@ fn s13_publication_update_goodbye_withdrawal_and_reconnect_are_derived_and_bound
     assert_eq!(p.counts().1, 4096);
     assert!(p.counts().2 <= 4 * 1024 * 1024);
 }
+
+fn established() -> (snac_rs::mdns::publish::Publisher, Vec<Record>) {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut data = published();
+    data.push(Record {
+        name: "Lamp._light._tcp.local.".parse().unwrap(),
+        kind: 33,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Srv {
+            priority: 0,
+            weight: 0,
+            port: 1234,
+            target: "lamp.local.".parse().unwrap(),
+        },
+    });
+    data.push(Record {
+        name: "Lamp._light._tcp.local.".parse().unwrap(),
+        kind: 16,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![0, 255, 61]]),
+    });
+    p.replace(1, &[], &data, 0, &mut rng).unwrap();
+    for at in [0, 250, 500, 750, 1750] {
+        let b = p.poll(&|_, _| data.clone(), at).unwrap().unwrap();
+        p.sent(b.token, true, at);
+    }
+    (p, data)
+}
+fn peer_query(q: Question) -> Datagram {
+    let mut message = Message::new(42, 0);
+    message.questions.push(q);
+    Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message,
+    }
+}
+#[test]
+fn s13_responder_browse_resolve_qu_qm_legacy_and_negative_answers_are_authoritative() {
+    use snac_rs::{mdns::respond::Responder, time::ScriptedRandom};
+    let (mut p, data) = established();
+    let source = |_, _| data.clone();
+    let mut e = Responder::default();
+    let mut rng = ScriptedRandom::new([]);
+    let d = peer_query(question("_light._tcp.local.", 12));
+    e.receive(&d, true, &mut p, &source, 3000, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 3019).unwrap().is_none());
+    let b = e.poll(&p, &source, 3020).unwrap().unwrap();
+    assert_eq!(b.destination, "[ff02::fb]:5353".parse().unwrap());
+    assert_eq!(b.messages[0].answers[0].kind, 12);
+    for kind in [33, 16, 1] {
+        assert!(
+            b.messages
+                .iter()
+                .flat_map(|m| &m.additional)
+                .any(|r| r.kind == kind),
+            "DNS-SD additional type {kind}"
+        );
+    }
+    e.sent(b.token, true, &mut p, 3020);
+    let mut d = peer_query(question("lamp.local.", 1));
+    d.message.questions[0].class = 0x8001;
+    e.receive(&d, true, &mut p, &source, 3100, &mut rng)
+        .unwrap();
+    let b = e.poll(&p, &source, 3100).unwrap().unwrap();
+    assert_eq!(b.destination, d.source);
+    e.sent(b.token, true, &mut p, 3100);
+    e.receive(&d, false, &mut p, &source, 4100, &mut rng)
+        .unwrap();
+    let b = e.poll(&p, &source, 4100).unwrap().unwrap();
+    assert!(
+        b.destination.ip().is_multicast(),
+        "overlay source cannot receive usable unicast"
+    );
+    e.sent(b.token, true, &mut p, 4100);
+    d.source.set_port(40000);
+    e.receive(&d, true, &mut p, &source, 4200, &mut rng)
+        .unwrap();
+    let b = e.poll(&p, &source, 4200).unwrap().unwrap();
+    assert_eq!(b.destination, d.source);
+    assert_eq!(b.messages[0].id, 42);
+    assert_eq!(b.messages[0].questions, d.message.questions);
+    assert!(b.messages[0]
+        .answers
+        .iter()
+        .chain(&b.messages[0].additional)
+        .all(|r| r.class & 0x8000 == 0 && r.ttl <= 10));
+    e.sent(b.token, true, &mut p, 4200);
+    let d = peer_query(question("lamp.local.", 28));
+    e.receive(&d, true, &mut p, &source, 6000, &mut rng)
+        .unwrap();
+    let b = e.poll(&p, &source, 6000).unwrap().unwrap();
+    assert_eq!(b.messages[0].answers[0].kind, 47);
+    e.sent(b.token, true, &mut p, 6000);
+    let d = peer_query(question("unknown.local.", 1));
+    e.receive(&d, true, &mut p, &source, 7000, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 7100).unwrap().is_none());
+}
+#[test]
+fn s13_responder_suppresses_known_and_duplicate_answers_and_limits_multicast_frequency() {
+    use snac_rs::{mdns::respond::Responder, time::ScriptedRandom};
+    let (mut p, data) = established();
+    let source = |_, _| data.clone();
+    let mut e = Responder::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut d = peer_query(question("_light._tcp.local.", 12));
+    d.message.answers.push(data[1].clone());
+    d.message.answers[0].ttl = 60;
+    e.receive(&d, true, &mut p, &source, 3000, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 3120).unwrap().is_none());
+    d.message.answers[0].ttl = 59;
+    e.receive(&d, true, &mut p, &source, 4000, &mut rng)
+        .unwrap();
+    let mut answer = peer_query(question("irrelevant.local.", 1));
+    answer.message = response(vec![data[1].clone()]);
+    e.receive(&answer, true, &mut p, &source, 4010, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 4020).unwrap().is_none());
+    let d = peer_query(question("lamp.local.", 1));
+    e.receive(&d, true, &mut p, &source, 5000, &mut rng)
+        .unwrap();
+    let b = e.poll(&p, &source, 5000).unwrap().unwrap();
+    e.sent(b.token, true, &mut p, 5000);
+    e.receive(&d, true, &mut p, &source, 5100, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 5999).unwrap().is_none());
+    let b = e.poll(&p, &source, 6000).unwrap().unwrap();
+    e.sent(b.token, true, &mut p, 6000);
+    let mut probe = d;
+    probe
+        .message
+        .authority
+        .push(a_record("lamp.local.", 99, 120, true));
+    e.receive(&probe, true, &mut p, &source, 6100, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 6249).unwrap().is_none());
+    assert!(
+        e.poll(&p, &source, 6250).unwrap().is_some(),
+        "probe defense has 250 ms exception"
+    );
+}
+#[test]
+fn s13_truncated_known_answer_continuations_are_source_scoped_and_expire_under_flood() {
+    use snac_rs::{mdns::respond::Responder, time::ScriptedRandom};
+    let (mut p, data) = established();
+    let source = |_, _| data.clone();
+    let mut e = Responder::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut d = peer_query(question("_light._tcp.local.", 12));
+    d.message.flags = 0x200;
+    e.receive(&d, true, &mut p, &source, 3000, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 3399).unwrap().is_none());
+    let mut continuation = peer_query(question("unused.local.", 1));
+    continuation.message.questions.clear();
+    continuation.message.answers.push(data[1].clone());
+    continuation.source = "[fe80::3]:5353".parse().unwrap();
+    e.receive(&continuation, true, &mut p, &source, 3300, &mut rng)
+        .unwrap();
+    assert!(
+        e.poll(&p, &source, 3400).unwrap().is_some(),
+        "different sender cannot suppress this query"
+    );
+    continuation.source = d.source;
+    e.receive(&continuation, true, &mut p, &source, 3350, &mut rng)
+        .unwrap();
+    assert!(e.poll(&p, &source, 3500).unwrap().is_none());
+    for i in 0..128 {
+        let mut d = d.clone();
+        d.source = format!("[fe80::{:x}]:5353", i + 2).parse().unwrap();
+        e.receive(&d, true, &mut p, &source, 4000, &mut rng)
+            .unwrap();
+    }
+    assert_eq!(e.counts().0, 128);
+    let mut extra = d.clone();
+    extra.source = "[fe80::ffff]:5353".parse().unwrap();
+    assert!(e
+        .receive(&extra, true, &mut p, &source, 4000, &mut rng)
+        .is_err());
+    assert!(e.counts().1 <= 4096 && e.counts().2 <= 4 * 1024 * 1024);
+    let mut continuation = d;
+    continuation.message.questions.clear();
+    for at in [4300, 4600, 4900, 5200, 5500, 5800] {
+        e.receive(&continuation, true, &mut p, &source, at, &mut rng)
+            .unwrap();
+    }
+    e.poll(&p, &source, 6000).unwrap();
+    assert_eq!(
+        e.counts().0,
+        0,
+        "no unbounded retention from an unfinished known-answer stream"
+    );
+}
+#[test]
+fn s13_legacy_mdns_reply_encoding_uses_unicast_srv_rules() {
+    let mut m = response(vec![Record {
+        name: "Lamp._light._tcp.local.".parse().unwrap(),
+        kind: 33,
+        class: 1,
+        ttl: 10,
+        data: Rdata::Srv {
+            priority: 0,
+            weight: 0,
+            port: 1234,
+            target: "lamp.local.".parse().unwrap(),
+        },
+    }]);
+    m.questions.push(question("lamp.local.", 1));
+    let b = encode(
+        "[fe80::1]:5353".parse().unwrap(),
+        "[fe80::2]:40000".parse().unwrap(),
+        &m,
+    )
+    .unwrap();
+    Message::parse(&b[48..], Context::Unicast).unwrap();
+}
