@@ -54,3 +54,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 25 pd-lifetimes GREEN — 25 passed; T1 Renew and T2 Rebind use original delegation ownership; fallback_at is the planned derived first unanswered Rebind deadline (retained so later retries cannot postpone it), never before T2; remaining lease validity caps PIO/RIO exports.
 - 26 pd-reconnect RED — 26 tests specified; cargo test failed for the new contract (see paired test commit).
 - 26 pd-reconnect GREEN — 26 passed; Versioned checkpoint stores local identity/journal and used leases with wall expiry, never router observations; restart subtracts downtime and Rebinds. Backward wall time preserves ULA and requires PD verification. Link usability is local runtime state, needed to pause sends without discarding lease validity.
+- 27 forwarding RED — 27 tests specified; cargo test failed for the new contract (see paired test commit).
+- 27 forwarding GREEN — 27 passed; Longest-prefix and next-hop preference lookup, fresh Ethernet encapsulation and exact one-hop decrement; promiscuous unrelated frames and own-source MAC frames are excluded.
