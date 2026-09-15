@@ -130,6 +130,23 @@ impl Router {
         if e.source == self.identity.link_local(link) {
             return Ok(vec![]);
         }
+        if link == Link::Ail
+            && e.destination == self.identity.link_local(link)
+            && e.next_header == 17
+        {
+            self.pd.receive(&e, &self.identity.duid, now, rng)?;
+            return Ok(self
+                .pd
+                .poll(
+                    now,
+                    self.identity.link_local(link),
+                    &self.identity.duid,
+                    rng,
+                )?
+                .into_iter()
+                .map(|packet| Tx { link, packet })
+                .collect());
+        }
         let Ok(nd) = decode_nd(&e) else {
             return Ok(vec![]);
         };

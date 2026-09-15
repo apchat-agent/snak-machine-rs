@@ -46,3 +46,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 21 other-stub-routes GREEN — 21 passed; Nondefault RIO lifetimes survive omitted options and zero router headers; alternate paths prevent false withdrawal, reflected connected OSNRs excluded; three successful zero-RIO sends retire a withdrawal.
 - 22 pd-solicit RED — 22 tests specified; cargo test failed for the new contract (see paired test commit).
 - 22 pd-solicit GREEN — 22 passed; PD starts independently of M/O; stable DUID and IAIDs with /64 hints, elapsed time and SOL_MAX_RT ORO; retries retain transaction ID and use jittered backoff.
+- 23 pd-offers RED — 23 tests specified; cargo test failed for the new contract (see paired test commit).
+- 23 pd-offers GREEN — 23 passed; DHCP nested lengths, DUID/xid, IAIDs, T1/T2 and prefix lifetimes checked; preference 255 selects immediately; valid SOL_MAX_RT learned even from unusable offers; no lease Release for rejected offers.
