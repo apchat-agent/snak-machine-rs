@@ -336,3 +336,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Incoming IP byte-cap, every truncation of a maximum-size frame and malformed
   Ethernet/address cases are covered. The window/counter implement PLAN2's
   global ARP rate budget; no dependency added. S05 is complete.
+
+### S06 — DHCPv4 and IPv4LL (in progress)
+
+- Initial RED `02f4e51`: `cargo test` confirms the absent DHCPv4 wire seam.
+  GREEN passes **105 tests**. A literal BOOTP/UDP offer yields lease deadlines,
+  mask, DNS, concatenated option-119 search names and classless routes; option
+  121 suppresses option 3. The parser bounds option payloads to 4096 bytes,
+  DNS addresses to eight, search data to 1024 bytes/16 names and routes to 64.
+  No new dependency; typed configuration/lease/option state is planned in S06.
+  Hostile parser cases and the acquisition/client integration follow.

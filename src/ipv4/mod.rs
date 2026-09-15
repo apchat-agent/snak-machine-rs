@@ -1,3 +1,4 @@
+pub mod dhcp;
 pub mod wire;
 use std::{
     collections::{BTreeMap, VecDeque},
