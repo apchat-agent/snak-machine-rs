@@ -200,3 +200,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   The state-layout normalization follows in a separate refactor commit.
 - Needs privileged acceptance: same-interface carrier reconnect and observed
   router-identity changes on actual AIL media; no native interfaces were opened.
+- S02 layout refactor: AIL on-link storage now holds only validity; stub
+  storage also holds preferred lifetime for route ranking. `OnLink` is an
+  input/view value. Baseline checks use `get(...).unwrap()` or `set_valid`
+  instead of map indexing/mutable field access with identical expectations.
+  Delegated prefixes share one reference-counted IA/server timer record;
+  restore interns and checks association consistency. Offers retain only the
+  validated server, preference and delegation data needed for selection.
+  The existing per-link admission and 16-lease bounds also bound these owners.
+  `cargo test`: **82 passing**; all-target/all-feature clippy is clean.

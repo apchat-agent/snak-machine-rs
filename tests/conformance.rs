@@ -183,11 +183,14 @@ fn s02_pd_renews_due_server_and_keeps_other_ia_lifetimes() {
         pd.leases.insert(
             (iaid, Prefix::new(ip(prefix), 64).unwrap()),
             Lease {
-                server,
+                association: std::rc::Rc::new(snac_rs::router::pd::Association {
+                    iaid,
+                    server,
+                    t1: Lifetime::from_secs(0, t1),
+                    t2: Lifetime::from_secs(0, t2),
+                }),
                 preferred: Lifetime::from_secs(0, valid),
                 valid: Lifetime::from_secs(0, valid),
-                t1: Lifetime::from_secs(0, t1),
-                t2: Lifetime::from_secs(0, t2),
                 used: true,
             },
         );

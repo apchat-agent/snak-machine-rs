@@ -102,7 +102,7 @@ impl Router {
                 .collect();
         }
         if self.default_lifetime(now) == 0 || self.always_advertise_ail_routes {
-            for ((l, p), v) in &self.on_link {
+            for ((l, p), v) in self.on_link.iter() {
                 if *l == Link::Ail && v.valid.live(now) {
                     routes.insert(*p, v.valid.remaining(now).min(1800));
                 }

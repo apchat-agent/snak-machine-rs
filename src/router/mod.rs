@@ -1,3 +1,5 @@
+mod on_link;
+pub use on_link::{OnLink, OnLinkTable};
 pub mod attachment;
 mod budget;
 mod lifecycle;
@@ -43,11 +45,6 @@ pub struct Supplier {
     pub preferred: Lifetime,
     pub valid: Lifetime,
 }
-#[derive(Clone, Debug)]
-pub struct OnLink {
-    pub valid: Lifetime,
-    pub preferred: Lifetime,
-}
 pub struct LinkState {
     pub mac: Option<[u8; 6]>,
     pub mtu: u32,
@@ -89,7 +86,7 @@ pub struct Router {
     pub identity: Identity,
     pub links: [LinkState; 2],
     pub suppliers: BTreeMap<(RouterKey, Prefix), Supplier>,
-    pub on_link: BTreeMap<(Link, Prefix), OnLink>,
+    pub on_link: OnLinkTable,
 }
 impl Router {
     pub fn new(identity: Identity, now: Time, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -145,7 +142,7 @@ impl Router {
             identity,
             links: [link(now, rng)?, link(now, rng)?],
             suppliers: BTreeMap::new(),
-            on_link: BTreeMap::new(),
+            on_link: OnLinkTable::default(),
         })
     }
     pub fn state(&self, link: Link) -> AilState {
@@ -436,7 +433,7 @@ impl Router {
         };
         if link == Link::Ail {
             rios.sort_by_key(|r| {
-                let p = &self.on_link[&(Link::Stub, r.prefix)];
+                let p = self.on_link.get(&(Link::Stub, r.prefix)).unwrap();
                 (
                     std::cmp::Reverse(p.preferred.live(now)),
                     std::cmp::Reverse(p.valid),
@@ -625,12 +622,18 @@ impl Router {
                 {
                     self.links[0].scheduler.changed(now, rng)?;
                 }
-                self.on_link
-                    .entry((link, self.identity.prefix(link)))
-                    .or_insert(OnLink {
-                        valid: Lifetime::from_secs(now, 1800),
-                        preferred: Lifetime::from_secs(now, 1800),
-                    });
+                if !self
+                    .on_link
+                    .contains_key(&(link, self.identity.prefix(link)))
+                {
+                    self.on_link.insert(
+                        (link, self.identity.prefix(link)),
+                        OnLink {
+                            valid: Lifetime::from_secs(now, 1800),
+                            preferred: Lifetime::from_secs(now, 1800),
+                        },
+                    );
+                }
             }
             if self.state(link) != AilState::Unknown && self.links[link.index()].scheduler.due(now)
             {

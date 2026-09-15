@@ -337,11 +337,12 @@ fn stale_pio_cannot_be_kept_alive_by_other_options() {
         .unwrap();
     r.tick(600000, &mut rng).unwrap();
     assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
-    assert!(
-        r.on_link[&(Link::Ail, Prefix::new(ip("2001:db8::"), 64).unwrap())]
-            .valid
-            .live(600000)
-    );
+    assert!(r
+        .on_link
+        .get(&(Link::Ail, Prefix::new(ip("2001:db8::"), 64).unwrap()))
+        .unwrap()
+        .valid
+        .live(600000));
 }
 
 fn providing(seed: u64) -> Router {
@@ -439,8 +440,18 @@ fn deprecation_counts_down_then_omits() {
             .unwrap();
         }
     }
-    assert!(r.on_link[&(Link::Ail, own)].valid.live(1811999));
-    assert!(!r.on_link[&(Link::Ail, own)].valid.live(1812000));
+    assert!(r
+        .on_link
+        .get(&(Link::Ail, own))
+        .unwrap()
+        .valid
+        .live(1811999));
+    assert!(!r
+        .on_link
+        .get(&(Link::Ail, own))
+        .unwrap()
+        .valid
+        .live(1812000));
     assert_eq!(r.links[0].deprecate_at, Some(12000));
 }
 

@@ -272,11 +272,14 @@ fn lease(r: &mut Router, iaid: u32, prefix: Prefix, preferred: u32, valid: u32) 
     r.pd.leases.insert(
         (iaid, prefix),
         Lease {
-            server: vec![1, 2, 3],
+            association: std::rc::Rc::new(snac_rs::router::pd::Association {
+                iaid,
+                server: vec![1, 2, 3],
+                t1: Lifetime::Infinite,
+                t2: Lifetime::Infinite,
+            }),
             preferred: Lifetime::from_secs(0, preferred),
             valid: Lifetime::from_secs(0, valid),
-            t1: Lifetime::Infinite,
-            t2: Lifetime::Infinite,
             used: true,
         },
     );
@@ -325,9 +328,13 @@ fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
         .rios
         .iter()
         .all(|r| r.lifetime == 0));
-    assert!(expected
-        .iter()
-        .all(|p| d.router.on_link[&(Link::Stub, *p)].valid.live(6000)));
+    assert!(expected.iter().all(|p| d
+        .router
+        .on_link
+        .get(&(Link::Stub, *p))
+        .unwrap()
+        .valid
+        .live(6000)));
     d.io.up[1] = true;
     d.step(7000, &mut ScriptedRandom::new([])).unwrap();
     assert!(expected.iter().all(|p| d
@@ -893,7 +900,8 @@ fn review_16_checkpoint_writes_follow_semantic_changes_and_bounded_heartbeat() {
             .unwrap();
     }
     assert_eq!(store.writes, 1);
-    r.on_link.get_mut(&(Link::Stub, p)).unwrap().valid = Lifetime::Until(1900000);
+    r.on_link
+        .set_valid(&(Link::Stub, p), Lifetime::Until(1900000));
     writer.save(&r, &mut store, 100000, 100100).unwrap();
     assert_eq!(store.writes, 2);
     r.identity.iids[1] += 1;
@@ -903,7 +911,15 @@ fn review_16_checkpoint_writes_follow_semantic_changes_and_bounded_heartbeat() {
     assert_eq!(store.writes, 4);
     let restored = Router::restore(&store.bytes, 0, 100500, &mut ScriptedRandom::new([])).unwrap();
     assert_eq!(restored.identity, r.identity);
-    assert_eq!(restored.on_link[&(Link::Stub, p)].valid.remaining(0), 1400);
+    assert_eq!(
+        restored
+            .on_link
+            .get(&(Link::Stub, p))
+            .unwrap()
+            .valid
+            .remaining(0),
+        1400
+    );
 }
 
 #[test]

@@ -47,7 +47,7 @@ impl Router {
             s.discovery_end = u64::MAX;
         }
         if link == Link::Stub {
-            for ((l, p), v) in &self.on_link {
+            for ((l, p), v) in self.on_link.iter() {
                 if *l == Link::Stub && v.valid.live(now) {
                     if up {
                         self.withdrawals.remove(&(Link::Ail, *p));
@@ -226,11 +226,14 @@ impl Router {
                         r.pd.leases.insert(
                             (iaid, prefix),
                             pd::Lease {
-                                server,
+                                association: std::rc::Rc::new(pd::Association {
+                                    iaid,
+                                    server,
+                                    t1: lifetime(t1)?,
+                                    t2: lifetime(t2)?,
+                                }),
                                 preferred,
                                 valid,
-                                t1: lifetime(t1)?,
-                                t2: lifetime(t2)?,
                                 used: true,
                             },
                         );
@@ -238,6 +241,17 @@ impl Router {
                 }
                 _ => return Err(invalid()),
             }
+        }
+        let mut associations = BTreeMap::new();
+        for ((iaid, _), lease) in &mut r.pd.leases {
+            let key = (*iaid, lease.server.clone());
+            let shared = associations
+                .entry(key)
+                .or_insert_with(|| lease.association.clone());
+            if **shared != *lease.association {
+                return Err(invalid());
+            }
+            lease.association = shared.clone();
         }
         if !r.pd.leases.is_empty() {
             r.pd.refresh(6, now, rng)?;

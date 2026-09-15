@@ -1,5 +1,12 @@
 use super::*;
 use crate::wire::dhcpv6::*;
+use std::rc::Rc;
+#[derive(Clone, Debug)]
+pub struct Offer {
+    pub server: Vec<u8>,
+    pub preference: u8,
+    pub delegations: Vec<Delegation>,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PdState {
     Dormant,
@@ -26,7 +33,7 @@ pub struct PdClient {
     pub fallback_at: Option<Time>,
     pub leases: BTreeMap<LeaseKey, Lease>,
     pub releases: Vec<Release>,
-    pub offers: Vec<Message>,
+    pub offers: Vec<Offer>,
     pub requested: Vec<Delegation>,
     pub state: PdState,
     pub exchange: Option<Exchange>,
@@ -259,7 +266,11 @@ impl PdClient {
                 return Err(io::Error::other("DHCP offer capacity"));
             }
             let immediate = m.preference == 255;
-            self.offers.push(m);
+            self.offers.push(Offer {
+                server: m.server,
+                preference: m.preference,
+                delegations: m.delegations,
+            });
             if immediate {
                 self.choose(now, rng)?;
             }
@@ -269,14 +280,25 @@ impl PdClient {
 }
 
 pub type LeaseKey = (u32, Prefix);
-#[derive(Clone, Debug)]
-pub struct Lease {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Association {
+    pub iaid: u32,
     pub server: Vec<u8>,
-    pub preferred: Lifetime,
-    pub valid: Lifetime,
     pub t1: Lifetime,
     pub t2: Lifetime,
+}
+#[derive(Clone, Debug)]
+pub struct Lease {
+    pub association: Rc<Association>,
+    pub preferred: Lifetime,
+    pub valid: Lifetime,
     pub used: bool,
+}
+impl std::ops::Deref for Lease {
+    type Target = Association;
+    fn deref(&self) -> &Association {
+        &self.association
+    }
 }
 #[derive(Clone, Debug)]
 pub struct Release {
@@ -355,6 +377,7 @@ impl PdClient {
                     .or_insert(d.preferred);
             }
         }
+        let mut associations = BTreeMap::new();
         for d in m.delegations {
             let key = (d.iaid, d.prefix);
             if d.valid == 0 {
@@ -376,14 +399,23 @@ impl PdClient {
             } else {
                 d.t2
             };
+            let association = associations
+                .entry(d.iaid)
+                .or_insert_with(|| {
+                    Rc::new(Association {
+                        iaid: d.iaid,
+                        server: m.server.clone(),
+                        t1: Lifetime::from_secs(now, t1.min(t2)),
+                        t2: Lifetime::from_secs(now, t2),
+                    })
+                })
+                .clone();
             self.leases.insert(
                 key,
                 Lease {
-                    server: m.server.clone(),
+                    association,
                     preferred: Lifetime::from_secs(now, d.preferred),
                     valid: Lifetime::from_secs(now, d.valid),
-                    t1: Lifetime::from_secs(now, t1.min(t2)),
-                    t2: Lifetime::from_secs(now, t2),
                     used,
                 },
             );
@@ -512,7 +544,7 @@ impl Router {
             .collect();
         for ((iaid, prefix), l) in conflicts {
             self.pd.queue_release(
-                l.server,
+                l.server.clone(),
                 vec![Delegation {
                     iaid,
                     prefix,
