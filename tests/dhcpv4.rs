@@ -71,3 +71,102 @@ fn s06_literal_bootp_offer_carries_routes_dns_search_and_lease() {
     );
     assert_eq!(l.config.routes[0].gateway, ip("192.0.2.254"));
 }
+
+fn valid(p: &[u8]) -> bool {
+    Message::parse(p).and_then(|m| m.lease(0, None)).is_ok()
+}
+#[test]
+fn s06_hostile_bootp_udp_and_options_are_rejected() {
+    let good = body(2, XID, &parameters());
+    let p = reply(&good);
+    for n in 0..p.len() {
+        assert!(Message::parse(&p[..n]).is_err(), "truncation {n}");
+    }
+    for (at, value) in [(0, 1), (1, 2), (2, 5), (28, 1), (236, 0)] {
+        let mut b = good.clone();
+        b[at] = value;
+        assert!(!valid(&reply(&b)), "BOOTP field {at}");
+    }
+    for at in [20, 21, 22, 23, 24, 25, 26] {
+        let mut b = p.clone();
+        b[at] ^= 1;
+        assert!(Message::parse(&b).is_err(), "UDP field {at}");
+    }
+    for option in [
+        vec![53, 1, 5],
+        vec![54, 4, 192, 0, 2, 2],
+        vec![51, 4, 0, 0, 1, 0],
+        vec![1, 4, 255, 0, 255, 0],
+        vec![119, 2, 0xc0, 0],
+        vec![119, 7, 3, 1, b'a', 0, 0, 0xc0, 1],
+        vec![121, 1, 33],
+        vec![121, 0],
+        vec![6, 3, 1, 2, 3],
+    ] {
+        let mut opts = parameters();
+        opts.extend(option);
+        assert!(
+            !valid(&reply(&body(2, XID, &opts))),
+            "invalid duplicate/name/route option"
+        );
+    }
+    let mut b = good.clone();
+    b.pop();
+    b.extend([77, 255, 1]);
+    assert!(Message::parse(&reply(&b)).is_err());
+    let mut opts = parameters();
+    for _ in 0..17 {
+        opts.extend([77, 255]);
+        opts.extend([1; 255]);
+    }
+    assert!(Message::parse(&reply(&body(2, XID, &opts))).is_err());
+}
+#[test]
+fn s06_option_overload_compression_and_table_limits() {
+    let mut opts = parameters();
+    opts.extend([52, 1, 3]);
+    let mut b = body(2, XID, &opts);
+    b[108..114].copy_from_slice(&[119, 3, 1, b'a', 0, 255]);
+    b[44..49].copy_from_slice(&[119, 2, 0xc0, 0, 255]);
+    let m = Message::parse(&reply(&b)).unwrap();
+    assert_eq!(
+        m.lease(0, None).unwrap().config.search,
+        vec![vec![b"a".to_vec()], vec![b"a".to_vec()]]
+    );
+    b[108..112].copy_from_slice(&[52, 1, 1, 255]);
+    assert!(
+        Message::parse(&reply(&b)).is_err(),
+        "overload cannot recursively overload"
+    );
+    for count in [8usize, 9] {
+        let mut opts = parameters();
+        // Replace the original DNS option to exercise its exact bound.
+        let at = opts.windows(2).position(|v| v == [6, 4]).unwrap();
+        opts.drain(at..at + 6);
+        opts.extend([6, (count * 4) as u8]);
+        for n in 1..=count {
+            opts.extend([192, 0, 2, n as u8]);
+        }
+        assert_eq!(valid(&reply(&body(2, XID, &opts))), count == 8);
+    }
+    for count in [16usize, 17] {
+        let mut opts = parameters();
+        opts.extend([119, (count * 3) as u8]);
+        for _ in 0..count {
+            opts.extend([1, b'a', 0]);
+        }
+        assert_eq!(valid(&reply(&body(2, XID, &opts))), count == 16);
+    }
+    for count in [64usize, 65] {
+        let mut opts = parameters();
+        let mut r = vec![];
+        for n in 0..count {
+            r.extend([16, 10, n as u8, 192, 0, 2, 1]);
+        }
+        for chunk in r.chunks(255) {
+            opts.extend([121, chunk.len() as u8]);
+            opts.extend(chunk);
+        }
+        assert_eq!(valid(&reply(&body(2, XID, &opts))), count == 64);
+    }
+}
