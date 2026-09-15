@@ -28,3 +28,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 12 nud-takeover GREEN — 12 passed; Three probes spaced by retransmission deadlines; alternate confirmed suppliers suppress takeover; failed entries retain no active retry timer.
 - 13 pio-staleness RED — 13 tests specified; cargo test failed for the new contract (see paired test commit).
 - 13 pio-staleness GREEN — 13 passed; Router header updates cannot refresh omitted PIOs; valid on-link coverage survives suitability expiry. Discovery fixture now explicitly confirms its supplier before the periodic opportunity.
+- 14 ail-arbitration RED — 14 tests specified; cargo test failed for the new contract (see paired test commit).
+- 14 ail-arbitration GREEN — 14 passed; Equal prefixes remain co-advertised; comparison uses canonical network-order prefixes, with no MAC election field.

@@ -150,6 +150,18 @@ impl Router {
                         );
                     }
                     if p.suitable() {
+                        let own = self.identity.prefix(link);
+                        if link == Link::Ail
+                            && self.state(link) == AilState::Advertising
+                            && p.prefix != own
+                            && (nd.body[5] & 2 == 0
+                                || (own.ula() && (!p.prefix.ula() || p.prefix < own)))
+                        {
+                            self.links[link.index()].state = AilState::Deprecating;
+                            self.links[link.index()].deprecate_at = Some(now);
+                            self.links[link.index()].scheduler.changed(now, rng)?;
+                        }
+
                         self.suppliers.insert(
                             (key, p.prefix),
                             Supplier {
