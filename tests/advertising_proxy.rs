@@ -1146,3 +1146,149 @@ fn s14_registrar_failed_durability_keeps_advertised_data_and_conflict_renames_on
         .iter()
         .all(|r| r.data != Rdata::Txt(vec![b"changed".to_vec()]))));
 }
+
+#[test]
+fn s14_experimental_tsr_code_is_configurable_and_used_for_both_directions() {
+    use snac_rs::{
+        config::Config,
+        mdns::{
+            tsr::{attach, extract, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let base = ["--backend", "tap", "--infra", "a", "--stub", "b"];
+    assert_eq!(
+        Config::parse(base).unwrap().unwrap().tsr_option_code,
+        OPTION_CODE
+    );
+    assert_eq!(
+        Config::parse(base.into_iter().chain(["--tsr-option-code", "65003"]))
+            .unwrap()
+            .unwrap()
+            .tsr_option_code,
+        65003
+    );
+    for bad in ["0", "65536", "-1", "invalid"] {
+        assert!(Config::parse(base.into_iter().chain(["--tsr-option-code", bad])).is_err());
+    }
+    let mut e = Engine::default();
+    assert!(e.set_tsr_code(0).is_err());
+    e.set_tsr_code(65003).unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![record("host.local.", 1)];
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    assert!(
+        e.set_tsr_code(OPTION_CODE).is_err(),
+        "active publications retain their negotiated convention"
+    );
+    let b = e
+        .publisher
+        .poll(&|_, _| records.clone(), 0)
+        .unwrap()
+        .unwrap();
+    let output = e.prepare_outgoing(b.messages, 2000).unwrap();
+    assert!(!extract(&output[0], 65003, 2000).unwrap().is_empty());
+    assert!(extract(&output[0], OPTION_CODE, 2000).unwrap().is_empty());
+    let mut m = Message::new(0, 0x8400);
+    m.answers = records.clone();
+    attach(&mut m, 65003, 10000, &|n| {
+        stamps(&records, 10000).get(n).copied()
+    })
+    .unwrap();
+    e.receive(
+        &Datagram {
+            source: "[fe80::2]:5353".parse().unwrap(),
+            destination: "[ff02::fb]:5353".parse().unwrap(),
+            message: m,
+        },
+        true,
+        &|_, _| records.clone(),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(e.take_stale(), Some((1, records[0].name.clone())));
+    assert_eq!(
+        e.querier.cache.owner_stamp(&records[0].name, 10000),
+        Some(stamps(&records, 10000).get(&records[0].name).copied())
+    );
+}
+#[test]
+fn s14_registrar_slot_and_pending_tables_fill_coalesce_and_release_at_their_bound() {
+    use snac_rs::{
+        mdns::Engine,
+        srp::{
+            registry::LeasePolicy,
+            service::Registrar,
+            wire::{CryptoBudget, Error, Validator},
+        },
+        time::ScriptedRandom,
+    };
+    let mut registrar = Registrar::open(
+        Box::new(snac_rs::persist::MemoryStore::default()),
+        0,
+        common::srp::NOW,
+    )
+    .unwrap();
+    registrar
+        .set_policy(LeasePolicy {
+            max_lease: 20,
+            max_key_lease: 30,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let make = |i: usize, change: bool| {
+        let name: Name = format!("host{i}.default.service.arpa.").parse().unwrap();
+        let mut m = common::srp::update();
+        m.id = i as u16 + if change { 1000 } else { 0 };
+        m.authority.truncate(3);
+        for r in &mut m.authority {
+            r.name = name.clone();
+        }
+        if let Rdata::Sig { signer, .. } = &mut m.additional.last_mut().unwrap().data {
+            *signer = name;
+        }
+        Validator::new(&[])
+            .unwrap()
+            .verify(
+                &common::srp::sign(m),
+                common::srp::NOW,
+                &mut CryptoBudget::default(),
+                |_| None,
+            )
+            .unwrap()
+    };
+    for i in 0..128 {
+        registrar
+            .apply(&make(i, false), 0, common::srp::NOW)
+            .unwrap();
+    }
+    registrar
+        .sync_advertising(&mut engine, 0, &mut rng)
+        .unwrap();
+    assert_eq!(registrar.advertising_counts(), (128, 0, 0));
+    for i in 0..128 {
+        registrar
+            .apply(&make(i, true), 1000, common::srp::NOW + 1)
+            .unwrap();
+    }
+    let before = registrar.advertising_counts();
+    assert_eq!((before.0, before.1), (128, 128));
+    assert!(before.2 <= 4 * 1024 * 1024);
+    assert_eq!(
+        registrar.apply(&make(128, false), 1000, common::srp::NOW + 1),
+        Err(Error::ServFail)
+    );
+    assert_eq!(registrar.advertising_counts(), before);
+    registrar.expire(21000);
+    registrar
+        .sync_advertising(&mut engine, 21000, &mut rng)
+        .unwrap();
+    assert_eq!(registrar.advertising_counts(), (0, 0, 0));
+    assert_eq!(engine.publisher.counts().0, 0);
+}

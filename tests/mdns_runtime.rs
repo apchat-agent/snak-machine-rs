@@ -610,3 +610,47 @@ fn s14_native_signed_srp_udp_drives_ail_probe_browse_update_and_expiry() {
         .any(|r| r.ttl == 0));
     assert_eq!(d.mdns.publisher.counts().0, 0);
 }
+
+#[test]
+fn s14_query_at_last_fractional_lease_second_withdraws_before_reading_the_projection() {
+    use snac_rs::{dns::resolver::Client, srp::registry::LeasePolicy};
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.dns
+        .enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    d.dns
+        .set_srp_policy(LeasePolicy {
+            max_lease: 5,
+            max_key_lease: 30,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    d.dns
+        .submit(
+            Client::udp("[fe80::99]:40000".parse().unwrap()),
+            &common::srp::sign(common::srp::update()),
+            1000,
+            &mut rng,
+        )
+        .unwrap();
+    for at in [1000, 1250, 1500, 1750, 2750] {
+        d.step(at, &mut rng).unwrap();
+    }
+    assert!(
+        d.dns.next_deadline().unwrap() <= 5001,
+        "withdraw before a one-second TTL could outlive its lease"
+    );
+    let mut q = Message::new(0, 0);
+    q.questions.push(Question {
+        name: "_http._tcp.local.".parse().unwrap(),
+        kind: 12,
+        class: 1,
+    });
+    d.accept(frame(packet(true, &q.encode().unwrap())), 5500, &mut rng)
+        .unwrap();
+    assert_eq!(d.mdns.publisher.counts().0, 0);
+    d.step(5500, &mut rng).unwrap();
+}
