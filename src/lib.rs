@@ -19,5 +19,6 @@ impl Link {
         }
     }
 }
+pub mod persist;
 pub mod scheduler;
 pub mod time;

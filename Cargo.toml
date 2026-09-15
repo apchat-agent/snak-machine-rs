@@ -7,3 +7,12 @@ rust-version = "1.85"
 [[test]]
 name = "wire"
 path = "tests/wire.rs"
+
+[dependencies]
+libc = "=0.2.177"
+getrandom = "=0.3.4"
+libloading = { version = "=0.8.9", optional = true }
+
+[features]
+default = []
+pcap = ["dep:libloading"]

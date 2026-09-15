@@ -72,3 +72,10 @@ impl RandomSource for ScriptedRandom {
         Ok(())
     }
 }
+
+pub struct OsRandom;
+impl RandomSource for OsRandom {
+    fn fill(&mut self, b: &mut [u8]) -> io::Result<()> {
+        getrandom::fill(b).map_err(|e| io::Error::other(e.to_string()))
+    }
+}

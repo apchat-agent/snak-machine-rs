@@ -16,3 +16,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 06 ra-timers GREEN — 6 passed; Monotonic milliseconds and finite/infinite lifetimes; scripted entropy and unbiased production sampling; scheduler keeps only planned fields.
 - 07 rs-coalescing RED — 7 tests specified; cargo test failed for the new contract (see paired test commit).
 - 07 rs-coalescing GREEN — 7 passed; Same-link full snapshot emitted once; unspecified-source RS uses all-nodes multicast; existing earlier response never postponed.
+- 08 identity RED — 8 tests specified; cargo test failed for the new contract (see paired test commit).
+- 08 identity GREEN — 8 passed; Only planned exact pins added (libc/getrandom and optional libloading); atomic file and directory sync, exclusive lock, corrupt state and entropy errors explicit. getrandom default Error lacks std::error::Error; mapped its message. Attachment changes allocate a new identity.
