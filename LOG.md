@@ -354,3 +354,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   concatenation, pointer loops and exact DNS/search/route capacities. The
   name-boundary index is transient and bounded by the 1024-byte search input.
   No dependency. All-feature clippy passes.
+- S06 client RED `1136177`: `cargo test` confirms the initial client/state/
+  output API is absent. GREEN passes **111 tests**. DHCP emits checksummed
+  DISCOVER/REQUEST/RELEASE datagrams with stable MAC client identifiers;
+  bounded offer collection selects a server, ACK starts three ARP probes and
+  two announcements before address use, and T1/T2/expiry drive renewal,
+  rebinding and loss. Reboot requests validation before using a saved lease.
+  Wrong transaction IDs/hardware and unexpected response types leave state
+  unchanged. Tests exercise first-send/retry timing at both RNG extremes and
+  eight offers plus a flood. Fields are the planned single active lease,
+  selected candidate, probe progress, eight offers and exchange timers.
+  No dependency; IPv4LL/conflict handling and Driver integration remain S06.
