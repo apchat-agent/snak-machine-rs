@@ -202,7 +202,7 @@ fn s10_tls_channel_preserves_bytes_short_io_and_close_notify() {
     assert_eq!(s.plaintext(65535).unwrap(), bytes);
     let mut sent = 0;
     let payload = vec![42; 40000];
-    let mut received = vec![];
+    let mut received: Vec<u8> = vec![];
     for _ in 0..10000 {
         sent += s.send_plaintext(&payload[sent..], 2).unwrap();
         let b = s.take_tls(19, 2).unwrap();
