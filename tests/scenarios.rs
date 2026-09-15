@@ -678,3 +678,82 @@ fn stub_default_never_outlives_infrastructure() {
     assert_eq!(r.snapshot(Link::Stub, 35000).default_lifetime, 0);
     assert!(!r.snapshot(Link::Ail, 35000).rios.is_empty());
 }
+
+#[test]
+fn other_stub_routes_keep_independent_lifetimes() {
+    let mut r = providing(44);
+    let mut rng = ScriptedRandom::new([]);
+    let other = Prefix::new(ip("fd99::"), 64).unwrap();
+    let own = r.identity.prefix(Link::Stub);
+    let mut opts = rio("fd99::", 64, 24, 300, 2);
+    opts.extend(rio(&own.address.to_string(), 64, 24, 900, 2));
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::8", "ff02::1", ra(2, 0, &opts)),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    let exported = |r: &Router, t| {
+        r.snapshot(Link::Stub, t)
+            .rios
+            .into_iter()
+            .find(|x| x.prefix == other)
+            .map(|x| x.lifetime)
+    };
+    assert_eq!(exported(&r, 11000), Some(299));
+    assert!(!r
+        .snapshot(Link::Stub, 11000)
+        .rios
+        .iter()
+        .any(|x| x.prefix == own));
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::8", "ff02::1", ra(2, 1800, &[])),
+        20000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(exported(&r, 21000), Some(289));
+    r.receive(
+        Link::Ail,
+        &nd_packet(
+            "fe80::9",
+            "ff02::1",
+            ra(2, 0, &rio("fd99::", 64, 24, 500, 2)),
+        ),
+        22000,
+        &mut rng,
+    )
+    .unwrap();
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::8", "ff02::1", ra(2, 0, &rio("fd99::", 64, 24, 0, 2))),
+        23000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(exported(&r, 23000), Some(499));
+    r.receive(
+        Link::Ail,
+        &nd_packet("fe80::9", "ff02::1", ra(2, 0, &rio("fd99::", 64, 24, 0, 2))),
+        24000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(exported(&r, 24000), Some(0));
+    for t in [24000, 27000, 30000] {
+        let packet = r.snapshot(Link::Stub, t).encode().unwrap();
+        r.transmitted(
+            &snac_rs::router::Tx {
+                link: Link::Stub,
+                packet,
+            },
+            t,
+            true,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!(exported(&r, 30001), None);
+}
