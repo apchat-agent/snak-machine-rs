@@ -962,9 +962,11 @@ fn s07_saturated_service_work_does_not_starve_a_router_advertisement() {
     }
     let link = Link::Stub;
     let own = d.router.identity.link_local(link);
-    for port in 1053..1061 {
+    for port in std::iter::once(53).chain(1053..1060) {
         let s = d.stack_mut(link).unwrap();
-        s.listen_udp(port).unwrap();
+        if !s.port_owned(17, port) {
+            s.listen_udp(port).unwrap();
+        }
         for _ in 0..4 {
             s.send_udp(
                 own.into(),

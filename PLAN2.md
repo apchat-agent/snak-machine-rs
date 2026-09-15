@@ -1436,3 +1436,14 @@ The exact three-RS count, all scheduling/state assertions, no output before
 DAD, and required NS assertion are unchanged. This removes an obsolete
 IPv6-only framing assumption under the lane owner's ADDENDUM 1 policy;
 S06's design, timing and automatic IPv4 acquisition remain unchanged.
+
+## ADDENDUM 3 — S09 preserves the shared-listener saturation fixture
+
+S07's `s07_saturated_service_work_does_not_starve_a_router_advertisement`
+filled eight unused UDP ports. S09 installs the draft section 7 resolver at
+port 53, using one of those same eight bounded slots. The fixture now fills
+port 53 and seven temporary ports, binding only ports not already installed.
+It still queues exactly 32 datagrams across eight listeners and retains all
+RA ordering/deadline assertions. The listener capacity and scheduler design
+are unchanged; this replaces the fixture's stage-S07 assumption that no
+production DNS listener exists.
