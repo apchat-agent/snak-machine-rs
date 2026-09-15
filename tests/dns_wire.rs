@@ -57,7 +57,7 @@ fn s08_literal_names_records_and_original_wire() {
         (16, vec![0, 3, 0xff, 0, b'a']),
         (25, vec![0, 0, 3, 13, 1, 2]),
         (48, vec![1, 0, 3, 13, 1, 2]),
-        (43, vec![0, 1, 13, 2, 1, 2]),
+        (43, [vec![0, 1, 13, 2], vec![9; 32]].concat()),
     ] {
         let m = Message::parse(&answer(kind, &data), Context::Unicast).unwrap();
         assert_eq!(
@@ -240,4 +240,97 @@ fn s08_tcp_split_coalesced_and_frame_queue_caps() {
     assert!(f.input(&framed).is_err());
     assert_eq!(f.pop().unwrap().len(), 65535);
     assert_eq!(f.buffered(), 0);
+}
+
+#[test]
+fn s08_dnssec_digest_lengths_and_cdnskey_are_relocatable() {
+    for (digest, n) in [(1, 20), (2, 32), (4, 48)] {
+        let mut data = vec![0, 1, 13, digest];
+        data.extend(vec![9; n]);
+        assert!(Message::parse(&answer(43, &data), Context::Unicast).is_ok());
+        data.pop();
+        assert!(Message::parse(&answer(43, &data), Context::Unicast).is_err());
+    }
+    let m = Message::parse(&answer(60, &[1, 0, 3, 13, 1, 2]), Context::Unicast).unwrap();
+    assert!(m.encode().is_ok(), "CDNSKEY is pointer-free DNSSEC data");
+}
+#[test]
+fn s08_exact_message_table_and_compression_depth_bounds() {
+    let mut b = vec![0; 12];
+    b[4..6].copy_from_slice(&4096u16.to_be_bytes());
+    for _ in 0..4096 {
+        b.extend([0, 0, 1, 0, 1]);
+    }
+    assert_eq!(
+        Message::parse(&b, Context::Unicast)
+            .unwrap()
+            .questions
+            .len(),
+        4096
+    );
+    b[4..6].copy_from_slice(&4097u16.to_be_bytes());
+    b.extend([0, 0, 1, 0, 1]);
+    assert!(Message::parse(&b, Context::Unicast).is_err());
+    let mut b = query();
+    let mut prev = 12;
+    for n in 1..=65 {
+        let at = b.len();
+        b.extend((0xc000 | prev as u16).to_be_bytes());
+        b.extend([0, 1, 0, 1]);
+        b[4..6].copy_from_slice(&(n + 1u16).to_be_bytes());
+        assert_eq!(
+            Message::parse(&b, Context::Unicast).is_ok(),
+            n <= 64,
+            "depth {n}"
+        );
+        prev = at;
+    }
+    // More bounded name-decoding work than the global budget, within the wire cap.
+    let mut b = vec![0; 12];
+    let mut name = vec![1, b'x'];
+    name = name.repeat(127);
+    name.push(0);
+    b.extend(name);
+    b.extend([0, 1, 0, 1]);
+    for _ in 0..4095 {
+        b.extend([0xc0, 12, 0, 1, 0, 1]);
+    }
+    b[4..6].copy_from_slice(&4096u16.to_be_bytes());
+    assert!(b.len() < 65535);
+    assert!(Message::parse(&b, Context::Unicast).is_err());
+}
+#[test]
+fn s08_nsec_mdns_compression_and_name_boundary_provenance() {
+    let b = answer(47, &[0xc0, 12, 0, 4, 0x40, 0, 0, 8]);
+    assert!(Message::parse(&b, Context::Mdns).is_ok());
+    assert!(Message::parse(&b, Context::Unicast).is_err());
+    let mut b = answer(65200, &[1, b'x', 0]);
+    b[7] = 2;
+    let start = b.len();
+    b.extend([0xc0, 45, 0, 1, 0, 1, 0, 0, 0, 1, 0, 4, 192, 0, 2, 1]);
+    assert!(start > 45);
+    assert!(
+        Message::parse(&b, Context::Unicast).is_err(),
+        "opaque bytes never establish a name boundary"
+    );
+}
+
+#[test]
+fn s08_mdns_embedded_names_are_typed_for_proxy_rewriting() {
+    for (kind, data) in [
+        (39, vec![0xc0, 12]),
+        (15, vec![0, 10, 0xc0, 12]),
+        (18, vec![0, 1, 0xc0, 12]),
+        (21, vec![0, 1, 0xc0, 12]),
+        (36, vec![0, 1, 0xc0, 12]),
+        (17, vec![0xc0, 12, 0xc0, 12]),
+        (26, vec![0, 1, 0xc0, 12, 0xc0, 12]),
+    ] {
+        let m = Message::parse(&answer(kind, &data), Context::Mdns).unwrap();
+        assert!(
+            !matches!(m.answers[0].data, Rdata::Opaque(_)),
+            "mDNS record {kind}"
+        );
+        assert!(Message::parse(&m.encode().unwrap(), Context::Unicast).is_ok());
+    }
 }
