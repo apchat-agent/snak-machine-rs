@@ -205,3 +205,11 @@ fn s09_information_xid_is_distinct_from_concurrent_pd() {
     let p = c.poll(0, common::ip("fe80::2"), &mut rng).unwrap().unwrap();
     assert_ne!(&p[49..52], &[0; 3]);
 }
+
+#[test]
+fn s09_new_pd_exchange_avoids_inflight_information_id() {
+    let mut p = snac_rs::router::pd::PdClient::default();
+    p.reserve_xid(Some([0; 3]));
+    p.start(0, &mut ScriptedRandom::new([])).unwrap();
+    assert_ne!(p.exchange.as_ref().unwrap().xid, [0; 3]);
+}
