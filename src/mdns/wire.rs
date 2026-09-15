@@ -20,6 +20,7 @@ pub fn multicast(v6: bool) -> IpAddr {
         "224.0.0.251".parse().unwrap()
     }
 }
+#[derive(Clone)]
 pub struct Datagram {
     pub source: SocketAddr,
     pub destination: SocketAddr,
@@ -136,7 +137,11 @@ pub fn encode(
     {
         return Err(invalid());
     }
-    let body = message.encode_context(Context::Mdns)?;
+    let body = message.encode_context(if destination.port() == 5353 {
+        Context::Mdns
+    } else {
+        Context::Unicast
+    })?;
     if body.len() + 8 + if source.is_ipv6() { 40 } else { 20 } > 9000 {
         return Err(invalid());
     }

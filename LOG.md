@@ -952,3 +952,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   derived records, rejecting additional publication atomically. Projected data,
   sent indexes and bounded goodbye work are charged against four MiB.
   No dependency; the fields implement the planned publication identities/timers.
+- S13 responder RED `91dce53` confirms the missing reply engine; fixture
+  correction `3708e1a` keeps its continuation clock monotonic. GREEN passes
+  **234 tests** and all-feature clippy. Browse replies add instance SRV/TXT and
+  target addresses; unique missing types receive NSEC. QU/recent multicast,
+  overlay-source fallback, QM, direct unicast and legacy replies follow RFC
+  6762 sections 5–7. Legacy packets echo ID/questions, cap TTL at ten seconds,
+  clear flush bits, fit 512 bytes/TC and use unicast SRV encoding rules.
+- Known-answer and duplicate-answer suppression remove redundant work; complete
+  unique RRsets are emitted together. Actual successful multicast history
+  enforces one second between records, with the 250-ms probe-defense exception.
+  Delayed replies retain record digests, not whole-zone copies. Limits are 128
+  pending replies, 4096 references and a shared four-MiB publication/work budget.
+  TC continuations are scoped to their original source and expire after two
+  seconds even under a stream; tests fill the pending table and reject overflow.
+  Extra fields are the planned response coalescing/suppression timers and
+  identities. No dependency. Native AIL transport wiring follows.

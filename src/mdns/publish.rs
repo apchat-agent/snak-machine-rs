@@ -458,6 +458,39 @@ impl Publisher {
             }
         }
     }
+    pub(crate) fn all_ready(
+        &self,
+        source: &impl Fn(u64, Time) -> Vec<Record>,
+        now: Time,
+    ) -> io::Result<Vec<(u64, Record)>> {
+        let mut out = vec![];
+        if !self.up {
+            return Ok(out);
+        }
+        for (id, p) in &self.publications {
+            if !p.state.ready() {
+                continue;
+            }
+            let data = Prepared::new(&source(*id, now))?;
+            if data.digest != p.digest {
+                return Err(invalid());
+            }
+            out.extend(data.records.into_iter().map(|r| (*id, r)));
+        }
+        Ok(out)
+    }
+    pub(crate) fn last(&self, id: u64, record: &Digest) -> Option<Time> {
+        self.publications.get(&id)?.history.get(record).copied()
+    }
+    pub(crate) fn note(&mut self, records: &[(u64, Digest)], now: Time) {
+        for (id, record) in records {
+            if let Some(p) = self.publications.get_mut(id) {
+                if p.history.contains_key(record) || p.history.len() < p.count {
+                    p.history.insert(*record, now);
+                }
+            }
+        }
+    }
     pub fn take_conflict(&mut self) -> Option<u64> {
         for (id, p) in &mut self.publications {
             if let State::Failed { notice, .. } = &mut p.state {
