@@ -200,3 +200,65 @@ fn review_02_local_replies_resolve_without_link_failure() {
         assert!(d.router.links.iter().all(|l| l.up));
     }
 }
+
+#[test]
+fn review_03_host_resolution_recovers_after_failure() {
+    let mut d = driver();
+    let own = d.router.identity.link_local(Link::Ail);
+    let echo = nd_packet("fe80::99", &own.to_string(), vec![128, 0, 0, 0, 1, 2, 3, 4]);
+    d.accept(
+        incoming(&d, Link::Ail, echo.clone()),
+        0,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    for now in [1000, 2000, 3000] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    d.io.output.clear();
+    d.step(900000, &mut ScriptedRandom::new([])).unwrap();
+    d.io.output.clear();
+    d.accept(
+        incoming(&d, Link::Ail, echo),
+        900000,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    assert!(d
+        .io
+        .output
+        .iter()
+        .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+    d.accept(
+        incoming(&d, Link::Ail, na("fe80::99", own, [2, 0, 0, 0, 0, 99])),
+        900001,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    assert!(d
+        .io
+        .output
+        .iter()
+        .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 129));
+}
+#[test]
+fn review_03_ns_updates_changed_mac_and_failed_state() {
+    let mut d = driver();
+    let own = d.router.identity.link_local(Link::Ail);
+    for suffix in [7, 8] {
+        d.accept(
+            incoming(
+                &d,
+                Link::Ail,
+                ns("fe80::99", own, Some([2, 0, 0, 0, 0, suffix])),
+            ),
+            suffix as u64,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+        let reply = &d.io.output.last().unwrap().1;
+        assert_eq!(&reply[..6], &[2, 0, 0, 0, 0, suffix]);
+        let n = d.router.neighbors.values_mut().next().unwrap();
+        n.state = snac_rs::router::NeighborState::Failed;
+    }
+}
