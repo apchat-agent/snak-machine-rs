@@ -1062,3 +1062,380 @@ fn pd_reconnect_preserves_valid_binding_until_verdict() {
     assert_eq!(restarted.pd.state, PdState::Rebinding);
     assert!(!restarted.pd_hints.is_empty());
 }
+
+use snac_rs::{
+    io::{Direction, LinkInfo, MemoryIo, Received},
+    router::Lifecycle,
+    runtime::Driver,
+};
+fn memory() -> MemoryIo {
+    MemoryIo::new([
+        LinkInfo {
+            name: "mock-ail".into(),
+            index: 1,
+            kind: FrameKind::RawIpv6,
+            mtu: 1500,
+            mac: None,
+        },
+        LinkInfo {
+            name: "mock-stub".into(),
+            index: 2,
+            kind: FrameKind::RawIpv6,
+            mtu: 1500,
+            mac: None,
+        },
+    ])
+}
+#[test]
+fn lifecycle_loss_and_shutdown_do_not_leave_false_routes() {
+    let mut rng = ScriptedRandom::new([]);
+    let mut fail = memory();
+    fail.fail_group = true;
+    let mut driver = Driver::new(providing(71), fail).unwrap();
+    assert!(driver.start(10000, &mut rng).is_err());
+    assert!(driver.io.output.is_empty());
+    let mut driver = Driver::new(providing(72), memory()).unwrap();
+    driver.start(10000, &mut rng).unwrap();
+    driver.step(11000, &mut rng).unwrap();
+    assert_eq!(driver.router.lifecycle, Lifecycle::Running);
+    assert!(driver.io.groups[0].contains(&ip("ff02::2")));
+    let self_ra = nd_packet("fe80::feed", "ff02::1", ra(2, 0, &[]));
+    driver.io.input.push_back(Received {
+        link: Link::Stub,
+        bytes: self_ra.clone(),
+        kind: FrameKind::RawIpv6,
+        direction: Direction::OwnEgress,
+    });
+    driver.step(12000, &mut rng).unwrap();
+    assert_eq!(driver.router.lifecycle, Lifecycle::Running);
+    driver.io.up[0] = false;
+    driver.step(13000, &mut rng).unwrap();
+    assert_eq!(
+        driver.router.snapshot(Link::Stub, 13000).default_lifetime,
+        0
+    );
+    assert!(driver
+        .router
+        .snapshot(Link::Stub, 13000)
+        .rios
+        .iter()
+        .all(|r| r.lifetime == 0));
+    assert!(!driver.router.snapshot(Link::Stub, 13000).pios.is_empty());
+    assert!(driver
+        .router
+        .snapshot(Link::Stub, 13000)
+        .rios
+        .iter()
+        .any(|r| r.lifetime == 0));
+    driver.io.up[0] = true;
+    driver.step(14000, &mut rng).unwrap();
+    driver.io.output.clear();
+    driver.router.shutdown(15000, &mut rng).unwrap();
+    for t in (15000..=70000).step_by(1000) {
+        driver.step(t, &mut rng).unwrap();
+        if driver.router.lifecycle == Lifecycle::Stopped {
+            break;
+        }
+    }
+    assert_eq!(driver.router.lifecycle, Lifecycle::Stopped);
+    assert!(driver.io.groups.iter().all(|g| g.is_empty()));
+    let output_count = driver.io.output.len();
+    driver.step(80000, &mut rng).unwrap();
+    assert_eq!(driver.io.output.len(), output_count);
+    let final_ras: Vec<_> = driver
+        .io
+        .output
+        .iter()
+        .filter(|(_, p)| p.get(40) == Some(&134))
+        .collect();
+    assert!(!final_ras.is_empty());
+    assert!(final_ras.len() <= 6);
+    for (_, p) in final_ras {
+        assert_eq!(&p[46..48], &[0, 0]);
+        let e = envelope(FrameKind::RawIpv6, p).unwrap();
+        for o in snac_rs::wire::decode_nd(&e).unwrap().options {
+            if let Some(p) = Pio::decode(o.bytes) {
+                assert_eq!(p.preferred, 0);
+            }
+            if let Some(r) = snac_rs::wire::Rio::decode(o.bytes) {
+                assert_eq!(r.lifetime, 0);
+            }
+        }
+    }
+    let mut r = providing(73);
+    assert!(r.receive(Link::Stub, &self_ra, 15000, &mut rng).is_err());
+    assert_eq!(r.lifecycle, Lifecycle::Degraded);
+    assert_eq!(r.snapshot(Link::Stub, 15000).default_lifetime, 0);
+    let mut failed_io = Driver::new(providing(74), memory()).unwrap();
+    failed_io.start(10000, &mut rng).unwrap();
+    failed_io.io.fail_send = true;
+    failed_io.step(13000, &mut rng).unwrap();
+    assert!(!failed_io.router.links[0].up);
+}
+
+#[test]
+fn cli_validates_backend_and_two_link_scope_without_opening_devices() {
+    use snac_rs::config::{BackendKind, Config};
+    let args = ["--backend", "tap", "--stub", "s0", "--infra", "a0"];
+    let c = Config::parse(args).unwrap().unwrap();
+    assert_eq!(c.backend, BackendKind::Tap);
+    assert!(Config::parse(["--help"]).unwrap().is_none());
+    assert!(Config::parse(["--backend", "tap", "--stub", "same", "--infra", "same"]).is_err());
+    assert!(Config::parse([
+        "--backend",
+        "tap",
+        "--stub",
+        "s",
+        "--infra",
+        "a",
+        "--nat64",
+        "enabled"
+    ])
+    .is_err());
+}
+
+#[test]
+fn pd_renew_no_binding_requests_a_new_binding_and_omission_preserves_validity() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([]);
+    let old = r.pd.leases.values().next().unwrap().valid;
+    r.tick(69300, &mut rng).unwrap();
+    let p = pd_response(&r, 7, &[]);
+    r.receive(Link::Ail, &p, 69400, &mut rng).unwrap();
+    assert_eq!(r.pd.leases.values().next().unwrap().valid, old);
+    r.tick(71000, &mut rng).unwrap();
+    let p = pd_response(&r, 7, &option(13, &[0, 3]));
+    let tx = r.receive(Link::Ail, &p, 71100, &mut rng).unwrap();
+    assert_eq!(r.pd.state, PdState::Requesting);
+    assert!(tx.iter().any(|x| x.packet[6] == 17 && x.packet[48] == 3));
+    assert_eq!(r.pd.leases.values().next().unwrap().valid, old);
+}
+
+#[test]
+fn lifecycle_assigns_service_addresses_and_echoes_only_after_dad() {
+    let mut r = providing(80);
+    let mut rng = ScriptedRandom::new([]);
+    let address = r
+        .identity
+        .address(Link::Stub, r.identity.prefix(Link::Stub));
+    assert!(r.owned.contains_key(&(Link::Stub, address)));
+    assert!(!r.address_ready(Link::Stub, address));
+    let tx = r.tick(10000, &mut rng).unwrap();
+    assert!(tx
+        .iter()
+        .any(|p| p.packet[40] == 135 && p.packet[8..24] == [0; 16]));
+    r.tick(11000, &mut rng).unwrap();
+    assert!(r.address_ready(Link::Stub, address));
+    let request = nd_packet(
+        "fd99::1",
+        &address.to_string(),
+        vec![128, 0, 0, 0, 0x12, 0x34, 0, 1, 1, 2, 3],
+    );
+    let out = r.receive(Link::Stub, &request, 12000, &mut rng).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].packet[40], 129);
+    assert_eq!(&out[0].packet[44..], &request[44..]);
+}
+#[test]
+fn physical_mac_metadata_does_not_corrupt_saved_instance_identity() {
+    let r = providing(81);
+    let saved = r.identity.clone();
+    let mut io = memory();
+    io.info[0].kind = FrameKind::Ethernet;
+    io.info[0].mac = Some([0, 1, 2, 3, 4, 5]);
+    let driver = Driver::new(r, io).unwrap();
+    assert_eq!(driver.router.identity, saved);
+    assert_eq!(
+        driver.router.snapshot(Link::Ail, 10000).mac,
+        Some([0, 1, 2, 3, 4, 5])
+    );
+    assert!(Router::restore(
+        &driver.router.checkpoint(10000, 100000).unwrap(),
+        0,
+        100001,
+        &mut ScriptedRandom::new([])
+    )
+    .is_ok());
+}
+#[test]
+fn pd_recovers_after_fallback_and_arbitrates_with_stub_peers() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([]);
+    r.tick(129300, &mut rng).unwrap();
+    r.tick(141300, &mut rng).unwrap();
+    let update = ia(1, 900, 1500, &[("2001:db8:bb::", 64, 3600, 7200)]);
+    r.receive(Link::Ail, &pd_response(&r, 7, &update), 142000, &mut rng)
+        .unwrap();
+    let p = Prefix::new(ip("2001:db8:bb::"), 64).unwrap();
+    assert!(r
+        .snapshot(Link::Stub, 142000)
+        .pios
+        .iter()
+        .any(|x| x.prefix == p && x.preferred > 0));
+    let peer = nd_packet(
+        "fe80::123",
+        "ff02::1",
+        ra(0, 0, &pio("2001:db8:1::", 64, 0xc0, 3600, 7200)),
+    );
+    r.receive(Link::Stub, &peer, 143000, &mut rng).unwrap();
+    assert_eq!(
+        r.snapshot(Link::Stub, 143000)
+            .pios
+            .iter()
+            .find(|x| x.prefix == p)
+            .unwrap()
+            .preferred,
+        0
+    );
+}
+#[test]
+fn mandatory_stub_route_overflow_degrades_without_splitting_or_false_claims() {
+    let mut r = providing(82);
+    let mut rng = ScriptedRandom::new([]);
+    for n in 1..=55 {
+        let opts = rio(&format!("2001:db8:{n:x}::"), 96, 24, 3600, 3);
+        r.receive(
+            Link::Ail,
+            &nd_packet("fe80::9", "ff02::1", ra(2, 0, &opts)),
+            12000,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    let tx = r.tick(15000, &mut rng).unwrap();
+    assert_eq!(r.lifecycle, Lifecycle::Degraded);
+    let stub: Vec<_> = tx
+        .iter()
+        .filter(|x| x.link == Link::Stub && x.packet[40] == 134)
+        .collect();
+    assert_eq!(stub.len(), 1);
+    assert!(stub[0].packet.len() <= 1280);
+    let e = envelope(FrameKind::RawIpv6, &stub[0].packet).unwrap();
+    assert!(snac_rs::wire::decode_nd(&e)
+        .unwrap()
+        .options
+        .iter()
+        .filter_map(|o| snac_rs::wire::Rio::decode(o.bytes))
+        .all(|r| r.lifetime == 0));
+}
+
+#[test]
+fn tentative_own_source_na_is_a_conflict_not_loopback() {
+    let mut r = router(83);
+    let own = r.identity.link_local(Link::Ail);
+    r.begin_dad(Link::Ail, own, 0);
+    let mut b = vec![136, 0, 0, 0, 0xa0, 0, 0, 0];
+    b.extend(own.octets());
+    let packet = nd_packet(&own.to_string(), "ff02::1", b);
+    let tx = r
+        .receive(Link::Ail, &packet, 1, &mut ScriptedRandom::new([123]))
+        .unwrap();
+    assert_eq!(tx.len(), 1);
+    assert_ne!(r.identity.link_local(Link::Ail), own);
+}
+
+#[test]
+fn pd_offer_consistency_and_coverage_control_server_choice() {
+    let mut r = providing(84);
+    let mut rng = ScriptedRandom::new([]);
+    let first = ia(1, 900, 1500, &[("2001:db8:1::", 64, 1800, 3600)]);
+    let mut extra = first.clone();
+    extra.extend(option(82, &120u32.to_be_bytes()));
+    r.receive(Link::Ail, &pd_response(&r, 2, &extra), 9100, &mut rng)
+        .unwrap();
+    extra = first;
+    extra.extend(ia(2, 900, 1500, &[("fd99::", 64, 1800, 3600)]));
+    extra.extend(option(82, &130u32.to_be_bytes()));
+    let packet = dhcp_packet(
+        &r.identity.link_local(Link::Ail).to_string(),
+        2,
+        r.pd.exchange.as_ref().unwrap().xid,
+        &r.identity.duid,
+        b"two-classes",
+        &extra,
+    );
+    r.receive(Link::Ail, &packet, 9200, &mut rng).unwrap();
+    assert_eq!(r.pd.sol_max_rt, 3600000);
+    let tx = r.tick(11000, &mut rng).unwrap();
+    let request = tx
+        .iter()
+        .find(|x| x.packet[6] == 17 && x.packet[48] == 3)
+        .unwrap();
+    assert!(dhcp_opts(&request.packet[52..])
+        .iter()
+        .any(|(c, b)| *c == 2 && b == b"two-classes"));
+}
+
+#[test]
+fn neighbor_admission_is_bounded_under_owned_address_solicitations() {
+    let mut r = router(85);
+    let target = r.identity.link_local(Link::Ail);
+    let group = snac_rs::wire::solicited_node(target);
+    let mut rejected = false;
+    for n in 1..=300 {
+        let p = ns(
+            &format!("fe80::{n:x}"),
+            &target.to_string(),
+            &group.to_string(),
+        );
+        if r.receive(Link::Ail, &p, 10000, &mut ScriptedRandom::new([]))
+            .is_err()
+        {
+            rejected = true;
+            break;
+        }
+    }
+    assert!(rejected);
+    assert!(r.neighbors.keys().filter(|k| k.link == Link::Ail).count() <= 256);
+    assert_eq!(r.lifecycle, Lifecycle::Degraded);
+}
+
+#[test]
+fn pd_capacity_preserves_live_retiring_routes_and_rejects_growth() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([]);
+    let original = r.pd.leases.keys().next().copied().unwrap();
+    let mut rejected = false;
+    for n in 1..=20u64 {
+        let now = 20000 + n * 2000;
+        r.pd.refresh(5, now, &mut rng).unwrap();
+        let update = ia(
+            1,
+            900,
+            1500,
+            &[(
+                &format!("2001:db8:{:x}::", 0x100 + n),
+                64,
+                3600 + n as u32 * 10,
+                7200,
+            )],
+        );
+        let packet = pd_response(&r, 7, &update);
+        if r.receive(Link::Ail, &packet, now + 1, &mut rng).is_err() {
+            rejected = true;
+            break;
+        }
+    }
+    assert!(
+        rejected,
+        "acquired-prefix capacity must be enforced across Replies"
+    );
+    assert!(r.pd.leases.len() <= 16);
+    assert!(r.pd.leases.contains_key(&original));
+    assert_eq!(r.lifecycle, Lifecycle::Degraded);
+}
+
+#[test]
+fn pd_no_binding_inside_ia_pd_restarts_request_without_losing_valid_route() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([]);
+    let key = r.pd.leases.keys().next().copied().unwrap();
+    r.tick(69300, &mut rng).unwrap();
+    let mut nested = 1u32.to_be_bytes().to_vec();
+    nested.extend([0; 8]);
+    nested.extend(option(13, &[0, 3]));
+    let packet = pd_response(&r, 7, &option(25, &nested));
+    r.receive(Link::Ail, &packet, 69400, &mut rng).unwrap();
+    assert_eq!(r.pd.state, PdState::Requesting);
+    assert!(r.pd.leases.contains_key(&key));
+}

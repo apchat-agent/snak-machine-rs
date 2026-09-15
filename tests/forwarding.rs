@@ -180,3 +180,51 @@ fn forwarding_errors_have_correct_scope_and_mtu() {
     assert_eq!(out[0].packet[7], 4);
     assert_eq!(&out[0].packet[40..], &fragment);
 }
+
+#[test]
+fn ingress_hop_options_obey_discard_and_parameter_problem_actions() {
+    for (option, multicast, expected) in [
+        (0x20, false, Some(17)),
+        (0x40, false, None),
+        (0x80, false, Some(58)),
+        (0xc0, false, Some(58)),
+        (0x80, true, Some(58)),
+        (0xc0, true, None),
+    ] {
+        let mut r = router();
+        let mut rng = ScriptedRandom::new([]);
+        let owned = r.identity.address(Link::Ail, r.identity.prefix(Link::Ail));
+        r.begin_dad(Link::Ail, owned, 9000);
+        r.tick(10000, &mut rng).unwrap();
+        let target =
+            std::net::Ipv6Addr::from(u128::from(r.identity.prefix(Link::Stub).address) | 77)
+                .to_string();
+        prime(&mut r, Link::Stub, &target, [2, 0, 0, 0, 0, 11]);
+        let mut body = vec![17, 0, option, 0, 1, 2, 0, 0];
+        body.extend([7; 8]);
+        let p = packet(
+            "fd88::1",
+            if multicast { "ff02::1" } else { &target },
+            0,
+            64,
+            &body,
+        );
+        let out = r
+            .receive_frame(Link::Ail, FrameKind::RawIpv6, &p, 20000, &mut rng)
+            .unwrap();
+        match expected {
+            None => assert!(out.is_empty(), "option {option:x}"),
+            Some(58) => {
+                assert_eq!(out.len(), 1, "option {option:x}");
+                assert_eq!(out[0].link, Link::Ail);
+                assert_eq!(&out[0].packet[40..42], &[4, 2]);
+                assert_eq!(&out[0].packet[44..48], &42u32.to_be_bytes());
+            }
+            Some(_) => {
+                assert_eq!(out.len(), 1);
+                assert_eq!(out[0].link, Link::Stub);
+                assert_eq!(&out[0].packet[40..], &body);
+            }
+        }
+    }
+}
