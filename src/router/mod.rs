@@ -1,3 +1,4 @@
+pub mod pd;
 mod routes;
 pub use routes::Route;
 mod owned;
@@ -58,6 +59,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub pd: pd::PdClient,
     pub withdrawals: BTreeMap<(Link, Prefix), u8>,
     pub routes: BTreeMap<(Ipv6Addr, Prefix), Route>,
     pub no_stub_default: bool,
@@ -85,6 +87,7 @@ impl Router {
             })
         }
         Ok(Self {
+            pd: pd::PdClient::default(),
             withdrawals: BTreeMap::new(),
             routes: BTreeMap::new(),
             no_stub_default: false,
@@ -365,6 +368,27 @@ impl Router {
                         packet: snap.encode().map_err(|_| io::Error::other("RA capacity"))?,
                     });
                 }
+            }
+        }
+        if self.address_ready(Link::Ail, self.identity.link_local(Link::Ail))
+            && matches!(
+                self.state(Link::Stub),
+                AilState::BeginAdvertising | AilState::Advertising | AilState::Deprecating
+            )
+        {
+            if self.pd.state == pd::PdState::Dormant {
+                self.pd.start(now, rng)?;
+            }
+            for packet in self.pd.poll(
+                now,
+                self.identity.link_local(Link::Ail),
+                &self.identity.duid,
+                rng,
+            )? {
+                out.push(Tx {
+                    link: Link::Ail,
+                    packet,
+                });
             }
         }
         Ok(out)
