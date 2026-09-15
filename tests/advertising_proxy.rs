@@ -356,3 +356,195 @@ fn s14_mapping_preserves_binary_labels_and_external_names_and_rejects_length_ove
     assert!(Mapping::new("x.".parse().unwrap(), &[]).is_err());
     assert!(Mapping::new("x.".parse().unwrap(), &[0; 32]).is_err());
 }
+
+#[test]
+fn s14_tsr_newer_data_replaces_all_cached_types_and_older_goodbyes_cannot_remove_it() {
+    use snac_rs::{
+        mdns::{
+            cache::Cache,
+            tsr::{attach, Stamp, OPTION_CODE},
+        },
+        time::ScriptedRandom,
+    };
+    let mut cache = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    let q = Question {
+        name: "host.local.".parse().unwrap(),
+        kind: 1,
+        class: 1,
+    };
+    let make = |last: u8, ttl: u32, stamp: i128, at| {
+        let mut m = Message::new(0, 0x8400);
+        let mut r = record("host.local.", 1);
+        r.ttl = ttl;
+        r.data = Rdata::A([192, 0, 2, last]);
+        m.answers.push(r);
+        attach(&mut m, OPTION_CODE, at, &|_| {
+            Some(Stamp {
+                key_checksum: 7,
+                received_at: stamp,
+            })
+        })
+        .unwrap();
+        m
+    };
+    cache.receive(&make(1, 120, 0, 0), 0, &mut rng).unwrap();
+    cache
+        .receive(&make(2, 120, 10000, 10000), 10000, &mut rng)
+        .unwrap();
+    assert_eq!(
+        cache.answers(&q, 10000).len(),
+        1,
+        "new TSR removes stale data before cache-flush grace"
+    );
+    assert_eq!(cache.answers(&q, 10000)[0].data, Rdata::A([192, 0, 2, 2]));
+    cache
+        .receive(&make(2, 0, 0, 11000), 11000, &mut rng)
+        .unwrap();
+    assert_eq!(
+        cache.answers(&q, 13000).len(),
+        1,
+        "older proxy's goodbye is ignored"
+    );
+    assert_eq!(
+        cache.owner_stamp(&q.name, 13000),
+        Some(Some(Stamp {
+            key_checksum: 7,
+            received_at: 10000
+        }))
+    );
+    cache
+        .receive(&make(3, 120, 0, 14000), 14000, &mut rng)
+        .unwrap();
+    assert_eq!(cache.answers(&q, 14000)[0].data, Rdata::A([192, 0, 2, 2]));
+}
+#[test]
+fn s14_tsr_conflicting_checksum_or_absent_stamp_flushes_cached_owner_and_query_known_answers_never_do(
+) {
+    use snac_rs::{
+        mdns::{
+            cache::Cache,
+            tsr::{attach, Stamp, OPTION_CODE},
+        },
+        time::ScriptedRandom,
+    };
+    let mut cache = Cache::default();
+    let mut rng = ScriptedRandom::new([]);
+    let name: Name = "host.local.".parse().unwrap();
+    let mut m = Message::new(0, 0x8400);
+    m.answers.push(record("host.local.", 1));
+    let stamp = Stamp {
+        key_checksum: 7,
+        received_at: 0,
+    };
+    attach(&mut m, OPTION_CODE, 0, &|_| Some(stamp)).unwrap();
+    cache.receive(&m, 0, &mut rng).unwrap();
+    let mut known = Message::new(0, 0);
+    known.answers.push(record("host.local.", 1));
+    cache.receive(&known, 2000, &mut rng).unwrap();
+    assert_eq!(cache.owner_stamp(&name, 2000), Some(Some(stamp)));
+    let mut plain = Message::new(0, 0x8400);
+    let mut v6 = record("host.local.", 28);
+    v6.data = Rdata::Aaaa([1; 16]);
+    plain.answers.push(v6);
+    cache.receive(&plain, 3000, &mut rng).unwrap();
+    assert_eq!(cache.owner_stamp(&name, 3000), Some(None));
+    assert!(cache
+        .answers(
+            &Question {
+                name: name.clone(),
+                kind: 1,
+                class: 1
+            },
+            3000
+        )
+        .is_empty());
+    attach(&mut m, OPTION_CODE, 4000, &|_| {
+        Some(Stamp {
+            key_checksum: 8,
+            received_at: 0,
+        })
+    })
+    .unwrap();
+    cache.receive(&m, 4000, &mut rng).unwrap();
+    assert!(cache
+        .answers(
+            &Question {
+                name: name.clone(),
+                kind: 28,
+                class: 1
+            },
+            4000
+        )
+        .is_empty());
+    assert_eq!(
+        cache
+            .owner_stamp(&name, 4000)
+            .unwrap()
+            .unwrap()
+            .key_checksum,
+        8
+    );
+    let mut query = Message::new(0, 0);
+    query.authority.push(record("probe.local.", 1));
+    query.additional.push(record("extra.local.", 1));
+    attach(&mut query, OPTION_CODE, 5000, &|_| Some(stamp)).unwrap();
+    cache.receive(&query, 5000, &mut rng).unwrap();
+    assert!(cache
+        .owner_stamp(&"probe.local.".parse().unwrap(), 5000)
+        .is_none());
+    assert!(cache
+        .owner_stamp(&"extra.local.".parse().unwrap(), 5000)
+        .is_some());
+}
+#[test]
+fn s14_tsr_time_comparison_tolerates_wire_quantization_without_changing_key_conflicts() {
+    use snac_rs::mdns::tsr::{compare, Relation, Stamp};
+    let local = Stamp {
+        key_checksum: 7,
+        received_at: 1234,
+    };
+    assert_eq!(
+        compare(
+            Some(local),
+            Some(Stamp {
+                received_at: 2000,
+                ..local
+            })
+        ),
+        Relation::Equal
+    );
+    assert_eq!(
+        compare(
+            Some(local),
+            Some(Stamp {
+                received_at: 12000,
+                ..local
+            })
+        ),
+        Relation::Newer
+    );
+    assert_eq!(
+        compare(
+            Some(local),
+            Some(Stamp {
+                received_at: -12000,
+                ..local
+            })
+        ),
+        Relation::Older
+    );
+    assert_eq!(
+        compare(
+            Some(local),
+            Some(Stamp {
+                key_checksum: 8,
+                ..local
+            })
+        ),
+        Relation::Conflict
+    );
+    assert_eq!(compare(Some(local), None), Relation::Conflict);
+    assert_eq!(compare(None, Some(local)), Relation::Conflict);
+    assert_eq!(compare(None, None), Relation::Unstamped);
+}
