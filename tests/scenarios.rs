@@ -1006,3 +1006,59 @@ fn pd_timers_renew_rebind_fallback_and_expire() {
         .any(|x| x.prefix == p && x.lifetime > 0));
     assert_eq!(r.pd.state, PdState::Soliciting);
 }
+
+#[test]
+fn pd_reconnect_preserves_valid_binding_until_verdict() {
+    let mut r = bound_router();
+    let mut rng = ScriptedRandom::new([765, 876, 987]);
+    let p = Prefix::new(ip("2001:db8:aa::"), 64).unwrap();
+    let saved = r.checkpoint(10000, 100000).unwrap();
+    let mut restarted = Router::restore(&saved, 0, 100010, &mut rng).unwrap();
+    assert_eq!(restarted.identity, r.identity);
+    assert!(restarted
+        .snapshot(Link::Stub, 0)
+        .pios
+        .iter()
+        .any(|x| x.prefix == p));
+    assert_eq!(restarted.pd.state, PdState::Rebinding);
+    assert!(restarted
+        .pd
+        .leases
+        .values()
+        .all(|l| l.valid.remaining(0) <= 1989));
+    r.set_link(Link::Ail, false, 20000, &mut rng).unwrap();
+    assert!(r
+        .tick(21000, &mut rng)
+        .unwrap()
+        .iter()
+        .all(|x| x.link != Link::Ail));
+    assert!(r
+        .snapshot(Link::Stub, 21000)
+        .pios
+        .iter()
+        .any(|x| x.prefix == p && x.preferred > 0));
+    r.set_link(Link::Ail, true, 22000, &mut rng).unwrap();
+    let tx = r.tick(22000, &mut rng).unwrap();
+    assert!(tx.iter().any(|x| x.packet[6] == 17 && x.packet[48] == 6));
+    let zero = ia(1, 0, 0, &[("2001:db8:aa::", 64, 0, 0)]);
+    r.receive(Link::Ail, &pd_response(&r, 7, &zero), 23000, &mut rng)
+        .unwrap();
+    assert!(!r
+        .snapshot(Link::Stub, 23000)
+        .pios
+        .iter()
+        .any(|x| x.prefix == p));
+    assert!(r
+        .snapshot(Link::Stub, 23000)
+        .pios
+        .iter()
+        .any(|x| x.prefix == r.identity.prefix(Link::Stub) && x.preferred > 0));
+    let hint = nd_packet(
+        "fe80::9",
+        "ff02::1",
+        ra(0, 0, &pio("2001:db8:1::", 64, 0x10, 1800, 1800)),
+    );
+    restarted.receive(Link::Ail, &hint, 2000, &mut rng).unwrap();
+    assert_eq!(restarted.pd.state, PdState::Rebinding);
+    assert!(!restarted.pd_hints.is_empty());
+}
