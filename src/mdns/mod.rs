@@ -116,7 +116,7 @@ impl Engine {
                     R::Older => return Err(E::Stale),
                     R::Conflict | R::Unstamped => return Err(E::Conflict),
                     R::Equal => {
-                        if cached || own != known {
+                        if cached || own != known || self.publisher.ready(id) {
                             quiet.insert(name.clone());
                         }
                     }
@@ -124,7 +124,9 @@ impl Engine {
                         if !cached {
                             superseded.insert(name.clone());
                         }
-                        if cached || own != known || !unchanged {
+                        if (cached || own != known || !unchanged)
+                            && !(unchanged && self.publisher.ready(id))
+                        {
                             probe = true;
                         }
                     }

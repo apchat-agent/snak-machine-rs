@@ -1157,3 +1157,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   the new paused state adds no table or dependency. Active SRP ownership is
   preserved throughout. This follows AP-06 section 2's asynchronous zone-change
   signal model while keeping PLAN2's bounded authoritative/learned separation.
+- S14 refresh RED `b57c52d` exposes an unnecessary probe when matching peer
+  data is cached during a timestamp-only local renewal. GREEN passes **275
+  tests** and all-feature clippy, both builds, formatting and the macOS target
+  check. Ready registrations now remain quiet for time-only changes even with
+  peer cache state, and equal-TSR local replacement follows section 3.1's quiet
+  adoption rule. No new field or dependency.
+- S14 is complete: signed native UDP-to-AIL fixtures, reducer/wire cases and
+  bounded pressure/expiry/reconnect tests cover its planned AP and TSR scope.
+  **needs privileged acceptance:** external mDNS/DNS-SD client interoperability,
+  real-interface multicast/fragment delivery and multiple physical Advertising
+  Proxies, including the experimental TSR option code and Ed448 checksum
+  convention. Final complete service-path and hostile-load audits remain S23/S24.
