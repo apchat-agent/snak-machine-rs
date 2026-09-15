@@ -110,12 +110,18 @@ impl<I: PacketIo> Driver<I> {
         }
         if self.router.lifecycle != Lifecycle::Stopping {
             for link in [Link::Ail, Link::Stub] {
-                let up = self.io.link_up(link)?;
-                self.router.set_link(link, up, now, rng)?;
+                match self.io.link_up(link) {
+                    Ok(up) => self.router.set_link(link, up, now, rng)?,
+                    Err(e) => {
+                        eprintln!("{now}ms link status failed: {e}");
+                        self.router.shutdown(now, rng)?;
+                        break;
+                    }
+                }
             }
         }
         for _ in 0..32 {
-            let Some(rx) = self.io.receive(Duration::ZERO)? else {
+            let Some(rx) = self.receive(Duration::ZERO, now, rng)? else {
                 break;
             };
             if rx.direction == Direction::OwnEgress {
@@ -132,6 +138,27 @@ impl<I: PacketIo> Driver<I> {
         let tx = self.router.tick(now, rng)?;
         self.dispatch(tx, now, rng)?;
         self.sync_groups()
+    }
+    pub fn receive(
+        &mut self,
+        timeout: Duration,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Option<crate::io::Received>> {
+        if matches!(
+            self.router.lifecycle,
+            Lifecycle::Stopping | Lifecycle::Stopped
+        ) {
+            return Ok(None);
+        }
+        match self.io.receive(timeout) {
+            Ok(rx) => Ok(rx),
+            Err(e) => {
+                eprintln!("{now}ms receive backend failed: {e}");
+                self.router.shutdown(now, rng)?;
+                Ok(None)
+            }
+        }
     }
     pub fn accept(
         &mut self,

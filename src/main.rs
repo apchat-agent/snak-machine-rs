@@ -155,7 +155,7 @@ fn run() -> io::Result<()> {
                 .saturating_sub(now)
                 .min(100),
         );
-        if let Some(rx) = driver.io.receive(timeout)? {
+        if let Some(rx) = driver.receive(timeout, now, &mut random)? {
             driver.accept(rx, clock.elapsed().as_millis() as u64, &mut random)?;
         }
     }

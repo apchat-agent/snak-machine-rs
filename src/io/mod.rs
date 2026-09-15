@@ -45,6 +45,7 @@ pub struct Device<P> {
     pub port: P,
     framing: NativeFraming,
     own_mac: Option<[u8; 6]>,
+    pub discarded: u64,
 }
 impl<P: PacketPort> Device<P> {
     pub fn new(port: P, framing: NativeFraming, own_mac: Option<[u8; 6]>) -> Self {
@@ -52,18 +53,24 @@ impl<P: PacketPort> Device<P> {
             port,
             framing,
             own_mac,
+            discarded: 0,
         }
     }
     pub fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let Some(mut p) = self.port.receive()? else {
+        let packet = match self.port.receive() {
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                self.discarded = self.discarded.saturating_add(1);
+                return Ok(None);
+            }
+            result => result?,
+        };
+        let Some(mut p) = packet else {
             return Ok(None);
         };
         if self.framing == NativeFraming::Utun {
             if p.len() < 4 || p[..4] != [0, 0, 0, 30] {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "invalid Darwin utun IPv6 family header",
-                ));
+                self.discarded = self.discarded.saturating_add(1);
+                return Ok(None);
             }
             p.drain(..4);
         }
