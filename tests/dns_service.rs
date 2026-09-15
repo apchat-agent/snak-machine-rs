@@ -234,3 +234,112 @@ fn s09_cli_explicit_upstream_and_additional_a_override() {
         snac_rs::config::Config::parse(base.into_iter().chain(["--dns-upstream", "bad"])).is_err()
     );
 }
+
+#[test]
+fn s09_driver_tcp_pipeline_and_upstream_tcp_large_split_response() {
+    use snac_rs::dns::wire::TcpFrames;
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(0..10000);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    for link in [Link::Ail, Link::Stub] {
+        learn(&mut d, link, &mut rng);
+    }
+    d.dns_discovery
+        .set_configured(&["[fe80::53]:53".parse().unwrap()])
+        .unwrap();
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    hosts[0].listen_udp(53).unwrap();
+    hosts[0].listen_tcp(53).unwrap();
+    let cid = hosts[1]
+        .connect(
+            peer(Link::Stub),
+            40001,
+            d.router.identity.link_local(Link::Stub).into(),
+            53,
+            1001,
+        )
+        .unwrap();
+    for now in (1010..1500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    assert!(hosts[1].established(cid), "production DNS TCP listener");
+    let mut frame = TcpFrames::frame(&query("large.test.", 16, 90)).unwrap();
+    frame.extend(TcpFrames::frame(&query("small.test.", 1, 91)).unwrap());
+    hosts[1].send_tcp(cid, &frame[..3]).unwrap();
+    cycle(&mut d, &mut hosts, 1500, &mut rng);
+    hosts[1].send_tcp(cid, &frame[3..]).unwrap();
+    let mut server_frames = TcpFrames::new(65535).unwrap();
+    let mut client_frames = TcpFrames::new(65535).unwrap();
+    let mut replies = std::collections::BTreeMap::new();
+    let mut pending: Option<(usize, Vec<u8>, usize)> = None;
+    let mut saw_tcp = false;
+    for now in (1510..15000).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        while let Some(q) = hosts[0].receive_udp() {
+            let mut m = Message::parse(&q.bytes, Context::Unicast).unwrap();
+            m.flags = 0x8180;
+            if m.questions[0].kind == 16 {
+                m.flags |= 0x200;
+            } else {
+                m.answers.push(Record {
+                    name: m.questions[0].name.clone(),
+                    kind: 1,
+                    class: 1,
+                    ttl: 30,
+                    data: Rdata::A([192, 0, 2, 9]),
+                });
+            }
+            hosts[0]
+                .send_udp(
+                    peer(Link::Ail),
+                    53,
+                    q.source,
+                    q.source_port,
+                    &m.encode().unwrap(),
+                )
+                .unwrap();
+        }
+        for id in hosts[0].connections() {
+            server_frames.input(&hosts[0].receive_tcp(id)).unwrap();
+            if let Some(b) = server_frames.pop() {
+                saw_tcp = true;
+                let mut m = Message::parse(&b, Context::Unicast).unwrap();
+                assert_eq!(m.questions[0].kind, 16);
+                m.flags = 0x8180;
+                m.answers.push(Record {
+                    name: m.questions[0].name.clone(),
+                    kind: 16,
+                    class: 1,
+                    ttl: 30,
+                    data: Rdata::Txt(vec![vec![42; 250]; 180]),
+                });
+                pending = Some((id, TcpFrames::frame(&m.encode().unwrap()).unwrap(), 0));
+            }
+        }
+        if let Some((id, b, offset)) = &mut pending {
+            let n = hosts[0].send_tcp(*id, &b[*offset..]).unwrap();
+            *offset += n;
+            if *offset == b.len() {
+                pending = None;
+            }
+        }
+        client_frames.input(&hosts[1].receive_tcp(cid)).unwrap();
+        while let Some(b) = client_frames.pop() {
+            let m = Message::parse(&b, Context::Unicast).unwrap();
+            replies.insert(m.id, m);
+        }
+        if replies.len() == 2 {
+            break;
+        }
+    }
+    assert!(saw_tcp);
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[&91].answers[0].data, Rdata::A([192, 0, 2, 9]));
+    assert_eq!(
+        replies[&90].answers[0].data,
+        Rdata::Txt(vec![vec![42; 250]; 180])
+    );
+    assert_eq!(replies[&90].flags & 0x200, 0);
+    assert_eq!(d.dns.pending_count(), 0);
+}
