@@ -837,3 +837,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   component sums and failed saves are covered rootlessly. The fixed two-part
   ownership array is persistence plumbing for the planned extended checkpoint;
   no extra journal file or dependency is introduced. Native/service wiring follows.
+- S12 policy RED `e6fe602`: `cargo test` confirms absent lease-response
+  negotiation and configuration. GREEN passes **208 tests** and all-feature
+  clippy. RFC 9664 section 4.3 four-byte requests receive four-byte responses
+  with equal record/key grants; eight-byte requests retain separate grants.
+  KEY TTLs also stay within their granted key lease.
+- Validated maximum record/key leases and TTL minimum/maximum are configurable
+  through four CLI options. Longer configured grants survive restart; defaults
+  remain two hours/fourteen days. The extra request variant bit preserves a
+  wire distinction that equal numeric leases cannot represent. Policy fields
+  implement RFC 9665 section 4/5.1's configuration recommendation; no dependency.

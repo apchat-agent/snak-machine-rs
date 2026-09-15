@@ -107,7 +107,10 @@ impl Registry {
             let key = p.key()?;
             let lease = p.u64()?;
             let key_lease = p.u64()?;
-            if lease > 7200000 || key_lease > 1209600000 || lease > key_lease {
+            if lease > u64::from(u32::MAX) * 1000
+                || key_lease > u64::from(u32::MAX) * 1000
+                || lease > key_lease
+            {
                 return Err(invalid());
             }
             let received_at = now as i128 - p.u64()? as i128 - elapsed as i128;
@@ -141,7 +144,10 @@ impl Registry {
             let key = p.key()?;
             let lease = p.u64()?;
             let key_lease = p.u64()?;
-            if lease > 7200000 || key_lease > 1209600000 || lease > key_lease {
+            if lease > u64::from(u32::MAX) * 1000
+                || key_lease > u64::from(u32::MAX) * 1000
+                || lease > key_lease
+            {
                 return Err(invalid());
             }
             let received_at = now as i128 - p.u64()? as i128 - elapsed as i128;
@@ -181,12 +187,7 @@ impl Registry {
             let key_lease = p.u32()?;
             let remaining = p.u64()?;
             let age = p.u64()?;
-            if lease > 7200
-                || key_lease > 1209600
-                || lease > key_lease
-                || remaining > 30000
-                || age > 30000
-            {
+            if lease > key_lease || remaining > 30000 || age > 30000 {
                 return Err(invalid());
             }
             if out

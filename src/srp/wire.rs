@@ -136,6 +136,7 @@ pub struct Update {
     pub services: Vec<ServiceUpdate>,
     pub lease: u32,
     pub key_lease: u32,
+    pub extended_lease: bool,
 }
 /// A caller creates one budget per scheduler poll, shared by all transports.
 pub struct CryptoBudget(u8);
@@ -376,6 +377,7 @@ impl Validator {
         key.verify(&signed, signature)?;
         Ok(Update {
             digest: fingerprint(bytes),
+            extended_lease: data.len() == 8,
             id: m.id,
             zone: zone.clone(),
             host: host.clone(),

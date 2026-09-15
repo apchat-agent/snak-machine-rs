@@ -1,7 +1,7 @@
 //! Durable FCFS ownership and independent host/service record and key leases.
 use super::wire::{Error, Key, Update};
 use crate::{
-    dns::wire::{Name, Rdata, Record},
+    dns::wire::{Message, Name, Rdata, Record},
     persist::StateStore,
 };
 use std::{
@@ -9,6 +9,39 @@ use std::{
     io,
 };
 mod journal;
+#[derive(Clone, Copy, Debug)]
+pub struct LeasePolicy {
+    pub max_lease: u32,
+    pub max_key_lease: u32,
+    pub min_ttl: u32,
+    pub max_ttl: u32,
+}
+impl Default for LeasePolicy {
+    fn default() -> Self {
+        Self {
+            max_lease: 7200,
+            max_key_lease: 1209600,
+            min_ttl: 30,
+            max_ttl: 4500,
+        }
+    }
+}
+impl LeasePolicy {
+    pub fn validate(self) -> io::Result<Self> {
+        if self.max_lease == 0
+            || self.max_key_lease < self.max_lease
+            || self.min_ttl == 0
+            || self.min_ttl > self.max_ttl
+            || self.max_ttl > i32::MAX as u32
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid SRP lease/TTL policy",
+            ));
+        }
+        Ok(self)
+    }
+}
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct Host {
@@ -33,6 +66,7 @@ pub struct Registry {
     hosts: BTreeMap<Name, Host>,
     services: BTreeMap<Name, Service>,
     replies: BTreeMap<[u8; 32], Receipt>,
+    policy: LeasePolicy,
 }
 #[derive(Clone)]
 struct Receipt {
@@ -45,7 +79,43 @@ pub struct Grant {
     pub lease: u32,
     pub key_lease: u32,
 }
+impl Grant {
+    pub fn response(&self, request: &Message) -> io::Result<Vec<u8>> {
+        let length = request.additional.iter().find_map(|r| {
+            if let Rdata::Opt(v) = &r.data {
+                v.iter().find(|(code, _)| *code == 2).map(|(_, b)| b.len())
+            } else {
+                None
+            }
+        });
+        if !matches!(length, Some(4 | 8)) || request.questions.len() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid lease response request",
+            ));
+        }
+        let mut m = Message::new(request.id, 0xa800);
+        m.questions = request.questions.clone();
+        let mut bytes = self.lease.to_be_bytes().to_vec();
+        if length == Some(8) {
+            bytes.extend(self.key_lease.to_be_bytes());
+        }
+        m.additional.push(Record {
+            name: Name::root(),
+            kind: 41,
+            class: 4096,
+            ttl: 0,
+            data: Rdata::Opt(vec![(2, bytes)]),
+        });
+        m.encode()
+    }
+}
 impl Registry {
+    pub fn set_policy(&mut self, policy: LeasePolicy) -> io::Result<()> {
+        self.policy = policy.validate()?;
+        Ok(())
+    }
+
     pub fn cached(&self, bytes: &[u8], now: u64) -> Option<Grant> {
         if bytes.len() > 65535 {
             return None;
@@ -86,7 +156,11 @@ impl Registry {
         let mut out = vec![];
         if let Some(h) = self.hosts.get(name) {
             if h.key_expires > now && (kind == 25 || kind == 255) {
-                out.push(key_record(name, &h.key));
+                out.push(key_record(
+                    name,
+                    &h.key,
+                    self.key_ttl(h.key_expires, h.received_at),
+                ));
             }
             if h.expires > now {
                 out.extend(
@@ -99,7 +173,11 @@ impl Registry {
         }
         for (owner, s) in &self.services {
             if owner == name && s.key_expires > now && (kind == 25 || kind == 255) {
-                out.push(key_record(owner, &s.key));
+                out.push(key_record(
+                    owner,
+                    &s.key,
+                    self.key_ttl(s.key_expires, s.received_at),
+                ));
             }
             if !self.service_live(s, now) {
                 continue;
@@ -124,6 +202,11 @@ impl Registry {
         }
         out.dedup_by(|a, b| a.name == b.name && a.kind == b.kind && a.data == b.data);
         out
+    }
+    fn key_ttl(&self, expires: u64, received_at: i128) -> u32 {
+        120u32
+            .clamp(self.policy.min_ttl, self.policy.max_ttl)
+            .min(((expires as i128 - received_at).max(0) / 1000).min(u32::MAX.into()) as u32)
     }
     fn service_live(&self, s: &Service, now: u64) -> bool {
         s.expires > now
@@ -214,8 +297,12 @@ impl Registry {
             }
         }
         let grant = Grant {
-            lease: u.lease.min(7200),
-            key_lease: u.key_lease.min(1209600),
+            lease: u.lease.min(self.policy.max_lease),
+            key_lease: u.key_lease.min(if u.extended_lease {
+                self.policy.max_key_lease
+            } else {
+                self.policy.max_lease
+            }),
         };
         if grant.key_lease < grant.lease {
             return Err(Error::Refused);
@@ -247,7 +334,7 @@ impl Registry {
                 u.host.clone(),
                 Host {
                     key: u.key.clone(),
-                    addresses: normalized(&u.addresses, grant.lease),
+                    addresses: normalized(&u.addresses, grant.lease, self.policy),
                     expires: if grant.lease == 0 { 0 } else { expires },
                     key_expires,
                     received_at: now.into(),
@@ -271,8 +358,8 @@ impl Registry {
                     Service {
                         host: u.host.clone(),
                         key: u.key.clone(),
-                        records: normalized(&s.records, grant.lease),
-                        discovery: normalized(&s.discovery, grant.lease),
+                        records: normalized(&s.records, grant.lease, self.policy),
+                        discovery: normalized(&s.discovery, grant.lease, self.policy),
                         expires: if live { expires } else { 0 },
                         key_expires,
                         received_at: now.into(),
@@ -322,20 +409,20 @@ impl Registry {
         Self::decode(bytes, now, wall)
     }
 }
-fn key_record(name: &Name, key: &Key) -> Record {
+fn key_record(name: &Name, key: &Key, ttl: u32) -> Record {
     Record {
         name: name.clone(),
         kind: 25,
         class: 1,
-        ttl: 120,
+        ttl,
         data: key.rdata(),
     }
 }
-fn normalized(records: &[Record], lease: u32) -> Vec<Record> {
+fn normalized(records: &[Record], lease: u32, policy: LeasePolicy) -> Vec<Record> {
     let mut out = vec![];
     for r in records {
         let mut r = r.clone();
-        r.ttl = r.ttl.clamp(30, 4500).min(lease);
+        r.ttl = r.ttl.clamp(policy.min_ttl, policy.max_ttl).min(lease);
         if !out.contains(&r) {
             out.push(r);
         }
