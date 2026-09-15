@@ -167,6 +167,8 @@ fn unknown_completes_router_discovery() {
     );
     r.receive(Link::Ail, &p, 100, &mut rng).unwrap();
     assert_eq!(r.state(Link::Ail), AilState::Suitable);
+    r.receive(Link::Ail, &na_for(&r, "fe80::abcd", true), 101, &mut rng)
+        .unwrap();
     let tx = r.tick(9000, &mut rng).unwrap();
     let a = tx
         .iter()
@@ -291,4 +293,42 @@ fn unreachable_supplier_triggers_takeover() {
         .unwrap();
     r.receive(Link::Ail, &rs, 12, &mut rng).unwrap();
     assert_eq!(r.state(Link::Ail), AilState::Suitable);
+}
+
+#[test]
+fn stale_pio_cannot_be_kept_alive_by_other_options() {
+    let mut r = router(7);
+    let mut rng = ScriptedRandom::new([]);
+    r.receive(
+        Link::Ail,
+        &supplier_packet("fe80::9", "2001:db8::"),
+        0,
+        &mut rng,
+    )
+    .unwrap();
+    for t in (0..=550000).step_by(50000) {
+        r.receive(
+            Link::Ail,
+            &nd_packet("fe80::9", "ff02::1", ra(0, 1800, &[])),
+            t,
+            &mut rng,
+        )
+        .unwrap();
+        r.receive(Link::Ail, &na_for(&r, "fe80::9", true), t, &mut rng)
+            .unwrap();
+        let tx = r.tick(t, &mut rng).unwrap();
+        for x in tx {
+            r.transmitted(&x, t, true, &mut rng).unwrap();
+        }
+        assert_eq!(r.state(Link::Ail), AilState::Suitable);
+    }
+    r.receive(Link::Ail, &na_for(&r, "fe80::9", true), 600000, &mut rng)
+        .unwrap();
+    r.tick(600000, &mut rng).unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::BeginAdvertising);
+    assert!(
+        r.on_link[&(Link::Ail, Prefix::new(ip("2001:db8::"), 64).unwrap())]
+            .valid
+            .live(600000)
+    );
 }
