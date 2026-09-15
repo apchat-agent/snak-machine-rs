@@ -560,7 +560,12 @@ impl Publisher {
                     .iter()
                     .chain(&d.message.authority)
                     .chain(&d.message.additional)
-                    .filter(|r| r.ttl > 0 && cacheable(r))
+                    .filter(|r| {
+                        r.ttl > 0
+                            && (cacheable(r)
+                                || (matches!(r.data, Rdata::Opaque(_))
+                                    && !matches!(r.kind, 0 | 41 | 249..=255)))
+                    })
                     .any(|r| {
                         p.names.contains(&(r.name.clone(), r.class & 0x7fff))
                             && !data.records.iter().any(|own| same(own, r))
@@ -617,13 +622,19 @@ impl Publisher {
 fn tie(rrs: &[&Record]) -> io::Result<Vec<Vec<u8>>> {
     let mut out = vec![];
     for r in rrs {
-        let mut m = Message::new(0, 0);
-        m.answers.push((*r).clone());
-        let bytes = m.encode()?;
-        let m = Message::parse(&bytes, Context::Mdns)?;
         let mut key = (r.class & 0x7fff).to_be_bytes().to_vec();
         key.extend(r.kind.to_be_bytes());
-        key.extend(&bytes[m.record_spans()[0].rdata.clone()]);
+        if let Rdata::Opaque(bytes) = &r.data {
+            // RFC 6762 18.14 forbids compression in unlisted RR types. These
+            // octets are used solely for tie-breaking, never cached or relocated.
+            key.extend(bytes);
+        } else {
+            let mut m = Message::new(0, 0);
+            m.answers.push((*r).clone());
+            let bytes = m.encode()?;
+            let m = Message::parse(&bytes, Context::Mdns)?;
+            key.extend(&bytes[m.record_spans()[0].rdata.clone()]);
+        }
         out.push(key);
     }
     out.sort();

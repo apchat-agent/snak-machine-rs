@@ -1011,3 +1011,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   after the first fragment: retry emits only remaining frames, all within the
   interface MTU, and the independent peer receives one complete single-RR probe.
   Added byte-reservation fields enforce PLAN2's aggregate budget; no dependency.
+- S13 hostile-probe RED `46362ea` fails when an unknown peer RR type aborts
+  tie-breaking. GREEN passes **244 tests**, all-feature clippy, both builds,
+  formatting and the installed aarch64-apple-darwin all-target/pcap check.
+  RFC 6762 section 18.14 forbids compression in unknown types, so their opaque
+  bytes can participate in class/type/RDATA ordering without relocation or
+  caching. ANY-name probing also detects existing unknown-type answers.
+  A separate fixture fills/refills the 32-packet per-source rate limit.
+- S13 is complete: rootless packet-path tests cover dual-family querying,
+  publication, QU response delivery, fragmented input/output and failed writes;
+  reducer fixtures cover legacy/QM, coherence, suppression, conflicts and bounds.
+  Native external-peer acceptance remains listed above. No new dependency or
+  design addendum. S14 now supplies SRP-derived publication and TSR semantics.
