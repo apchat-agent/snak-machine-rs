@@ -128,7 +128,7 @@ fn router(seed: u64) -> Router {
     let id = Identity::load_or_create(
         &mut MemoryStore::default(),
         "mock",
-        &mut ScriptedRandom::new([seed, 1, 2, 3, 4, 5, 6, 7]),
+        &mut ScriptedRandom::new([seed, seed * 256 + 1, seed * 256 + 3, 3, 4, 5, 6, 7]),
     )
     .unwrap();
     Router::new(id, 0, &mut ScriptedRandom::new([])).unwrap()
@@ -469,4 +469,28 @@ fn lost_replacement_restores_same_local_prefix() {
         .find_map(|o| Pio::decode(o.bytes))
         .unwrap();
     assert_eq!((p.prefix, p.preferred, p.valid), (own, 1800, 1800));
+}
+
+#[test]
+fn stub_peers_converge_and_retain_retiring_osnr() {
+    let mut low = providing(1);
+    let mut high = providing(2);
+    let mut rng = ScriptedRandom::new([]);
+    let a = low.identity.prefix(Link::Stub);
+    let b = high.identity.prefix(Link::Stub);
+    assert!(a < b);
+    let pa = low.snapshot(Link::Stub, 12000).encode().unwrap();
+    let pb = high.snapshot(Link::Stub, 12000).encode().unwrap();
+    assert_eq!(pa[45], 0);
+    assert_eq!(pb[45], 0);
+    low.receive(Link::Stub, &pb, 12000, &mut rng).unwrap();
+    high.receive(Link::Stub, &pa, 12000, &mut rng).unwrap();
+    assert_eq!(low.state(Link::Stub), AilState::Advertising);
+    assert_eq!(high.state(Link::Stub), AilState::Deprecating);
+    for r in [&low, &high] {
+        let rios = r.snapshot(Link::Ail, 13000).rios;
+        assert!(rios.iter().any(|r| r.prefix == a));
+        assert!(rios.iter().any(|r| r.prefix == b));
+    }
+    assert_eq!(high.snapshot(Link::Stub, 13000).pios[0].preferred, 0);
 }
