@@ -743,3 +743,118 @@ fn review_14_local_takeover_proactively_exports_new_osnr() {
         .contains_key(&(Link::Stub, r.identity.prefix(Link::Stub))));
     assert!(r.links[0].scheduler.deadline() <= now + 16000);
 }
+
+struct EdgeRandom(bool);
+impl snac_rs::time::RandomSource for EdgeRandom {
+    fn fill(&mut self, b: &mut [u8]) -> std::io::Result<()> {
+        b.fill(0);
+        Ok(())
+    }
+    fn sample(&mut self, max: u64) -> std::io::Result<u64> {
+        Ok(if self.0 { max } else { 0 })
+    }
+}
+#[test]
+fn review_15_dhcp_retransmission_equations_at_both_random_extremes() {
+    use snac_rs::router::pd::{Exchange, PdClient, PdState};
+    for high in [false, true] {
+        for (kind, state, irt, mrt) in [
+            (1, PdState::Soliciting, 1000, 3600000),
+            (3, PdState::Requesting, 1000, 30000),
+            (5, PdState::Renewing, 10000, 600000),
+            (6, PdState::Rebinding, 10000, 600000),
+        ] {
+            for (count, previous) in [(0, 0), (1, 10000), (1, mrt)] {
+                let mut pd = PdClient {
+                    state,
+                    exchange: Some(Exchange {
+                        kind,
+                        xid: [1, 2, 3],
+                        started: 0,
+                        next: 0,
+                        interval: previous,
+                        count,
+                        server: vec![],
+                    }),
+                    ..Default::default()
+                };
+                pd.poll(0, ip("fe80::1"), &[1, 2, 3], &mut EdgeRandom(high))
+                    .unwrap();
+                let interval = pd.exchange.unwrap().interval;
+                let expected = if count == 0 {
+                    if kind == 1 {
+                        if high {
+                            1100
+                        } else {
+                            1001
+                        }
+                    } else {
+                        irt * if high { 11 } else { 9 } / 10
+                    }
+                } else {
+                    let rt = previous * if high { 21 } else { 19 } / 10;
+                    if rt > mrt {
+                        mrt * if high { 11 } else { 9 } / 10
+                    } else {
+                        rt
+                    }
+                };
+                assert_eq!(
+                    interval, expected,
+                    "kind {kind} count {count} prior {previous} high {high}"
+                );
+            }
+        }
+    }
+}
+#[test]
+fn review_15_zero_pd_timers_share_ia_minimum_and_use_wide_arithmetic() {
+    let mut r = router();
+    r.pd.start(0, &mut ScriptedRandom::new([])).unwrap();
+    let values = ia(
+        1,
+        0,
+        0,
+        &[
+            ("2001:db8:1::", 64, 3000000000, 4000000000),
+            ("fd99::", 64, 4000000000, 4000000000),
+        ],
+    );
+    let mut offer = values.clone();
+    offer.extend(option(7, &[255]));
+    dhcp_receive(&mut r, 2, &offer, 0);
+    dhcp_receive(&mut r, 7, &values, 0);
+    assert_eq!(r.pd.leases.len(), 2);
+    for l in r.pd.leases.values() {
+        assert_eq!(l.t1.remaining(0), 1500000000);
+        assert_eq!(l.t2.remaining(0), 2400000000);
+    }
+}
+
+#[test]
+fn review_15_release_uses_previous_randomized_interval() {
+    use snac_rs::router::pd::{Exchange, PdClient, Release};
+    for (high, intervals) in [(false, [900, 1710, 3249]), (true, [1100, 2310, 4851])] {
+        let mut pd = PdClient::default();
+        pd.releases.push(Release {
+            exchange: Exchange {
+                kind: 8,
+                xid: [1, 2, 3],
+                started: 0,
+                next: 0,
+                interval: 1000,
+                count: 0,
+                server: vec![1, 2, 3],
+            },
+            prefixes: vec![],
+        });
+        let mut now = 0;
+        for expected in intervals {
+            pd.poll(now, ip("fe80::1"), &[1, 2, 3], &mut EdgeRandom(high))
+                .unwrap();
+            let next = pd.releases[0].exchange.next;
+            assert_eq!(next - now, expected);
+            now = next;
+        }
+    }
+}
