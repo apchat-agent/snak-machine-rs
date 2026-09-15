@@ -429,6 +429,16 @@ impl<I: PacketIo> Driver<I> {
             }
             stack.poll(now)?;
         }
+        let sources: Vec<_> = self
+            .router
+            .on_link
+            .iter()
+            .filter(|((link, p), v)| {
+                *link == Link::Stub && p.length == 64 && p.routable() && v.valid.live(now)
+            })
+            .map(|((_, p), _)| *p)
+            .collect();
+        self.dns.set_srp_sources(&sources)?;
         self.dns_service
             .poll(&mut self.dns, self.stacks.as_mut().unwrap(), now, rng)?;
         for link in [Link::Ail, Link::Stub] {

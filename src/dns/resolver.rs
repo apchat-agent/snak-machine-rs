@@ -98,6 +98,8 @@ pub struct Resolver {
     srp_clock: (u64, u64),
     crypto: CryptoBudget,
     srp_validator: Validator,
+    registrar: Option<crate::srp::service::Registrar>,
+    srp_sources: Vec<crate::wire::Prefix>,
 }
 impl Resolver {
     pub fn new(additional_a: bool) -> Self {
@@ -112,6 +114,53 @@ impl Resolver {
             srp_clock: (0, 0),
             crypto: CryptoBudget::default(),
             srp_validator: Validator::new(&[]).unwrap(),
+            registrar: None,
+            srp_sources: vec![],
+        }
+    }
+    pub fn enable_srp(
+        &mut self,
+        store: Box<dyn crate::persist::StateStore>,
+        now: u64,
+        wall: u64,
+    ) -> io::Result<()> {
+        if self.registrar.is_some() {
+            return Err(io::Error::other("SRP registrar already owns a store"));
+        }
+        let registrar = crate::srp::service::Registrar::open(store, now, wall)?;
+        self.registrar = Some(registrar);
+        self.set_srp_clock(wall, now);
+        self.cache.clear();
+        Ok(())
+    }
+    pub fn registry(&self) -> Option<&crate::srp::registry::Registry> {
+        self.registrar.as_ref().map(|r| &r.registry)
+    }
+    pub fn set_srp_policy(&mut self, policy: crate::srp::registry::LeasePolicy) -> io::Result<()> {
+        self.registrar
+            .as_mut()
+            .ok_or_else(|| io::Error::other("SRP is not enabled"))?
+            .registry
+            .set_policy(policy)
+    }
+    pub fn take_srp_changed(&mut self) -> bool {
+        self.registrar.as_mut().is_some_and(|r| r.take_changed())
+    }
+    pub fn set_srp_sources(&mut self, prefixes: &[crate::wire::Prefix]) -> io::Result<()> {
+        if prefixes.len() > 64 || prefixes.iter().any(|p| p.length != 64 || !p.routable()) {
+            return Err(invalid());
+        }
+        self.srp_sources = prefixes.to_vec();
+        Ok(())
+    }
+    fn srp_source(&self, address: IpAddr) -> bool {
+        match address {
+            IpAddr::V6(a) => {
+                crate::wire::link_local(a)
+                    || a.is_loopback()
+                    || self.srp_sources.iter().any(|p| p.contains(a))
+            }
+            IpAddr::V4(a) => a.is_loopback(),
         }
     }
     pub fn set_srp_clock(&mut self, wall: u64, monotonic: u64) {
@@ -232,6 +281,7 @@ impl Resolver {
             .values()
             .map(|p| p.retry.min(p.deadline))
             .chain(self.cache.values().map(|c| c.expires))
+            .chain(self.registry().and_then(|r| r.next_deadline()))
             .min()
     }
     fn admit(&mut self, source: IpAddr, now: u64) -> io::Result<()> {
@@ -265,21 +315,49 @@ impl Resolver {
         }
         self.admit(client.address.ip(), now)?;
         if m.flags & 0xf800 == 0x2800 {
+            let error = |client, error| {
+                registration_reply(
+                    client,
+                    m.id,
+                    m.questions.first().map(|q| q.name.clone()),
+                    error,
+                )
+            };
+            if !self.srp_source(client.address.ip()) {
+                return Ok(vec![error(client, SrpError::Refused)?]);
+            }
+            if let Some(grant) = self.registry().and_then(|r| r.cached(bytes, now)) {
+                return Ok(vec![Action::Reply {
+                    client,
+                    bytes: grant.response(&m)?,
+                }]);
+            }
             let wall = self
                 .srp_clock
                 .0
                 .saturating_add(now.saturating_sub(self.srp_clock.1) / 1000);
+            let registrar = &self.registrar;
             return match self
                 .srp_validator
-                .verify(bytes, wall, &mut self.crypto, |_| None)
-            {
-                Ok(update) => Ok(vec![Action::Register { client, update }]),
-                Err(e) => Ok(vec![registration_reply(
-                    client,
-                    m.id,
-                    m.questions.first().map(|q| q.name.clone()),
-                    e,
-                )?]),
+                .verify(bytes, wall, &mut self.crypto, |name| {
+                    registrar
+                        .as_ref()
+                        .and_then(|r| r.registry.key(name, now).cloned())
+                }) {
+                Ok(update) => {
+                    if let Some(registrar) = &mut self.registrar {
+                        match registrar.apply(&update, now, wall) {
+                            Ok(grant) => Ok(vec![Action::Reply {
+                                client,
+                                bytes: grant.response(&m)?,
+                            }]),
+                            Err(e) => Ok(vec![error(client, e)?]),
+                        }
+                    } else {
+                        Ok(vec![Action::Register { client, update }])
+                    }
+                }
+                Err(e) => Ok(vec![error(client, e)?]),
             };
         }
         if m.flags & 0xf800 != 0
@@ -309,6 +387,28 @@ impl Resolver {
                 id: m.id,
             };
             return Ok(vec![deliver(waiter, &answer.encode()?)?]);
+        }
+        if let Some(registry) = self.registry() {
+            let q = &m.questions[0];
+            let ds_exception = in_zone(&q.name, &"service.arpa.".parse().unwrap())
+                && q.kind == 43
+                && m.additional
+                    .iter()
+                    .any(|r| r.kind == 41 && r.ttl & 0x8000 != 0);
+            if !ds_exception && q.class == 1 && !registry.records(&q.name, 255, now).is_empty() {
+                let answer = |q: &Question| {
+                    let mut a = Message::new(m.id, 0x8400 | (m.flags & 0x100));
+                    a.questions.push(q.clone());
+                    a.answers = registry.records(&q.name, q.kind, now);
+                    a.encode()
+                };
+                return Ok(vec![self.answer_local(
+                    client,
+                    bytes,
+                    &answer(q)?,
+                    answer,
+                )?]);
+            }
         }
         let key = query_key(&m)?;
         let waiter = Waiter {
@@ -562,6 +662,9 @@ impl Resolver {
         Ok(())
     }
     pub fn tick(&mut self, now: u64, rng: &mut impl RandomSource) -> io::Result<Vec<Action>> {
+        if let Some(r) = &mut self.registrar {
+            r.expire(now);
+        }
         self.rates.retain(|_, (until, _)| *until > now);
         self.cache.retain(|_, c| c.expires > now);
         let ids: Vec<_> = self.pending.keys().copied().collect();

@@ -847,3 +847,21 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   remain two hours/fourteen days. The extra request variant bit preserves a
   wire distinction that equal numeric leases cannot represent. Policy fields
   implement RFC 9665 section 4/5.1's configuration recommendation; no dependency.
+- S12 live RED `03463c7`: `cargo test` confirms missing durable resolver
+  integration. GREEN passes **210 tests** and all-feature clippy. Production
+  Driver fixtures register and resolve over UDP, TCP and DoT, including while
+  the AIL is down. Every success follows a completed durable write. A live TCP
+  update gets SERVFAIL on injected disk failure; retry succeeds after recovery.
+  A release retransmission can reuse its saved acknowledgment after key removal.
+- The resolver serves registry answers authoritatively through the existing
+  canonical A-augmentation path, outside the learned cache. Retained keys feed
+  verification, lease deadlines feed the scheduler, and a coalesced change bit
+  notifies the later publication owner. A bounded 64-prefix source policy is
+  derived from live stub prefixes; only on-link/loopback test sources enter SRP.
+  The production listener still receives updates only from the stub stack.
+- Native startup opens the two-part journal, installs the registrar and applies
+  configured lease/TTL policy. Router checkpoints preserve the latest registrar
+  commit. Added fields retain the durable store owner, source policy and change
+  notification; these implement planned source validation and publication wiring.
+  No dependency. Needs privileged acceptance: signed registration and restart on
+  native interfaces with external SRP clients, including real filesystem failures.

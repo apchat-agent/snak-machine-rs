@@ -40,7 +40,8 @@ fn run() -> io::Result<()> {
             "pcap backend requires: cargo build --features pcap",
         ));
     }
-    let mut store = FileStore::open(&config.state)?;
+    let (mut store, srp_store) =
+        snac_rs::persist::journal::Journal::open(FileStore::open(&config.state)?)?;
     let mut random = OsRandom;
     let attachment = format!("{:?}:{}:{}", config.backend, config.infra, config.stub);
     let mut router = match store.load()? {
@@ -80,7 +81,7 @@ fn run() -> io::Result<()> {
             }
         }
     };
-    eprintln!("DNS UDP/TCP port 53; DoT port 853");
+    eprintln!("DNS/SRP UDP/TCP port 53; DoT port 853");
     for link in [Link::Ail, Link::Stub] {
         eprintln!(
             "{link:?}: {} {:?}, MTU {}, ULA {:?}, router {}",
@@ -106,6 +107,8 @@ fn run() -> io::Result<()> {
     let mut driver = Driver::new(router, backend)?;
     driver.enable_dot(identity.server_config()?.into())?;
 
+    driver.dns.enable_srp(Box::new(srp_store), 0, wall()?)?;
+    driver.dns.set_srp_policy(config.srp_policy)?;
     driver.dns.set_srp_clock(wall()?, 0);
     driver.dns.set_additional_a(!config.no_additional_a);
     driver.dns_discovery.set_configured(&config.dns_upstreams)?;
