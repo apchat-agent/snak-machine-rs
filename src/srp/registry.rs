@@ -288,6 +288,16 @@ impl Registry {
         now: u64,
         wall: u64,
     ) -> Result<Grant, Error> {
+        self.apply_checked(u, store, now, wall, &|_| Ok(()))
+    }
+    pub(crate) fn apply_checked(
+        &mut self,
+        u: &Update,
+        store: &mut (impl StateStore + ?Sized),
+        now: u64,
+        wall: u64,
+        accept: &impl Fn(&Self) -> Result<(), Error>,
+    ) -> Result<Grant, Error> {
         if let Some(grant) = self.cached_digest(&u.digest, now) {
             return Ok(grant);
         }
@@ -385,6 +395,7 @@ impl Registry {
             },
         );
         next.check_bounds()?;
+        accept(&next)?;
         let bytes = next.encode(now, wall).map_err(|_| Error::ServFail)?;
         store.save(&bytes).map_err(|_| Error::ServFail)?;
         *self = next;

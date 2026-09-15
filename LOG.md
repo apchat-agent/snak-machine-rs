@@ -1097,3 +1097,18 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Age is refreshed when forming packets. Rootless peer fixtures check both
   transmitted TSR bytes and reassembled stamped TXT input. No dependency or
   additional persistent field. Native SRP-to-publication synchronization follows.
+- S14 registrar RED `665aede` confirms missing registry/publication integration.
+  GREEN passes **264 tests** and all-feature clippy. The registrar derives mDNS
+  datasets from committed SRP state, keeps exact retries quiet, emits expiry
+  goodbyes, and restores original TSR age after restart. Conflict suffixes
+  change only the publication; the signed source names remain unchanged.
+  Failed durable writes leave both source data and pending publication unchanged.
+- Added registry-owned slot identity/mapping/version and last-projection/change
+  times, plus transient old-record snapshots only for changed/expiring slots.
+  They retain the data needed for a correct goodbye after source replacement;
+  snapshots disappear after synchronization. Dataset labels derive from the
+  canonical source-domain hash. Slots/pending changes inherit the 128-host bound.
+  Admission checks the prospective projection before durable commit and reserves
+  equal space for old-data withdrawals within the mDNS budget. These fields
+  implement PLAN2's minimal derived publication state; no new dependency.
+  Native Driver wiring and further admission/reconnect fixtures follow.

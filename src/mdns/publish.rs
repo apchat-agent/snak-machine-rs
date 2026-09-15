@@ -176,6 +176,10 @@ impl Prepared {
         })
     }
 }
+pub(crate) fn estimate(records: &[Record]) -> io::Result<(usize, usize)> {
+    let prepared = Prepared::new(records)?;
+    Ok((prepared.records.len(), prepared.charge))
+}
 pub(crate) fn identity(r: &Record) -> io::Result<Digest> {
     let mut r = r.clone();
     r.ttl = 0;

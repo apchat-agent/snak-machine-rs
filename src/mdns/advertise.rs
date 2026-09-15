@@ -1,4 +1,5 @@
 //! Advertising Proxy -06 dataset rewriting. Source records remain owned by SRP.
+pub(crate) mod proxy;
 use super::tsr::{key_checksum, Stamp};
 use crate::{
     dns::wire::{Name, Rdata, Record},
