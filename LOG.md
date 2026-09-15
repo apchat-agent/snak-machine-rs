@@ -302,3 +302,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   The next RED exercises hostile/capacity and Driver integration behaviors
   against these executable APIs. No dependency; state is PLAN2's ARP/address/
   pending packet state. This is not yet S05's complete acceptance pass.
+- S05 follow-up RED `142f734` preserves and completes the interrupted hostile
+  fixture. `cargo test` and `cargo test --no-fail-fast` fail because an ARP
+  reply claims 0.0.0.0 as its sender; every other suite passes. GREEN rejects
+  that identity, inconsistent unicast Ethernet/ARP targets and invalid ICMP
+  error codes. **99 Rust tests pass**, including 256 neighbors plus one,
+  packet/byte queue limits, retry exhaustion, late responses and 4999 spoofed
+  replies without retained growth. No fields or dependencies added. Driver
+  integration and remaining wire edge fixtures follow before S06.

@@ -130,9 +130,12 @@ impl Arp {
         let sender_mac: [u8; 6] = frame[22..28].try_into().unwrap();
         let sender = Ipv4Addr::new(frame[28], frame[29], frame[30], frame[31]);
         let target = Ipv4Addr::new(frame[38], frame[39], frame[40], frame[41]);
+        let operation = u16::from_be_bytes([frame[20], frame[21]]);
         if sender_mac[0] & 1 != 0
             || sender_mac == [0; 6]
             || frame[6..12] != sender_mac
+            || (operation == 2 && sender.is_unspecified())
+            || (frame[0] & 1 == 0 && frame[..6] != frame[32..38])
             || sender.is_multicast()
             || sender.is_broadcast()
             || sender.is_loopback()
@@ -144,7 +147,7 @@ impl Arp {
             return Err(invalid());
         }
         Ok(Self {
-            operation: u16::from_be_bytes([frame[20], frame[21]]),
+            operation,
             sender_mac,
             sender,
             target_mac: frame[32..38].try_into().unwrap(),
@@ -176,6 +179,16 @@ impl<'a> Icmp<'a> {
         match b[0] {
             0 | 8 if b[1] != 0 => return Err(invalid()),
             3 | 4 | 5 | 11 | 12 => {
+                let max_code = match b[0] {
+                    3 => 15,
+                    4 => 0,
+                    5 => 3,
+                    11 => 1,
+                    _ => 2,
+                };
+                if b[1] > max_code {
+                    return Err(invalid());
+                }
                 if b.len() < 36 {
                     return Err(invalid());
                 }
