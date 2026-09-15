@@ -1,3 +1,5 @@
+mod owned;
+pub use owned::{DadState, OwnedAddress};
 mod nd;
 use crate::{
     persist::Identity,
@@ -54,6 +56,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub owned: BTreeMap<(Link, Ipv6Addr), OwnedAddress>,
     pub neighbors: BTreeMap<RouterKey, Neighbor>,
     pub headers: BTreeMap<RouterKey, Header>,
     pub identity: Identity,
@@ -76,6 +79,20 @@ impl Router {
             })
         }
         Ok(Self {
+            owned: [Link::Ail, Link::Stub]
+                .into_iter()
+                .map(|l| {
+                    (
+                        (l, identity.link_local(l)),
+                        OwnedAddress {
+                            prefix: None,
+                            state: DadState::Ready,
+                            deadline: None,
+                            attempts: 0,
+                        },
+                    )
+                })
+                .collect(),
             neighbors: BTreeMap::new(),
             headers: BTreeMap::new(),
             identity,
@@ -103,6 +120,9 @@ impl Router {
         let Ok(nd) = decode_nd(&e) else {
             return Ok(vec![]);
         };
+        if let Some(out) = self.owned_nd(link, &e, &nd, now, rng)? {
+            return Ok(out);
+        }
         if nd.kind == 133 {
             if self.state(link) == AilState::Suitable && !self.confirmed_supplier(link, now) {
                 self.links[link.index()].state = AilState::BeginAdvertising;
@@ -245,12 +265,16 @@ impl Router {
         }
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
+        self.tick_dad(now);
         let mut out = self.tick_neighbors(now)?;
         self.suppliers.retain(|_, s| {
             s.valid.live(now) && s.preferred.live(now) && now < s.pio_at.saturating_add(600000)
         });
         self.on_link.retain(|_, p| p.valid.live(now));
         for link in [Link::Stub, Link::Ail] {
+            if !self.address_ready(link, self.identity.link_local(link)) {
+                continue;
+            }
             let fresh = self.suppliers.iter().any(|((k, _), _)| {
                 k.link == link
                     && self
