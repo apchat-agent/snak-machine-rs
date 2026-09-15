@@ -19,7 +19,13 @@ pub struct Service {
     cursor: usize,
 }
 impl Service {
-    fn queue(&mut self, actions: Vec<Action>) {
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (self.udp.len(), self.incoming.len(), self.outgoing.len())
+    }
+    pub fn queued_replies(&self) -> (usize, usize) {
+        (self.replies.len(), self.bytes)
+    }
+    pub fn queue(&mut self, actions: Vec<Action>) {
         for a in actions {
             if let Action::Reply { client, bytes } = a {
                 if let Some(id) = client.connection {

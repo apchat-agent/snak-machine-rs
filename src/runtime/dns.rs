@@ -75,6 +75,15 @@ impl<I: PacketIo> Driver<I> {
         {
             return false;
         }
+        if rx.kind == FrameKind::Ethernet
+            && rx.bytes[..6]
+                != self.router.links[0]
+                    .mac
+                    .unwrap_or(self.router.identity.macs[0])
+            && rx.bytes[..6] != [0x33, 0x33, 0, 0, 0, 1]
+        {
+            return false;
+        }
         let Ok(e) = wire::envelope(rx.kind, &rx.bytes) else {
             return false;
         };

@@ -634,3 +634,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   record TTL, including Additional A data. Tests also preserve opaque original
   RDATA across forwarding/cache decay, enforce UDP TC size fallback, and
   cancel only the waiters belonging to a disconnected TCP client. No dependency.
+- S09 RED `794b6b3`: `cargo test` fails on the missing service queue/bounds
+  diagnostics. GREEN passes **172 tests** and all-feature clippy. Full UDP
+  sockets retain replies for the next writable poll; eight UDP/TCP upstream
+  slots refuse overflow and are released on transaction expiry. Separate
+  fixtures fill the reply entry cap (256) and byte cap (64 KiB). Discovery
+  ignores frames addressed to a foreign Ethernet destination.
+- Baseline `pd_solicit_contains_stable_identity_and_64_hints`: old exact ORO
+  expectation `[82]`, new `[23, 24, 82]`, retaining every other assertion.
+  Draft sections 7/5.5.2 and PLAN2 ADDENDUM 4 justify requesting DHCPv6 DNS
+  servers/search domains during PD. No new field or dependency. Socket
+  BufferFull now maps to WouldBlock, which is the existing queue retry signal.

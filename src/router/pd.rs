@@ -131,7 +131,7 @@ impl PdClient {
             8,
             &((now.saturating_sub(e.started) / 10).min(65535) as u16).to_be_bytes(),
         ));
-        b.extend(option(6, &[0, 82]));
+        b.extend(option(6, &[0, 23, 0, 24, 0, 82]));
         for iaid in [1u32, 2] {
             let mut ia = iaid.to_be_bytes().to_vec();
             ia.extend([0; 8]);

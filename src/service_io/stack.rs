@@ -324,7 +324,10 @@ impl Stack {
         self.sockets
             .get_mut::<udp::Socket>(h)
             .send_slice(bytes, meta)
-            .map_err(io::Error::other)
+            .map_err(|e| match e {
+                udp::SendError::BufferFull => capacity(),
+                udp::SendError::Unaddressable => invalid(),
+            })
     }
     pub fn receive_udp(&mut self) -> Option<Datagram> {
         for (port, h) in &self.udp {
