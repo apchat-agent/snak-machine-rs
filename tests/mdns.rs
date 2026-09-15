@@ -586,3 +586,42 @@ fn s13_question_rate_caps_and_reconfirmation_make_progress_during_floods() {
     assert_eq!(e.cache.answers(&q, 19999).len(), 1);
     assert!(e.cache.answers(&q, 20000).is_empty());
 }
+
+#[test]
+fn s13_nsec_next_name_is_ignored_and_duplicate_question_compares_known_record_membership() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut e = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut n = a_record("lamp.local.", 1, 120, true);
+    n.kind = 47;
+    n.data = Rdata::Nsec {
+        next: "future.local.".parse().unwrap(),
+        bitmap: vec![0, 6, 0x40, 0, 0, 0, 0, 1],
+    };
+    e.cache.receive(&response(vec![n]), 0, &mut rng).unwrap();
+    assert!(
+        e.cache.negative(&question("lamp.local.", 28), 0),
+        "RFC 6762 6.1 ignores future next-name semantics"
+    );
+    let q = question("shared.local.", 1);
+    let rr = a_record("shared.local.", 1, 120, false);
+    e.cache
+        .receive(&response(vec![rr.clone()]), 0, &mut rng)
+        .unwrap();
+    let id = e.start(q.clone(), 10000, 0, &mut rng).unwrap();
+    e.poll(20).unwrap().unwrap();
+    e.sent(id, true, 20);
+    let mut m = Message::new(0, 0);
+    m.questions.push(q);
+    m.answers.push(rr);
+    let d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: m,
+    };
+    e.receive(&d, true, 1000, &mut rng).unwrap();
+    assert!(
+        e.poll(1020).unwrap().is_none(),
+        "a one-second TTL difference does not change known-answer membership"
+    );
+}
