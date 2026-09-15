@@ -714,3 +714,32 @@ fn review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export() {
     }
     assert!(advertised.is_subset(&withdrawn));
 }
+
+#[test]
+fn review_14_local_takeover_proactively_exports_new_osnr() {
+    let mut r = router();
+    let now = 2000000;
+    receive_ra(
+        &mut r,
+        Link::Stub,
+        "fe80::99",
+        &pio("2001:db8:1::", 64, 0xc0, 1800, 1800),
+        0,
+    )
+    .unwrap();
+    r.links[0].state = AilState::Advertising;
+    r.links[0].scheduler =
+        snac_rs::scheduler::RaScheduler::new(now - 10000, &mut ScriptedRandom::new([])).unwrap();
+    for sent in [now - 9000, now - 6000, now - 3000] {
+        r.links[0]
+            .scheduler
+            .sent(sent, &mut ScriptedRandom::new([]))
+            .unwrap();
+    }
+    assert!(r.links[0].scheduler.deadline() > now + 16000);
+    r.tick(now, &mut ScriptedRandom::new([])).unwrap();
+    assert!(r
+        .on_link
+        .contains_key(&(Link::Stub, r.identity.prefix(Link::Stub))));
+    assert!(r.links[0].scheduler.deadline() <= now + 16000);
+}
