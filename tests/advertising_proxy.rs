@@ -1503,3 +1503,192 @@ fn s14_legacy_unicast_reply_to_a_stamped_publication_keeps_ordinary_dns_limits()
     );
     assert!(output[0].encode().unwrap().len() <= 512);
 }
+
+#[test]
+fn s14_publication_pressure_defers_changes_preserves_old_view_and_recovers_without_false_lifetimes()
+{
+    use snac_rs::{
+        mdns::{wire::Datagram, Engine},
+        srp::{
+            registry::LeasePolicy,
+            service::Registrar,
+            wire::{CryptoBudget, Validator},
+        },
+        time::ScriptedRandom,
+    };
+    let (_, initial, _) = registered();
+    let mut registrar = Registrar::open(
+        Box::new(snac_rs::persist::MemoryStore::default()),
+        0,
+        common::srp::NOW,
+    )
+    .unwrap();
+    registrar
+        .set_policy(LeasePolicy {
+            max_lease: 30,
+            max_key_lease: 120,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    registrar.apply(&initial, 0, common::srp::NOW).unwrap();
+    registrar.sync_advertising(&mut e, 0, &mut rng).unwrap();
+    let mut service = None;
+    for at in [0, 250, 500, 750, 1750] {
+        let b = e
+            .publisher
+            .poll(&|id, t| registrar.advertised(id, t), at)
+            .unwrap()
+            .unwrap();
+        service = service.or_else(|| {
+            b.messages
+                .iter()
+                .flat_map(|m| m.authority.iter().chain(&m.answers))
+                .find(|r| r.kind == 16)
+                .map(|r| r.name.clone())
+        });
+        e.publisher.sent(b.token, true, at);
+    }
+    let reservation: Vec<_> = (0..2)
+        .map(|_| {
+            e.querier
+                .start(
+                    Question {
+                        name: "reserve.local.".parse().unwrap(),
+                        kind: 1,
+                        class: 1,
+                    },
+                    100000,
+                    1900,
+                    &mut rng,
+                )
+                .unwrap()
+        })
+        .collect();
+    let mut filler = vec![];
+    for increment in [32, 1] {
+        loop {
+            let mut next = filler.clone();
+            for i in 0..increment {
+                next.push(Record {
+                    name: "filler.local.".parse().unwrap(),
+                    kind: 16,
+                    class: 1,
+                    ttl: 120,
+                    data: Rdata::Txt(vec![
+                        vec![b'x'; 250],
+                        vec![b'y'; 250],
+                        vec![b'z'; 250],
+                        ((filler.len() + i) as u32).to_be_bytes().to_vec(),
+                    ]),
+                });
+            }
+            if e.replace(1, &filler, &next, 2000, &mut rng).is_err() {
+                break;
+            }
+            filler = next;
+        }
+    }
+    // Release bounded reply work after filling publications; the update still
+    // needs substantially more space than these two questions reserved.
+    for id in reservation {
+        e.querier.stop(id);
+    }
+    e.sync_budget().unwrap();
+    let mut request = common::srp::update();
+    request.id += 1;
+    request
+        .authority
+        .iter_mut()
+        .find(|r| r.kind == 16)
+        .unwrap()
+        .data = Rdata::Txt(vec![vec![b'N'; 250]; 24]);
+    let update = Validator::new(&[])
+        .unwrap()
+        .verify(
+            &common::srp::sign(request),
+            common::srp::NOW + 20,
+            &mut CryptoBudget::default(),
+            |_| None,
+        )
+        .unwrap();
+    registrar
+        .set_policy(LeasePolicy {
+            max_lease: 60,
+            max_key_lease: 120,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    registrar
+        .apply(&update, 20000, common::srp::NOW + 20)
+        .unwrap();
+    registrar.sync_advertising(&mut e, 20000, &mut rng).unwrap();
+    assert_eq!(
+        registrar.advertising_counts().1,
+        1,
+        "old view is a bounded pending change"
+    );
+    let source = |id, t| {
+        if id == 1 {
+            filler.clone()
+        } else {
+            registrar.advertised(id, t)
+        }
+    };
+    let mut q = Message::new(0, 0);
+    q.questions.push(Question {
+        name: service.unwrap(),
+        kind: 16,
+        class: 1,
+    });
+    let datagram = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: q,
+    };
+    e.receive(&datagram, true, &source, 21000, &mut rng)
+        .unwrap();
+    let b = e
+        .responder
+        .poll(&e.publisher, &source, 21000)
+        .unwrap()
+        .unwrap();
+    assert!(b
+        .messages
+        .iter()
+        .flat_map(|m| &m.answers)
+        .filter(|r| r.kind == 16)
+        .all(|r| r.data != Rdata::Txt(vec![vec![b'N'; 250]; 24]) && r.ttl <= 9));
+    e.responder.sent(b.token, true, &mut e.publisher, 21000);
+    registrar.sync_advertising(&mut e, 31000, &mut rng).unwrap();
+    let source = |id, t| {
+        if id == 1 {
+            filler.clone()
+        } else {
+            registrar.advertised(id, t)
+        }
+    };
+    e.receive(&datagram, true, &source, 31000, &mut rng)
+        .unwrap();
+    assert!(
+        e.responder
+            .poll(&e.publisher, &source, 31000)
+            .unwrap()
+            .is_none(),
+        "old backing lease has expired"
+    );
+    e.replace(1, &filler, &[], 32000, &mut rng).unwrap();
+    registrar.sync_advertising(&mut e, 32000, &mut rng).unwrap();
+    let b = e
+        .publisher
+        .poll(&|id, t| registrar.advertised(id, t), 32000)
+        .unwrap()
+        .unwrap();
+    assert!(b
+        .messages
+        .iter()
+        .flat_map(|m| m.authority.iter().chain(&m.answers))
+        .any(|r| r.data == Rdata::Txt(vec![vec![b'N'; 250]; 24])));
+    assert_eq!(registrar.advertising_counts().1, 0);
+}
