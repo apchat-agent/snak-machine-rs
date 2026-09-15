@@ -34,3 +34,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 15 deprecation GREEN — 15 passed; Frozen deprecation origin, saturating lifetime, PIO inclusion at 206 but omission at 205; direct route survives until its advertised valid deadline. Failed attempts no longer refresh on-link deadlines.
 - 16 deprecation-recovery RED — 16 tests specified; cargo test failed for the new contract (see paired test commit).
 - 16 deprecation-recovery GREEN — 16 passed; Recovery resets advertising mode and countdown while preserving the saved prefix identity.
+- 17 stub-arbitration RED — 17 tests specified; cargo test failed for the new contract (see paired test commit).
+- 17 stub-arbitration GREEN — 17 passed; Same ND machinery on both links preserves all valid old OSNRs; no extra neighbor state. Two-router fixture now has distinct IIDs; an accidental self-address collision was fixed in RED before implementation.

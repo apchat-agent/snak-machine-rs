@@ -152,11 +152,14 @@ impl Router {
                     }
                     if p.suitable() {
                         let own = self.identity.prefix(link);
-                        if link == Link::Ail
-                            && self.state(link) == AilState::Advertising
+                        if self.state(link) == AilState::Advertising
                             && p.prefix != own
-                            && (nd.body[5] & 2 == 0
-                                || (own.ula() && (!p.prefix.ula() || p.prefix < own)))
+                            && ((link == Link::Ail && nd.body[5] & 2 == 0)
+                                || (own.ula() && (!p.prefix.ula() || p.prefix < own))
+                                || (link == Link::Stub
+                                    && !own.ula()
+                                    && !p.prefix.ula()
+                                    && p.prefix < own))
                         {
                             self.links[link.index()].state = AilState::Deprecating;
                             self.links[link.index()].deprecate_at = Some(now);
