@@ -931,3 +931,63 @@ fn s07_driver_tcp_recovers_lost_syn_and_reordered_duplicate_segments_then_reset(
     }
     assert!(d.stack_mut(link).unwrap().connections().is_empty());
 }
+
+#[test]
+fn s07_driver_deadlines_include_immediately_sendable_service_work() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    let own = d.router.identity.link_local(Link::Stub);
+    d.stack_mut(Link::Stub).unwrap().listen_udp(1053).unwrap();
+    d.stack_mut(Link::Stub)
+        .unwrap()
+        .send_udp(
+            own.into(),
+            1053,
+            "fe80::99".parse().unwrap(),
+            40000,
+            b"ready",
+        )
+        .unwrap();
+    assert_eq!(d.next_deadline(1000), 1000);
+}
+#[test]
+fn s07_saturated_service_work_does_not_starve_a_router_advertisement() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    for now in (1000..=30000).step_by(1000) {
+        d.step(now, &mut r).unwrap();
+    }
+    let link = Link::Stub;
+    let own = d.router.identity.link_local(link);
+    for port in 1053..1061 {
+        let s = d.stack_mut(link).unwrap();
+        s.listen_udp(port).unwrap();
+        for _ in 0..4 {
+            s.send_udp(
+                own.into(),
+                port,
+                "fe80::99".parse().unwrap(),
+                40000,
+                &[42; 1024],
+            )
+            .unwrap();
+        }
+    }
+    let mut rs = vec![133, 0, 0, 0, 0, 0, 0, 0];
+    rs.extend([1, 1, 2, 0, 0, 0, 0, 99]);
+    d.accept(
+        service_rx(link, common::nd_packet("fe80::99", "ff02::2", rs)),
+        30001,
+        &mut r,
+    )
+    .unwrap();
+    let deadline = d.router.links[1].scheduler.deadline();
+    d.io.output.clear();
+    d.step(deadline, &mut r).unwrap();
+    let first = d.io.output.iter().find(|(l, _)| *l == Link::Stub).unwrap();
+    assert_eq!(first.1[54], 134);
+    assert!(!d.router.links[1].scheduler.due(deadline));
+}
