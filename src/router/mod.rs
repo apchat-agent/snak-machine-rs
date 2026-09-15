@@ -572,6 +572,13 @@ impl Router {
                 }
             }
             if s.state == AilState::BeginAdvertising {
+                if link == Link::Stub
+                    && !self
+                        .on_link
+                        .contains_key(&(link, self.identity.prefix(link)))
+                {
+                    self.links[0].scheduler.changed(now, rng)?;
+                }
                 self.on_link
                     .entry((link, self.identity.prefix(link)))
                     .or_insert(OnLink {
