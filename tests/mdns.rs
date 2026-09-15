@@ -1198,3 +1198,48 @@ fn s13_goodbye_work_is_bounded_by_dataset_slots_and_releases_all_allocations() {
     assert_eq!(p.goodbye_count(), 0);
     assert_eq!(p.counts(), (0, 0, 0));
 }
+
+#[test]
+fn s13_unknown_probe_types_cannot_abort_the_engine_or_bypass_any_name_conflicts() {
+    use snac_rs::{mdns::publish::Publisher, time::ScriptedRandom};
+    let mut p = Publisher::default();
+    let mut rng = ScriptedRandom::new([]);
+    let data = vec![a_record("lamp.local.", 50, 120, true)];
+    let source = |_, _| data.clone();
+    p.replace(1, &[], &data, 0, &mut rng).unwrap();
+    let b = p.poll(&source, 0).unwrap().unwrap();
+    p.sent(b.token, true, 0);
+    let mut d = peer_query(question("lamp.local.", 255));
+    let r = Record {
+        name: d.message.questions[0].name.clone(),
+        kind: 65000,
+        class: 1,
+        ttl: 120,
+        data: Rdata::Opaque(vec![0xc0, 12, 0xff]),
+    };
+    d.message.authority.push(r.clone());
+    p.receive(&d, &source, 1, &mut rng).unwrap();
+    assert!(p.poll(&source, 1000).unwrap().is_none());
+    let b = p.poll(&source, 1001).unwrap().unwrap();
+    p.sent(b.token, true, 1001);
+    d.message = response(vec![r]);
+    p.receive(&d, &source, 1002, &mut rng).unwrap();
+    assert_eq!(
+        p.take_conflict(),
+        Some(1),
+        "ANY probing conflicts with an existing unknown RR type too"
+    );
+}
+#[test]
+fn s13_per_source_rate_limit_refills_without_unbounded_identity_churn() {
+    use snac_rs::{mdns::query::Querier, time::ScriptedRandom};
+    let mut q = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let d = peer_query(question("lamp.local.", 1));
+    for _ in 0..32 {
+        assert!(q.receive(&d, true, 0, &mut rng).unwrap());
+    }
+    assert!(!q.receive(&d, true, 0, &mut rng).unwrap());
+    assert_eq!(q.counts().1, 1);
+    assert!(q.receive(&d, true, 1000, &mut rng).unwrap());
+}
