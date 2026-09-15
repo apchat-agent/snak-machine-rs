@@ -93,6 +93,19 @@ impl Proxy {
         let Some((n, s)) = self.slots.iter().find(|(_, s)| s.id == id) else {
             return vec![];
         };
+        if let Some(records) = self.pending.get(n) {
+            let ttl = (s.next_change.saturating_add(999).saturating_sub(now) / 1000)
+                .max(1)
+                .min(u64::from(u32::MAX)) as u32;
+            return records
+                .iter()
+                .cloned()
+                .map(|mut r| {
+                    r.ttl = r.ttl.min(ttl);
+                    r
+                })
+                .collect();
+        }
         s.mapping.project(registry, n, now).unwrap_or_default()
     }
     pub fn sync(
@@ -179,10 +192,12 @@ impl Proxy {
                         map = map.renamed(version)?;
                     }
                     Err(RegistrationError::Capacity) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::WouldBlock,
-                            "AP publication capacity",
-                        ))
+                        // Keep the old bounded view until capacity returns. It
+                        // cannot remain visible past its original backing lease.
+                        if prior.is_some_and(|s| s.next_change <= now) {
+                            engine.publisher.pause(id);
+                        }
+                        break;
                     }
                     Err(RegistrationError::Stale) => break,
                     Err(RegistrationError::Invalid) => return Err(invalid()),

@@ -20,6 +20,7 @@ enum State {
     Probe { sent: u8, next: Time },
     Announce { sent: u8, next: Time },
     Ready,
+    Paused,
     Failed { until: Time, notice: bool },
 }
 impl State {
@@ -410,6 +411,9 @@ impl Publisher {
                 p.last_probe = None;
                 p.quiet.clear();
                 p.following.clear();
+                if matches!(p.state, State::Paused) {
+                    continue;
+                }
                 p.state = if p.names.is_empty() {
                     State::Announce { sent: 0, next: now }
                 } else {
@@ -555,10 +559,20 @@ impl Publisher {
             }
         }
     }
+    pub(crate) fn pause(&mut self, id: u64) {
+        if let Some(p) = self.publications.get_mut(&id) {
+            if !matches!(p.state, State::Paused) {
+                p.state = State::Paused;
+                p.following.clear();
+                p.last_probe = None;
+                self.offered = None;
+            }
+        }
+    }
     pub(crate) fn known_stamp(&self, owner: &Name) -> Option<Option<Stamp>> {
         self.publications
             .values()
-            .find(|p| p.owners.contains(owner))
+            .find(|p| p.owners.contains(owner) && !matches!(p.state, State::Paused))
             .map(|p| {
                 p.suppressed
                     .get(owner)

@@ -1146,3 +1146,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   TTL/512-byte limits without introducing unnegotiated OPT records (RFC 6762
   6.7; RFC 6891 6.2.1). Ordinary mDNS responses retain TSR. These are protocol
   edge corrections; no dependency or new persistent field.
+- S14 pressure RED `cce79b0` fails when a committed SRP change cannot immediately
+  enter a full shared mDNS budget. GREEN passes **274 tests**, all-feature
+  clippy, both builds, formatting and aarch64-apple-darwin all-target/pcap check.
+  Publication pressure now defers the bounded pending change. Its previous
+  coherent view remains available only within the original backing lifetime;
+  a paused publication cannot probe or answer after that lifetime. Releasing
+  capacity installs the latest durable records and resumes publication.
+- The pending-view projection uses the already stored old snapshot and expiry;
+  the new paused state adds no table or dependency. Active SRP ownership is
+  preserved throughout. This follows AP-06 section 2's asynchronous zone-change
+  signal model while keeping PLAN2's bounded authoritative/learned separation.
