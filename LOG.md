@@ -12,3 +12,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 04 route-options GREEN — 4 passed; Reserved RIO preference and PREF64 PLC are ignored per option; valid neighboring options survive.
 - 05 ra-encoding RED — 5 tests specified; cargo test failed for the new contract (see paired test commit).
 - 05 ra-encoding GREEN — 5 passed; Golden expectations use independent fixture assembly and checksum; no deferred service options emitted.
+- 06 ra-timers RED — 6 tests specified; cargo test failed for the new contract (see paired test commit).
+- 06 ra-timers GREEN — 6 passed; Monotonic milliseconds and finite/infinite lifetimes; scripted entropy and unbiased production sampling; scheduler keeps only planned fields.
