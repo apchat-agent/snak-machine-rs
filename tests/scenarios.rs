@@ -1186,8 +1186,9 @@ fn lifecycle_loss_and_shutdown_do_not_leave_false_routes() {
         }
     }
     let mut r = providing(73);
-    assert!(r.receive(Link::Stub, &self_ra, 15000, &mut rng).is_err());
-    assert_eq!(r.lifecycle, Lifecycle::Degraded);
+    // Draft §§5.2 / 9.7: accept the valid RA and warn about its flag.
+    assert!(r.receive(Link::Stub, &self_ra, 15000, &mut rng).is_ok());
+    assert_eq!(r.lifecycle, Lifecycle::Running);
     assert_eq!(r.snapshot(Link::Stub, 15000).default_lifetime, 0);
     let mut failed_io = Driver::new(providing(74), memory()).unwrap();
     failed_io.start(10000, &mut rng).unwrap();
