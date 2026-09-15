@@ -863,3 +863,83 @@ fn pd_offer_selection_rejects_short_lifetimes() {
     let tx = r.tick(11000, &mut rng).unwrap();
     assert!(tx.iter().any(|x| x.packet[6] == 17 && x.packet[48] == 3));
 }
+
+fn request_pd(r: &mut Router, extra: &[u8]) {
+    let mut options = extra.to_vec();
+    options.extend(option(7, &[255]));
+    r.receive(
+        Link::Ail,
+        &pd_response(r, 2, &options),
+        9100,
+        &mut ScriptedRandom::new([123]),
+    )
+    .unwrap();
+}
+#[test]
+fn pd_reply_selects_best_gua_and_ula() {
+    let mut r = providing(63);
+    let mut extra = ia(
+        1,
+        900,
+        1500,
+        &[
+            ("2001:db8:aa:ff::", 56, 3600, 7200),
+            ("2001:db8:bb::", 64, 2000, 4000),
+        ],
+    );
+    extra.extend(ia(
+        2,
+        900,
+        1500,
+        &[("fdab:12::", 64, 3600, 7200), ("fdab:13::", 65, 4000, 8000)],
+    ));
+    request_pd(&mut r, &extra);
+    let good = pd_response(&r, 7, &extra);
+    let mut wrong = dhcp_packet(
+        &r.identity.link_local(Link::Ail).to_string(),
+        7,
+        [99, 99, 99],
+        &r.identity.duid,
+        b"server",
+        &extra,
+    );
+    r.receive(Link::Ail, &wrong, 9200, &mut ScriptedRandom::new([]))
+        .unwrap();
+    assert_eq!(r.pd.state, PdState::Requesting);
+    wrong = dhcp_packet(
+        &r.identity.link_local(Link::Ail).to_string(),
+        7,
+        r.pd.exchange.as_ref().unwrap().xid,
+        b"wrong",
+        b"server",
+        &extra,
+    );
+    r.receive(Link::Ail, &wrong, 9200, &mut ScriptedRandom::new([]))
+        .unwrap();
+    assert_eq!(r.pd.state, PdState::Requesting);
+    let tx = r
+        .receive(Link::Ail, &good, 9300, &mut ScriptedRandom::new([345]))
+        .unwrap();
+    assert_eq!(r.pd.state, PdState::Bound);
+    let pios = r.snapshot(Link::Stub, 9300).pios;
+    let active: Vec<_> = pios
+        .iter()
+        .filter(|p| p.preferred > 0)
+        .map(|p| p.prefix.address)
+        .collect();
+    assert_eq!(active, vec![ip("2001:db8:aa::"), ip("fdab:12::")]);
+    assert!(pios
+        .iter()
+        .any(|p| p.prefix == r.identity.prefix(Link::Stub) && p.preferred == 0));
+    let release = tx
+        .iter()
+        .find(|x| x.packet[6] == 17 && x.packet[48] == 8)
+        .expect("Release unused acquired prefixes");
+    let options = dhcp_opts(&release.packet[52..]);
+    assert!(options.iter().any(|(c, b)| *c == 2 && b == b"server"));
+    assert!(options
+        .iter()
+        .filter(|(c, _)| *c == 25)
+        .flat_map(|(_, b)| dhcp_opts(&b[12..]))
+        .any(|(c, b)| c == 26 && b[8] == 65));
+}
