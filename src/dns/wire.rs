@@ -296,6 +296,10 @@ impl Message {
         Ok(m)
     }
     pub fn encode(&self) -> io::Result<Vec<u8>> {
+        self.encode_context(Context::Unicast)
+    }
+    pub fn encode_context(&self, context: Context) -> io::Result<Vec<u8>> {
+        let mut dictionary = Dictionary::default();
         let mut b = vec![];
         b.extend(self.id.to_be_bytes());
         b.extend(self.flags.to_be_bytes());
@@ -312,7 +316,11 @@ impl Message {
             b.extend((n as u16).to_be_bytes());
         }
         for q in &self.questions {
-            q.name.write(&mut b);
+            if context == Context::Mdns {
+                dictionary.write_name(&q.name, &mut b)?;
+            } else {
+                q.name.write(&mut b);
+            }
             b.extend(q.kind.to_be_bytes());
             b.extend(q.class.to_be_bytes());
         }
@@ -322,14 +330,24 @@ impl Message {
             .chain(&self.authority)
             .chain(&self.additional)
         {
-            r.name.write(&mut b);
+            if context == Context::Mdns {
+                dictionary.write_name(&r.name, &mut b)?;
+            } else {
+                r.name.write(&mut b);
+            }
             b.extend(r.kind.to_be_bytes());
             b.extend(r.class.to_be_bytes());
             b.extend(r.ttl.to_be_bytes());
             let len = b.len();
             b.extend([0, 0]);
             let start = b.len();
-            write_data(&r.data, &mut b)?;
+            if context == Context::Mdns
+                && [2, 5, 6, 12, 15, 17, 18, 21, 26, 33, 36, 39, 47].contains(&r.kind)
+            {
+                write_data_with(&r.data, &mut b, &mut |n, out| dictionary.write_name(n, out))?;
+            } else {
+                write_data(&r.data, &mut b)?;
+            }
             if b.len() > MAX_WIRE {
                 return Err(invalid());
             }
@@ -337,8 +355,50 @@ impl Message {
             b[len..len + 2].copy_from_slice(&n.to_be_bytes());
         }
         // Validate constructed records too: public typed fields must match their RR type.
-        Self::parse(&b, Context::Unicast)?;
+        Self::parse(&b, context)?;
         Ok(b)
+    }
+}
+/// Pointers reference only earlier emitted label boundaries. New dictionary
+/// entries stop at either cap; existing suffixes can still be used afterward.
+#[derive(Default)]
+struct Dictionary {
+    entries: std::collections::BTreeMap<Vec<u8>, u16>,
+    bytes: usize,
+}
+impl Dictionary {
+    fn write_name(&mut self, name: &Name, out: &mut Vec<u8>) -> io::Result<()> {
+        let mut wire = Vec::with_capacity(name.canonical().len());
+        name.write(&mut wire);
+        let mut at = 0;
+        while wire[at] != 0 {
+            if let Some(offset) = self.entries.get(&wire[at..]) {
+                if out.len() + 2 > MAX_WIRE {
+                    return Err(invalid());
+                }
+                out.extend((0xc000 | offset).to_be_bytes());
+                return Ok(());
+            }
+            if self.entries.len() < 1024
+                && self.bytes + wire.len() - at <= 65536
+                && out.len() < 0x4000
+            {
+                let suffix = wire[at..].to_vec();
+                self.bytes += suffix.len();
+                self.entries.insert(suffix, out.len() as u16);
+            }
+            let n = usize::from(wire[at]) + 1;
+            if out.len() + n > MAX_WIRE {
+                return Err(invalid());
+            }
+            out.extend(&wire[at..at + n]);
+            at += n;
+        }
+        if out.len() == MAX_WIRE {
+            return Err(invalid());
+        }
+        out.push(0);
+        Ok(())
     }
 }
 struct Parser<'a> {

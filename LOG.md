@@ -883,3 +883,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   its required record-specific compression rules. Unicast output remains byte
   identical, and SIG/SVCB name fields retain their compression prohibition.
   No field or dependency. Compression and hostile transport fixtures follow.
+- S13 compression RED `ff0bce7` confirms missing context encoding;
+  fixture RED `d68980d` fixes omitted typed-record imports before production
+  changes. GREEN passes **215 tests** and all-feature clippy. mDNS uses
+  backward pointers for owners/questions and exactly the embedded RR types
+  listed in RFC 6762 section 18.14; other embedded names stay uncompressed.
+  Binary labels/TXT, compressed SRV/NSEC and all truncations are covered.
+- The temporary suffix dictionary stops adding entries at 1024 entries or
+  64 KiB of owned keys and can still reuse earlier suffixes. Both independent
+  bounds are filled and tested. The byte counter measures this planned codec
+  work state; no dependency.
