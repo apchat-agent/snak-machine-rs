@@ -55,3 +55,25 @@ fn s10_fragmented_frames_have_linear_allocation_and_atomic_rejection() {
     f.input(&small[5..]).unwrap();
     assert_eq!(f.pop().unwrap(), vec![0; 12]);
 }
+
+#[test]
+fn s10_declared_frame_storage_is_charged_before_allocation() {
+    let mut f = TcpFrames::new(65535).unwrap();
+    assert!(f.input_with_limit(&[0xff, 0xff], 8192).is_err());
+    assert_eq!(f.buffered(), 0);
+    assert_eq!(f.allocated(), 0);
+    f.input_with_limit(&[0xff, 0xff], 65537).unwrap();
+    assert_eq!(f.allocated(), 65537);
+    let rest = vec![0; 65535];
+    f.input_with_limit(&rest, 65537).unwrap();
+    assert_eq!(f.allocated(), 65537);
+    assert_eq!(f.pop().unwrap(), rest);
+    assert_eq!(f.allocated(), 0);
+    for _ in 0..32 {
+        f.input(&[0, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+    }
+    assert!(f.input(&[0xff, 0xff]).is_err());
+    assert_eq!(f.buffered(), 32 * 14);
+    assert_eq!(f.allocated(), 32 * 14);
+}
