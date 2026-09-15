@@ -739,3 +739,69 @@ fn s07_restored_service_addresses_repeat_dad_before_readiness() {
         services.len()
     );
 }
+
+fn sum4(bytes: &[u8]) -> u16 {
+    let mut n: u32 = bytes
+        .chunks(2)
+        .map(|b| ((b[0] as u32) << 8) | b.get(1).copied().unwrap_or(0) as u32)
+        .sum();
+    while n > 65535 {
+        n = (n & 65535) + (n >> 16);
+    }
+    !(n as u16)
+}
+fn ip4(source: [u8; 4], destination: [u8; 4], proto: u8, body: &[u8]) -> Vec<u8> {
+    let mut b = vec![0x45, 0, 0, 0, 0, 77, 0, 0, 64, proto, 0, 0];
+    b.extend(source);
+    b.extend(destination);
+    b[2..4].copy_from_slice(&((20 + body.len()) as u16).to_be_bytes());
+    let c = sum4(&b);
+    b[10..12].copy_from_slice(&c.to_be_bytes());
+    b.extend(body);
+    b
+}
+#[test]
+fn s07_matching_icmp_feedback_reduces_tcp_packet_size() {
+    let mut a = stack("192.0.2.1");
+    let mut b = stack("198.51.100.2");
+    b.listen_tcp(1053).unwrap();
+    let id = a
+        .connect(
+            "192.0.2.1".parse().unwrap(),
+            40000,
+            "198.51.100.2".parse().unwrap(),
+            1053,
+            0,
+        )
+        .unwrap();
+    for now in (0..1000).step_by(10) {
+        stacks(&mut a, &mut b, now);
+    }
+    assert!(a.established(id));
+    a.send_tcp(id, &vec![42; 3000]).unwrap();
+    a.poll(1000).unwrap();
+    let mut quote = None;
+    while let Some(p) = a.output() {
+        if p.len() > 576 {
+            quote = Some(p);
+        }
+    }
+    let quote = quote.unwrap();
+    let mut error = vec![3, 4, 0, 0, 0, 0, 2, 64];
+    error.extend(&quote[..28]);
+    let c = sum4(&error);
+    error[2..4].copy_from_slice(&c.to_be_bytes());
+    a.input(&ip4([192, 0, 2, 254], [192, 0, 2, 1], 1, &error), 1001)
+        .unwrap();
+    a.poll(1001).unwrap();
+    a.send_tcp(id, &vec![43; 2000]).unwrap();
+    a.poll(4000).unwrap();
+    let mut data = 0;
+    while let Some(p) = a.output() {
+        if p.len() > 40 {
+            data += 1;
+            assert!(p.len() <= 576, "TCP ignored path MTU feedback: {}", p.len());
+        }
+    }
+    assert!(data > 0);
+}
