@@ -537,3 +537,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   including its length prefix, and 32 queued frames; limit rejection is atomic.
   Message records, pointer provenance and decoding work are independently
   bounded. No field outside the planned codec/provenance state; no dependency.
+- S08 RED `e72b42a` exposes accepted short DS digests and rejected compressed
+  mDNS NSEC/DNAME names. GREEN passes **147 tests** and all-feature clippy.
+  Typed MX/AFSDB/RT/KX/RP/PX names can be rewritten safely by later proxy
+  steps; CDNSKEY joins pointer-free DNSSEC data. Known DS digest algorithms
+  require their actual wire lengths. The initial short DS positive fixture
+  was corrected in RED to contain a 32-byte SHA-256 digest; its round-trip
+  assertion is retained. No pre-S08 assertion changed.
+- Exact 4096-record and 64-pointer-depth boundaries, aggregate decoding-work
+  exhaustion, opaque-data pointer rejection, frame entry/byte limits and
+  every-truncation/mutation tests pass. mDNS NSEC compression follows RFC 6762
+  sections 6.1 and 18.14; unicast retains RFC 4034's prohibition. The shared
+  codec has no new dependency or state outside PLAN2's codec ownership.
+  S08 is complete.

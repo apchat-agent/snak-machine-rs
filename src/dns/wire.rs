@@ -114,6 +114,19 @@ pub enum Rdata {
         target: Name,
     },
     Txt(Vec<Vec<u8>>),
+    Preference {
+        preference: u16,
+        name: Name,
+    },
+    TwoNames {
+        first: Name,
+        second: Name,
+    },
+    Px {
+        preference: u16,
+        map822: Name,
+        mapx400: Name,
+    },
     Soa {
         mname: Name,
         rname: Name,
@@ -246,7 +259,13 @@ impl Message {
                 let data = if update && len == 0 && (class == 254 || class == 255) {
                     Rdata::Empty
                 } else {
-                    p.rdata(kind, &mut at, end, context == Context::Mdns || update)?
+                    p.rdata(
+                        kind,
+                        &mut at,
+                        end,
+                        context == Context::Mdns || update,
+                        context == Context::Mdns,
+                    )?
                 };
                 if at != end {
                     return Err(invalid());
@@ -411,13 +430,14 @@ impl Parser<'_> {
         at: &mut usize,
         end: usize,
         srv_compressed: bool,
+        mdns: bool,
     ) -> io::Result<Rdata> {
         let n = end - *at;
         Ok(match kind {
             1 if n == 4 => Rdata::A(self.take(at, end, 4)?.try_into().unwrap()),
             28 if n == 16 => Rdata::Aaaa(self.take(at, end, 16)?.try_into().unwrap()),
             1 | 28 => return Err(invalid()),
-            2 | 5 | 12 | 39 => Rdata::Name(self.name(at, end, kind != 39)?),
+            2 | 5 | 12 | 39 => Rdata::Name(self.name(at, end, kind != 39 || mdns)?),
             33 => Rdata::Srv {
                 priority: self.u16(at, end)?,
                 weight: self.u16(at, end)?,
@@ -444,7 +464,20 @@ impl Parser<'_> {
                 expire: self.u32(at, end)?,
                 minimum: self.u32(at, end)?,
             },
-            25 | 48 => Rdata::Key {
+            15 | 18 | 21 | 36 => Rdata::Preference {
+                preference: self.u16(at, end)?,
+                name: self.name(at, end, kind != 36 || mdns)?,
+            },
+            14 | 17 => Rdata::TwoNames {
+                first: self.name(at, end, true)?,
+                second: self.name(at, end, true)?,
+            },
+            26 => Rdata::Px {
+                preference: self.u16(at, end)?,
+                map822: self.name(at, end, true)?,
+                mapx400: self.name(at, end, true)?,
+            },
+            25 | 48 | 60 => Rdata::Key {
                 flags: self.u16(at, end)?,
                 protocol: self.take(at, end, 1)?[0],
                 algorithm: self.take(at, end, 1)?[0],
@@ -477,7 +510,7 @@ impl Parser<'_> {
             }
             41 => Rdata::Opt(self.options(at, end, false)?),
             47 => {
-                let next = self.name(at, end, false)?;
+                let next = self.name(at, end, mdns)?;
                 let bitmap = self.take(at, end, end - *at)?.to_vec();
                 bitmap_valid(&bitmap)?;
                 Rdata::Nsec { next, bitmap }
@@ -497,7 +530,17 @@ impl Parser<'_> {
                 if n < 4 {
                     return Err(invalid());
                 }
-                Rdata::Bytes(self.take(at, end, n)?.to_vec())
+                let bytes = self.take(at, end, n)?;
+                let expected = match bytes[3] {
+                    1 => Some(20),
+                    2 => Some(32),
+                    4 => Some(48),
+                    _ => None,
+                };
+                if expected.is_some_and(|size| n != size + 4) {
+                    return Err(invalid());
+                }
+                Rdata::Bytes(bytes.to_vec())
             }
             50 | 51 => {
                 let start = *at;
@@ -610,6 +653,23 @@ fn write_data(d: &Rdata, b: &mut Vec<u8>) -> io::Result<()> {
                 b.extend(x.to_be_bytes());
             }
             target.write(b);
+        }
+        Rdata::Preference { preference, name } => {
+            b.extend(preference.to_be_bytes());
+            name.write(b);
+        }
+        Rdata::TwoNames { first, second } => {
+            first.write(b);
+            second.write(b);
+        }
+        Rdata::Px {
+            preference,
+            map822,
+            mapx400,
+        } => {
+            b.extend(preference.to_be_bytes());
+            map822.write(b);
+            mapx400.write(b);
         }
         Rdata::Txt(v) => {
             for s in v {
