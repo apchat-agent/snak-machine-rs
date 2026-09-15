@@ -10,6 +10,7 @@ pub struct Driver<I> {
     pub io: I,
     pub ipv4: crate::ipv4::Ipv4,
     dhcp: Option<crate::ipv4::dhcp::Client>,
+    stacks: Option<[crate::service_io::stack::Stack; 2]>,
     groups: [BTreeSet<Ipv6Addr>; 2],
     mdns4: bool,
 }
@@ -35,6 +36,7 @@ impl<I: PacketIo> Driver<I> {
             io,
             ipv4,
             dhcp: None,
+            stacks: None,
             groups: Default::default(),
             mdns4: false,
         })
@@ -161,6 +163,10 @@ impl<I: PacketIo> Driver<I> {
         if self.io.info(Link::Ail).kind == crate::wire::FrameKind::Ethernet {
             self.dhcp = Some(crate::ipv4::dhcp::Client::new(self.ipv4.mac, now, rng)?);
         }
+        self.stacks = Some([
+            crate::service_io::stack::Stack::new(now, rng)?,
+            crate::service_io::stack::Stack::new(now, rng)?,
+        ]);
         Ok(())
     }
     fn dispatch(&mut self, tx: Vec<Tx>, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
@@ -220,6 +226,7 @@ impl<I: PacketIo> Driver<I> {
         let tx = self.router.tick(now, rng)?;
         self.dispatch(tx, now, rng)?;
         self.poll_ipv4(now, rng)?;
+        self.poll_services(now, rng)?;
         self.sync_groups()
     }
     pub fn receive(
@@ -253,6 +260,9 @@ impl<I: PacketIo> Driver<I> {
             if self.receive_dhcp(&rx, now, rng)? {
                 return Ok(());
             }
+            if self.receive_service(&rx, now)? {
+                return Ok(());
+            }
             match self
                 .router
                 .receive_frame(rx.link, rx.kind, &rx.bytes, now, rng)
@@ -266,6 +276,111 @@ impl<I: PacketIo> Driver<I> {
     }
     pub fn ipv4_configuration(&self) -> Option<&crate::ipv4::dhcp::Configuration> {
         self.dhcp.as_ref().and_then(|c| c.configuration())
+    }
+    pub fn stack_mut(&mut self, link: Link) -> Option<&mut crate::service_io::stack::Stack> {
+        self.stacks.as_mut().map(|stacks| &mut stacks[link.index()])
+    }
+    fn receive_service(&mut self, rx: &crate::io::Received, now: Time) -> io::Result<bool> {
+        use crate::wire::{envelope, hop_options, transport, FrameKind};
+        if self.stacks.is_none()
+            || !self.router.links[rx.link.index()].up
+            || matches!(
+                self.router.lifecycle,
+                Lifecycle::Stopped | Lifecycle::Stopping | Lifecycle::Degraded
+            )
+        {
+            return Ok(false);
+        }
+        let Ok(e) = envelope(rx.kind, &rx.bytes) else {
+            return Ok(false);
+        };
+        if !self.router.address_ready(rx.link, e.destination)
+            || !hop_options(&e).is_ok_and(|v| v.is_none())
+        {
+            return Ok(false);
+        }
+        if rx.kind == FrameKind::Ethernet {
+            let mac = self.router.links[rx.link.index()]
+                .mac
+                .unwrap_or(self.router.identity.macs[rx.link.index()]);
+            if rx.bytes[6..12] == mac || rx.bytes[..6] != mac || rx.bytes[6] & 1 != 0 {
+                return Ok(true);
+            }
+        }
+        let Ok(t) = transport(&e) else {
+            return Ok(true);
+        };
+        if t.protocol == 17 && !t.fragmented && t.bytes.len() >= 8 && t.bytes[..4] == [2, 35, 2, 34]
+        {
+            return Ok(false);
+        }
+        if ![6, 17].contains(&t.protocol)
+            && !(t.protocol == 58 && t.bytes.first().is_some_and(|v| *v < 128))
+        {
+            return Ok(false);
+        }
+        if let Err(error) = self.stacks.as_mut().unwrap()[rx.link.index()].input(e.packet, now) {
+            eprintln!("{now}ms service input: {error}");
+        }
+        Ok(true)
+    }
+    fn poll_services(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        if self.stacks.is_none() {
+            return Ok(());
+        }
+        if !matches!(
+            self.router.lifecycle,
+            Lifecycle::Stopped | Lifecycle::Stopping | Lifecycle::Degraded
+        ) {
+            let tx = self.router.prepare_service_addresses(now, rng)?;
+            self.dispatch(tx, now, rng)?;
+        }
+        for link in [Link::Ail, Link::Stub] {
+            let allowed = self.router.links[link.index()].up
+                && !matches!(
+                    self.router.lifecycle,
+                    Lifecycle::Stopped | Lifecycle::Stopping | Lifecycle::Degraded
+                );
+            let mut addresses: Vec<std::net::IpAddr> = self
+                .router
+                .owned
+                .iter()
+                .filter(|((l, _), a)| {
+                    allowed && *l == link && a.state == crate::router::DadState::Ready
+                })
+                .map(|((_, a), _)| (*a).into())
+                .collect();
+            if allowed && link == Link::Ail {
+                if let Some((a, _)) = self.ipv4.address {
+                    addresses.push(a.into());
+                }
+            }
+            let stack = &mut self.stacks.as_mut().unwrap()[link.index()];
+            if stack.addresses() != addresses {
+                stack.set_addresses(&addresses)?;
+            }
+            if link == Link::Ail {
+                while let Some(p) = self.ipv4.take_packet() {
+                    let _ = stack.input(&p, now);
+                }
+            }
+            stack.poll(now)?;
+            let mut packets = vec![];
+            for _ in 0..32 {
+                let Some(p) = stack.output() else {
+                    break;
+                };
+                packets.push(p);
+            }
+            for packet in packets {
+                if packet[0] >> 4 == 4 {
+                    self.send_ipv4(&packet, now, rng)?;
+                } else {
+                    self.dispatch(vec![Tx { link, packet }], now, rng)?;
+                }
+            }
+        }
+        Ok(())
     }
     fn receive_dhcp(
         &mut self,

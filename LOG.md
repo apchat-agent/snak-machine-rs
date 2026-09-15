@@ -435,3 +435,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   polling fixes that ordering; no test expectation was weakened. Fragment
   IDs, reassembly contexts and bounded fragment buffers are planned state.
   No dependency. Driver integration and remaining transport fixtures follow.
+- S07 Driver RED `497f1a5`: a behavioral fixture first fails because the
+  router owns no address in a peer-provided prefix; initial stack access then
+  fails compilation. GREEN passes **124 tests** and all-feature clippy.
+  Driver installs DAD-ready addresses in one userspace stack per link, routes
+  real UDP replies through ND and sends IPv4 output through ARP. Both AIL and
+  stub UDP listeners work; AIL UDP dispatch is narrowed to 547→546 for PD.
+  Autonomous peer /64s supply stable service/source addresses after DAD,
+  including a stub OSNR supplied by another router. Ordinary RA/ND remains
+  router-owned and precedes bounded service output work.
+- Field beyond PLAN2's explicit layout: `Supplier.autonomous` retains the
+  received PIO A bit, because S02's compact AIL on-link table stores only
+  validity and suitability also permits P-only PIOs. This single bit prevents
+  inventing a SLAAC address from a non-autonomous PIO without adding a second
+  prefix table. The two endpoint stacks are planned state. No dependency.
+- Needs privileged acceptance: actual Ethernet peers reaching the userspace
+  UDP/TCP addresses, service DAD and source addressing on peer prefixes.
+  Native sockets/interfaces are not substituted for the production IP stack.

@@ -14,6 +14,38 @@ pub struct OwnedAddress {
     pub attempts: u8,
 }
 impl Router {
+    pub(crate) fn prepare_service_addresses(
+        &mut self,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Tx>> {
+        let prefixes: BTreeSet<_> = self
+            .suppliers
+            .iter()
+            .filter(|((key, _), s)| {
+                s.autonomous
+                    && s.valid.live(now)
+                    && self.links[key.link.index()].up
+                    && self.address_ready(key.link, self.identity.link_local(key.link))
+            })
+            .map(|((key, prefix), _)| (key.link, *prefix))
+            .collect();
+        let mut out = vec![];
+        for (link, prefix) in prefixes {
+            if !self
+                .owned
+                .iter()
+                .any(|((l, _), a)| *l == link && a.prefix == Some(prefix))
+            {
+                if self.owned.keys().filter(|(l, _)| *l == link).count() >= 32 {
+                    self.degrade(now, rng)?;
+                    return Err(io::Error::other("service address capacity"));
+                }
+                out.push(self.begin_dad(link, self.identity.address(link, prefix), now));
+            }
+        }
+        Ok(out)
+    }
     pub fn begin_dad(&mut self, link: Link, address: Ipv6Addr, now: Time) -> Tx {
         if link_local(address) {
             let s = &mut self.links[link.index()];

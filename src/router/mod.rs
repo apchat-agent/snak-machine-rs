@@ -41,6 +41,7 @@ pub struct RouterKey {
 }
 #[derive(Clone, Debug)]
 pub struct Supplier {
+    pub autonomous: bool,
     pub pio_at: Time,
     pub preferred: Lifetime,
     pub valid: Lifetime,
@@ -171,7 +172,12 @@ impl Router {
         if link == Link::Ail
             && e.destination == self.identity.link_local(link)
             && self.address_ready(link, e.destination)
-            && transport(&e).is_ok_and(|t| t.protocol == 17)
+            && transport(&e).is_ok_and(|t| {
+                t.protocol == 17
+                    && !t.fragmented
+                    && t.bytes.len() >= 8
+                    && t.bytes[..4] == [2, 35, 2, 34]
+            })
         {
             let excluded: Vec<_> = self
                 .on_link
@@ -350,6 +356,7 @@ impl Router {
                         self.suppliers.insert(
                             (key, p.prefix),
                             Supplier {
+                                autonomous: p.flags & 0x40 != 0,
                                 pio_at: now,
                                 preferred: Lifetime::from_secs(now, p.preferred),
                                 valid: Lifetime::from_secs(now, p.valid),
