@@ -1,3 +1,5 @@
+mod lifecycle;
+pub use lifecycle::Lifecycle;
 mod forward;
 pub mod pd;
 mod restart;
@@ -45,6 +47,7 @@ pub struct OnLink {
     pub preferred: Lifetime,
 }
 pub struct LinkState {
+    pub mac: Option<[u8; 6]>,
     pub mtu: u32,
     pub kind: FrameKind,
     pub up: bool,
@@ -64,6 +67,8 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub lifecycle: Lifecycle,
+    final_ras: [u8; 2],
     pub error_after: Option<Time>,
     pub pd_hints: BTreeMap<Prefix, Lifetime>,
     pub pd: pd::PdClient,
@@ -85,6 +90,7 @@ impl Router {
         fn link(now: Time, rng: &mut impl RandomSource) -> io::Result<LinkState> {
             let first = now + rng.sample(1000)?;
             Ok(LinkState {
+                mac: None,
                 mtu: 1500,
                 kind: FrameKind::Ethernet,
                 up: true,
@@ -98,6 +104,8 @@ impl Router {
             })
         }
         Ok(Self {
+            lifecycle: Lifecycle::Running,
+            final_ras: [0; 2],
             error_after: None,
             pd_hints: BTreeMap::new(),
             pd: pd::PdClient::default(),
@@ -138,20 +146,25 @@ impl Router {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Tx>> {
-        if !self.links[link.index()].up {
+        if matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped)
+            || !self.links[link.index()].up
+        {
             return Ok(vec![]);
         }
         let Ok(e) = envelope(FrameKind::RawIpv6, packet) else {
             return Ok(vec![]);
         };
-        if e.source == self.identity.link_local(link) {
+        if e.source == self.identity.link_local(link) && self.address_ready(link, e.source) {
             return Ok(vec![]);
         }
         if link == Link::Ail
             && e.destination == self.identity.link_local(link)
-            && e.next_header == 17
+            && transport(&e).is_ok_and(|t| t.protocol == 17)
         {
-            self.pd.receive(&e, &self.identity.duid, now, rng)?;
+            if let Err(e) = self.pd.receive(&e, &self.identity.duid, now, rng) {
+                self.degrade(now, rng)?;
+                return Err(e);
+            }
             self.sync_pd(now, rng)?;
             return Ok(self
                 .pd
@@ -165,14 +178,38 @@ impl Router {
                 .map(|packet| Tx { link, packet })
                 .collect());
         }
+        if self.address_ready(link, e.destination) {
+            if let Ok(t) = transport(&e) {
+                if t.protocol == 58
+                    && !t.fragmented
+                    && t.bytes.len() >= 8
+                    && t.bytes[..2] == [128, 0]
+                    && checksum(e.source, e.destination, 58, t.bytes) == 0
+                {
+                    let mut b = t.bytes.to_vec();
+                    b[0] = 129;
+                    return Ok(vec![Tx {
+                        link,
+                        packet: icmp_packet(e.destination, e.source, 64, b).unwrap(),
+                    }]);
+                }
+            }
+        }
+        if !e.destination.is_multicast() && !self.owned.contains_key(&(link, e.destination)) {
+            return Ok(vec![]);
+        }
         let Ok(nd) = decode_nd(&e) else {
             return Ok(vec![]);
         };
+        let prior_exports = self.stub_routes(now);
+        let prior_default = self.default_lifetime(now);
         if let Some(out) = self.owned_nd(link, &e, &nd, now, rng)? {
             return Ok(out);
         }
         if nd.kind == 133 {
-            if self.state(link) == AilState::Suitable && !self.confirmed_supplier(link, now) {
+            if matches!(self.state(link), AilState::Suitable | AilState::Deprecating)
+                && !self.confirmed_supplier(link, now)
+            {
                 self.links[link.index()].state = AilState::BeginAdvertising;
                 self.links[link.index()].deprecate_at = None;
                 self.links[link.index()].scheduler.changed(now, rng)?;
@@ -182,6 +219,7 @@ impl Router {
                 .receive_rs(&e, now, rng)?;
         }
         if nd.kind == 134 {
+            self.admit_ra(link, &e, &nd, now, rng)?;
             if u16::from_be_bytes([nd.body[6], nd.body[7]]) > 0 {
                 self.links[link.index()].rs_count = 3;
             }
@@ -232,6 +270,9 @@ impl Router {
                     }
 
                     if p.on_link() && p.prefix.routable() {
+                        if link == Link::Ail && p.valid > 0 {
+                            self.withdrawals.remove(&(Link::Stub, p.prefix));
+                        }
                         if link == Link::Stub
                             && !self.on_link.contains_key(&(link, p.prefix))
                             && p.valid > 0
@@ -280,7 +321,15 @@ impl Router {
                 }
             }
         }
-        self.observe_neighbor(link, &e, &nd, now)
+        if link == Link::Stub && nd.kind == 134 {
+            self.sync_pd(now, rng)?;
+        }
+        let out = self.observe_neighbor(link, &e, &nd, now)?;
+        self.reconcile_exports(prior_exports, now, rng)?;
+        if prior_default != self.default_lifetime(now) {
+            self.links[1].scheduler.changed(now, rng)?;
+        }
+        Ok(out)
     }
     pub fn snapshot(&self, link: Link, now: Time) -> Advertisement {
         let mut pios = vec![];
@@ -335,15 +384,70 @@ impl Router {
                     r.prefix,
                 )
             });
-            rios.truncate((1280usize.saturating_sub(40 + 16 + 8 + pios.len() * 32)) / 16);
+            let zeros: Vec<_> = self
+                .withdrawals
+                .keys()
+                .filter(|(l, _)| *l == Link::Ail)
+                .map(|(_, p)| Rio {
+                    prefix: *p,
+                    preference: Preference::Low,
+                    lifetime: 0,
+                })
+                .collect();
+            rios.retain(|r| !zeros.iter().any(|z| z.prefix == r.prefix));
+            let slots = (1280usize.saturating_sub(40 + 16 + 8 + pios.len() * 32)) / 16;
+            rios.truncate(slots.saturating_sub(zeros.len()));
+            rios.extend(zeros.into_iter().take(slots));
             rios.sort_by_key(|r| r.prefix);
+        }
+        if matches!(
+            self.lifecycle,
+            Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Degraded
+        ) {
+            for r in &mut rios {
+                r.lifetime = 0;
+            }
+        }
+        if matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped) {
+            for p in &mut pios {
+                p.preferred = 0;
+                let last = if p.prefix == self.identity.prefix(link) {
+                    self.links[link.index()].last_valid
+                } else {
+                    self.pd_prefixes
+                        .get(&p.prefix)
+                        .map_or(Lifetime::Until(now), |p| p.last_valid)
+                };
+                p.valid = p.valid.min(last.remaining(now));
+            }
+            pios.retain(|p| p.valid > 0);
+        }
+        if matches!(
+            self.lifecycle,
+            Lifecycle::Degraded | Lifecycle::Stopping | Lifecycle::Stopped
+        ) && link == Link::Stub
+        {
+            let mut available = 1280usize.saturating_sub(40 + 16 + 8 + 8 + pios.len() * 32);
+            rios.retain(|r| {
+                let size = r.encode().len();
+                if size <= available {
+                    available -= size;
+                    true
+                } else {
+                    false
+                }
+            });
         }
         Advertisement {
             link,
             source: self.identity.link_local(link),
             destination: "ff02::1".parse().unwrap(),
             mac: if self.links[link.index()].kind == FrameKind::Ethernet {
-                Some(self.identity.macs[link.index()])
+                Some(
+                    self.links[link.index()]
+                        .mac
+                        .unwrap_or(self.identity.macs[link.index()]),
+                )
             } else {
                 None
             },
@@ -366,17 +470,45 @@ impl Router {
         }
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
+        if self.lifecycle == Lifecycle::Stopped {
+            return Ok(vec![]);
+        }
+        if self.lifecycle == Lifecycle::Stopping {
+            return self.stopping_tick(now);
+        }
+
         if self.links[0].up {
             self.pd.advance(now, rng)?;
         }
         self.pd_hints.retain(|_, l| l.live(now));
         self.sync_pd(now, rng)?;
-        self.tick_dad(now);
-        let mut out = self.tick_neighbors(now)?;
+        let mut out = self.tick_dad(now);
+        if self.lifecycle == Lifecycle::Starting
+            && [Link::Ail, Link::Stub]
+                .into_iter()
+                .all(|l| self.address_ready(l, self.identity.link_local(l)))
+        {
+            self.lifecycle = Lifecycle::Running;
+        }
+        let prior_exports = self.stub_routes(now);
+        let prior_default = self.default_lifetime(now);
+        out.extend(self.tick_neighbors(now)?);
+        self.reconcile_exports(prior_exports, now, rng)?;
+        if prior_default != self.default_lifetime(now) {
+            self.links[1].scheduler.changed(now, rng)?;
+        }
         self.suppliers.retain(|_, s| {
             s.valid.live(now) && s.preferred.live(now) && now < s.pio_at.saturating_add(600000)
         });
         self.on_link.retain(|_, p| p.valid.live(now));
+        self.routes.retain(|_, r| r.valid.live(now));
+        self.owned.retain(|(link, _), a| {
+            a.prefix.is_none_or(|p| {
+                self.on_link
+                    .get(&(*link, p))
+                    .is_some_and(|p| p.valid.live(now))
+            })
+        });
         for link in [Link::Stub, Link::Ail] {
             if !self.links[link.index()].up
                 || !self.address_ready(link, self.identity.link_local(link))
@@ -408,8 +540,10 @@ impl Router {
                     s.state = AilState::BeginAdvertising;
                 } else if now >= s.rs_next && s.rs_count < 3 {
                     let mut body = vec![133, 0, 0, 0, 0, 0, 0, 0];
-                    body.extend([1, 1]);
-                    body.extend(self.identity.macs[link.index()]);
+                    if s.kind == FrameKind::Ethernet {
+                        body.extend([1, 1]);
+                        body.extend(s.mac.unwrap_or(self.identity.macs[link.index()]));
+                    }
                     out.push(Tx {
                         link,
                         packet: icmp_packet(
@@ -438,7 +572,16 @@ impl Router {
                 if link == Link::Stub || !snap.pios.is_empty() || !snap.rios.is_empty() {
                     out.push(Tx {
                         link,
-                        packet: snap.encode().map_err(|_| io::Error::other("RA capacity"))?,
+                        packet: match snap.encode() {
+                            Ok(p) => p,
+                            Err(WireError::Capacity) => {
+                                self.degrade(now, rng)?;
+                                self.snapshot(link, now)
+                                    .encode()
+                                    .map_err(|_| io::Error::other("degraded RA capacity"))?
+                            }
+                            Err(_) => return Err(io::Error::other("invalid RA snapshot")),
+                        },
                     });
                 }
             }
@@ -485,13 +628,21 @@ impl Router {
         if nd.kind != 134 {
             return Ok(());
         }
+        if self.lifecycle == Lifecycle::Stopping {
+            self.final_ras[tx.link.index()] = self.final_ras[tx.link.index()].saturating_sub(1);
+            if self.final_ras == [0, 0] {
+                self.lifecycle = Lifecycle::Stopped;
+            }
+        }
         let state = &mut self.links[tx.link.index()];
         state.scheduler.sent(now, rng)?;
         if state.state == AilState::BeginAdvertising {
             state.state = AilState::Advertising;
         }
         if state.state == AilState::Deprecating
-            && !nd.options.iter().any(|o| Pio::decode(o.bytes).is_some())
+            && !nd.options.iter().any(|o| {
+                Pio::decode(o.bytes).is_some_and(|p| p.prefix == self.identity.prefix(tx.link))
+            })
         {
             state.state = AilState::Suitable;
         }
@@ -507,14 +658,30 @@ impl Router {
         self.withdrawals.retain(|_, count| *count > 0);
         for o in nd.options {
             if let Some(p) = Pio::decode(o.bytes) {
-                state.last_valid = Lifetime::from_secs(now, p.valid);
+                let valid = Lifetime::from_secs(now, p.valid);
+                if p.prefix == self.identity.prefix(tx.link) {
+                    state.last_valid = valid;
+                } else if let Some(owned) = self.pd_prefixes.get_mut(&p.prefix) {
+                    owned.last_valid = valid;
+                }
                 self.on_link.insert(
                     (tx.link, p.prefix),
                     OnLink {
-                        valid: state.last_valid,
+                        valid,
                         preferred: Lifetime::from_secs(now, p.preferred),
                     },
                 );
+                if !matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped) {
+                    let address = self.identity.address(tx.link, p.prefix);
+                    self.owned
+                        .entry((tx.link, address))
+                        .or_insert(OwnedAddress {
+                            prefix: Some(p.prefix),
+                            state: DadState::Tentative,
+                            deadline: Some(now),
+                            attempts: 0,
+                        });
+                }
             }
         }
         Ok(())

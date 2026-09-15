@@ -71,7 +71,12 @@ impl Router {
                 .is_some_and(|n| n.is_router && n.state != NeighborState::Failed)
     }
     pub fn default_lifetime(&self, now: Time) -> u16 {
-        if !self.links[0].up || self.no_stub_default {
+        if matches!(
+            self.lifecycle,
+            Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Degraded
+        ) || !self.links[0].up
+            || self.no_stub_default
+        {
             return 0;
         }
         self.routes
@@ -84,7 +89,16 @@ impl Router {
     pub(super) fn stub_routes(&self, now: Time) -> Vec<Rio> {
         let mut routes: BTreeMap<Prefix, u32> = BTreeMap::new();
         if !self.links[0].up {
-            return vec![];
+            return self
+                .withdrawals
+                .keys()
+                .filter(|(l, _)| *l == Link::Stub)
+                .map(|(_, p)| Rio {
+                    prefix: *p,
+                    preference: Preference::Low,
+                    lifetime: 0,
+                })
+                .collect();
         }
         if self.default_lifetime(now) == 0 || self.always_advertise_ail_routes {
             for ((l, p), v) in &self.on_link {
@@ -118,5 +132,31 @@ impl Router {
                 lifetime,
             })
             .collect()
+    }
+}
+
+impl Router {
+    pub(super) fn reconcile_exports(
+        &mut self,
+        prior: Vec<Rio>,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        let current = self.stub_routes(now);
+        let mut changed = false;
+        for r in prior {
+            if r.lifetime > 0
+                && !current
+                    .iter()
+                    .any(|c| c.prefix == r.prefix && c.lifetime > 0)
+            {
+                self.withdrawals.insert((Link::Stub, r.prefix), 3);
+                changed = true;
+            }
+        }
+        if changed {
+            self.links[1].scheduler.changed(now, rng)?;
+        }
+        Ok(())
     }
 }

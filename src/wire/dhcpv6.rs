@@ -98,7 +98,7 @@ pub fn decode(b: &[u8]) -> Result<Message, WireError> {
         .filter(|b| b.len() == 4)
         .map(|b| u32_at(b, 0))
         .filter(|n| (60..=86400).contains(n));
-    let status = single(&opts, 13)?
+    let mut status = single(&opts, 13)?
         .filter(|b| b.len() >= 2)
         .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
     let mut delegations = vec![];
@@ -113,10 +113,15 @@ pub fn decode(b: &[u8]) -> Result<Message, WireError> {
         if ![1, 2].contains(&iaid) || (t1 != 0 && t2 != 0 && t1 > t2) {
             continue;
         }
-        if nested
+        if let Some((_, code)) = nested
             .iter()
-            .any(|(c, b)| *c == 13 && b.len() >= 2 && b[..2] != [0, 0])
+            .find(|(c, b)| *c == 13 && b.len() >= 2 && b[..2] != [0, 0])
         {
+            // NoBinding applies to an IA as well as to the whole exchange.
+            // Re-request our IAs while keeping their still-valid forwarding state.
+            if status == 0 && code[..2] == [0, 3] {
+                status = 3;
+            }
             continue;
         }
         for (_, p) in nested.iter().filter(|(c, _)| *c == 26) {

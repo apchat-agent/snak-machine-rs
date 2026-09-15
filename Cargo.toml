@@ -16,3 +16,7 @@ libloading = { version = "=0.8.9", optional = true }
 [features]
 default = []
 pcap = ["dep:libloading"]
+
+[[bin]]
+name = "snac-router"
+path = "src/main.rs"

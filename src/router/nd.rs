@@ -42,8 +42,14 @@ impl Router {
         n.probes_sent += 1;
         let mut b = vec![135, 0, 0, 0, 0, 0, 0, 0];
         b.extend(key.address.octets());
-        b.extend([1, 1]);
-        b.extend(self.identity.macs[key.link.index()]);
+        if self.links[key.link.index()].kind == FrameKind::Ethernet {
+            b.extend([1, 1]);
+            b.extend(
+                self.links[key.link.index()]
+                    .mac
+                    .unwrap_or(self.identity.macs[key.link.index()]),
+            );
+        }
         Ok(Tx {
             link: key.link,
             packet: icmp_packet(self.identity.link_local(key.link), dest, 255, b)
@@ -75,6 +81,7 @@ impl Router {
                 is_router: true,
                 pending: None,
             });
+            n.is_router = true;
             if mac.is_some() && n.mac != mac {
                 n.mac = mac;
                 n.state = NeighborState::Stale;
@@ -101,7 +108,9 @@ impl Router {
                 if mac.is_some() {
                     n.mac = mac;
                 }
-                if nd.body[4] & 0x40 != 0 && (n.mac.is_some() || nd.options.is_empty()) {
+                if nd.body[4] & 0x40 != 0
+                    && (n.mac.is_some() || self.links[link.index()].kind == FrameKind::RawIpv6)
+                {
                     n.state = NeighborState::Reachable;
                     n.deadline = Some(now + 60000);
                     n.probes_sent = 0;

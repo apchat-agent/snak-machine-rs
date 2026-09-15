@@ -12,10 +12,28 @@ impl Router {
             return Ok(vec![]);
         };
         if kind == FrameKind::Ethernet {
-            let own = self.identity.macs[link.index()];
+            let own = self.links[link.index()]
+                .mac
+                .unwrap_or(self.identity.macs[link.index()]);
             if frame[6..12] == own || (frame[0] & 1 == 0 && frame[..6] != own) {
                 return Ok(vec![]);
             }
+        }
+        match hop_options(&e) {
+            Err(_) => return Ok(vec![]),
+            Ok(Some(pointer)) => {
+                return Ok(
+                    if matches!(
+                        self.lifecycle,
+                        Lifecycle::Running | Lifecycle::AilUnavailable
+                    ) {
+                        self.icmp_error(link, &e, 4, 2, pointer, now)
+                    } else {
+                        vec![]
+                    },
+                );
+            }
+            Ok(None) => {}
         }
         let Ok(t) = transport(&e) else {
             return Ok(vec![]);
@@ -105,7 +123,11 @@ impl Router {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "neighbor unresolved"))?
         };
         let mut b = dest.to_vec();
-        b.extend(self.identity.macs[tx.link.index()]);
+        b.extend(
+            self.links[tx.link.index()]
+                .mac
+                .unwrap_or(self.identity.macs[tx.link.index()]),
+        );
         b.extend([0x86, 0xdd]);
         b.extend(&tx.packet);
         Ok(b)
@@ -116,7 +138,10 @@ impl Router {
         e: &Envelope<'_>,
         now: Time,
     ) -> io::Result<Vec<Tx>> {
-        if !self.links[0].up
+        if matches!(
+            self.lifecycle,
+            Lifecycle::Starting | Lifecycle::Stopping | Lifecycle::Stopped | Lifecycle::Degraded
+        ) || !self.links[0].up
             || !self.links[1].up
             || e.source.is_unspecified()
             || e.source.is_multicast()
@@ -162,7 +187,7 @@ impl Router {
             {
                 return Ok(self.icmp_error(link, e, 1, 3, 0, now));
             }
-            if self.neighbors.len() >= 512
+            if self.neighbors.keys().filter(|k| k.link == egress).count() >= 256
                 || self
                     .neighbors
                     .values()
@@ -189,6 +214,13 @@ impl Router {
             }
             return Ok(vec![]);
         }
+        if let Some(n) = self.neighbors.get_mut(&key) {
+            if n.state == NeighborState::Stale {
+                n.state = NeighborState::Delay;
+                n.deadline = Some(now + 5000);
+                n.probes_sent = 0;
+            }
+        }
         let mut packet = e.packet.to_vec();
         packet[7] -= 1;
         Ok(vec![Tx {
@@ -210,7 +242,7 @@ impl Router {
             || e.source.is_multicast()
             || e.source.is_loopback()
             || link_local(e.source)
-            || (e.destination.is_multicast() && kind != 2)
+            || (e.destination.is_multicast() && kind != 2 && !(kind == 4 && code == 2))
         {
             return vec![];
         }

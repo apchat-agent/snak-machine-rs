@@ -21,6 +21,8 @@ pub struct Exchange {
 }
 #[derive(Debug)]
 pub struct PdClient {
+    pub sol_max_rt_seen: Option<Option<u32>>,
+    pub refresh_after: Time,
     pub fallback_at: Option<Time>,
     pub leases: BTreeMap<LeaseKey, Lease>,
     pub releases: Vec<Release>,
@@ -33,6 +35,8 @@ pub struct PdClient {
 impl Default for PdClient {
     fn default() -> Self {
         Self {
+            sol_max_rt_seen: None,
+            refresh_after: 0,
             fallback_at: None,
             leases: BTreeMap::new(),
             releases: vec![],
@@ -47,6 +51,7 @@ impl Default for PdClient {
 impl PdClient {
     pub fn start(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         self.offers.clear();
+        self.sol_max_rt_seen = None;
         self.requested.clear();
         self.state = PdState::Soliciting;
         self.begin(1, vec![], now, now + rng.sample(1000)?, rng)
@@ -59,6 +64,7 @@ impl PdClient {
         next: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
+        self.refresh_after = now.saturating_add(1000);
         let mut xid = [0; 3];
         rng.fill(&mut xid)?;
         self.exchange = Some(Exchange {
@@ -170,6 +176,19 @@ impl PdClient {
         self.offers.sort_by_key(|m| {
             (
                 std::cmp::Reverse(m.preference),
+                std::cmp::Reverse(
+                    [false, true]
+                        .into_iter()
+                        .filter(|ula| {
+                            m.delegations.iter().any(|d| {
+                                d.prefix.ula() == *ula
+                                    && d.prefix.length <= 64
+                                    && d.prefix.routable()
+                                    && d.preferred >= 1800
+                            })
+                        })
+                        .count(),
+                ),
                 std::cmp::Reverse(m.delegations.iter().map(|d| d.preferred).max().unwrap_or(0)),
                 m.server.clone(),
             )
@@ -214,7 +233,15 @@ impl PdClient {
         }
         if self.state == PdState::Soliciting && m.kind == 2 {
             if let Some(max) = m.sol_max_rt {
-                self.sol_max_rt = max as u64 * 1000;
+                self.sol_max_rt_seen = Some(match self.sol_max_rt_seen {
+                    None => Some(max),
+                    Some(Some(prior)) if prior == max => Some(max),
+                    _ => None,
+                });
+                self.sol_max_rt = self
+                    .sol_max_rt_seen
+                    .flatten()
+                    .map_or(3600000, |n| n as u64 * 1000);
             }
             if m.status != 0
                 || !m
@@ -283,8 +310,37 @@ impl PdClient {
         result
     }
     fn install(&mut self, m: Message, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        if m.status == 3 && matches!(self.state, PdState::Renewing | PdState::Rebinding) {
+            self.state = PdState::Requesting;
+            return self.begin(3, m.server, now, now, rng);
+        }
+        if m.status == 6 && self.state == PdState::Requesting {
+            return self.start(now, rng);
+        }
         if m.status != 0 {
             return Ok(());
+        }
+        self.leases.retain(|_, l| l.valid.live(now));
+        let mut acquired: std::collections::BTreeSet<_> = self.leases.keys().copied().collect();
+        for d in &m.delegations {
+            if d.valid == 0 {
+                acquired.remove(&(d.iaid, d.prefix));
+            } else {
+                acquired.insert((d.iaid, d.prefix));
+            }
+        }
+        if acquired.len() > 16 {
+            // Keep live backing routes. Return newly acquired bindings to the
+            // server instead of silently forgetting or advertising them.
+            let prefixes = m
+                .delegations
+                .into_iter()
+                .filter(|d| d.valid != 0 && !self.leases.contains_key(&(d.iaid, d.prefix)))
+                .collect();
+            self.queue_release(m.server, prefixes, now, rng)?;
+            self.state = PdState::Bound;
+            self.exchange = None;
+            return Err(io::Error::other("acquired DHCP prefix capacity"));
         }
         for d in m.delegations {
             let key = (d.iaid, d.prefix);
@@ -315,6 +371,7 @@ impl PdClient {
                 },
             );
         }
+        self.fallback_at = None;
         let selected = self.selected(now);
         for key in &selected {
             self.leases.get_mut(key).unwrap().used = true;
@@ -337,26 +394,40 @@ impl PdClient {
             });
             self.leases.remove(&(iaid, prefix));
         }
-        if !prefixes.is_empty() {
-            let mut xid = [0; 3];
-            rng.fill(&mut xid)?;
-            self.releases.push(Release {
-                exchange: Exchange {
-                    kind: 8,
-                    xid,
-                    started: now,
-                    next: now,
-                    interval: 1000,
-                    count: 0,
-                    server: m.server,
-                },
-                prefixes,
-            });
-        }
+        self.queue_release(m.server, prefixes, now, rng)?;
         self.fallback_at = None;
         self.state = PdState::Bound;
         self.exchange = None;
         self.requested.clear();
+        Ok(())
+    }
+    fn queue_release(
+        &mut self,
+        server: Vec<u8>,
+        prefixes: Vec<Delegation>,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        if prefixes.is_empty() {
+            return Ok(());
+        }
+        if self.releases.len() >= 16 {
+            return Err(io::Error::other("DHCP Release exchange capacity"));
+        }
+        let mut xid = [0; 3];
+        rng.fill(&mut xid)?;
+        self.releases.push(Release {
+            exchange: Exchange {
+                kind: 8,
+                xid,
+                started: now,
+                next: now,
+                interval: 1000,
+                count: 0,
+                server,
+            },
+            prefixes,
+        });
         Ok(())
     }
     fn poll_releases(
@@ -406,7 +477,22 @@ impl PdClient {
 impl Router {
     pub(super) fn sync_pd(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         let had_pd = !self.pd_prefixes.is_empty();
-        let selected = self.pd.selected(now);
+        let mut selected = self.pd.selected(now);
+        selected.retain(|key| {
+            let local = Prefix::new(key.1.address, 64).unwrap();
+            !self.suppliers.iter().any(|((router, p), s)| {
+                router.link == Link::Stub
+                    && p.ula() == local.ula()
+                    && *p < local
+                    && s.valid.live(now)
+                    && s.preferred.live(now)
+                    && now < s.pio_at.saturating_add(600000)
+                    && self
+                        .neighbors
+                        .get(router)
+                        .is_none_or(|n| n.state != NeighborState::Failed)
+            })
+        });
         let mut changed = false;
         for key in &selected {
             let prefix = Prefix::new(key.1.address, 64).unwrap();
@@ -456,6 +542,16 @@ impl Router {
         }
         if selected.is_empty()
             && had_pd
+            && !self.suppliers.iter().any(|((k, _), s)| {
+                k.link == Link::Stub
+                    && s.valid.live(now)
+                    && s.preferred.live(now)
+                    && now < s.pio_at.saturating_add(600000)
+                    && self
+                        .neighbors
+                        .get(k)
+                        .is_none_or(|n| n.state != NeighborState::Failed)
+            })
             && !matches!(
                 self.state(Link::Stub),
                 AilState::Advertising | AilState::BeginAdvertising
@@ -529,7 +625,7 @@ impl PdClient {
         Ok(())
     }
     pub fn refresh(&mut self, kind: u8, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
-        if self.leases.is_empty() {
+        if self.leases.is_empty() || now < self.refresh_after {
             return Ok(());
         }
         let server = if kind == 5 {

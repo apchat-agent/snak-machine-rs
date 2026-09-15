@@ -10,7 +10,23 @@ impl Router {
         if self.links[link.index()].up == up {
             return Ok(());
         }
+        let prior = self.stub_routes(now);
         self.links[link.index()].up = up;
+        if link == Link::Ail
+            && matches!(
+                self.lifecycle,
+                Lifecycle::Running | Lifecycle::AilUnavailable
+            )
+        {
+            self.lifecycle = if up {
+                Lifecycle::Running
+            } else {
+                Lifecycle::AilUnavailable
+            };
+        }
+        if self.lifecycle == Lifecycle::Stopping && !up {
+            self.final_ras[link.index()] = 0;
+        }
         if up {
             self.headers.retain(|k, _| k.link != link);
             self.neighbors.retain(|k, _| k.link != link);
@@ -22,6 +38,13 @@ impl Router {
             s.discovery_end = s.rs_next + 9000;
         }
         if link == Link::Ail {
+            if !up {
+                for r in prior {
+                    if r.lifetime > 0 {
+                        self.withdrawals.insert((Link::Stub, r.prefix), 3);
+                    }
+                }
+            }
             self.routes.clear();
             self.links[1].scheduler.changed(now, rng)?;
             if up {

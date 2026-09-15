@@ -51,13 +51,35 @@ impl Router {
             .get(&(link, address))
             .is_some_and(|a| a.state == DadState::Ready)
     }
-    pub(super) fn tick_dad(&mut self, now: Time) {
-        for a in self.owned.values_mut() {
+    pub(super) fn tick_dad(&mut self, now: Time) -> Vec<Tx> {
+        let mut out = vec![];
+        for ((link, address), a) in &mut self.owned {
+            if !self.links[link.index()].up {
+                continue;
+            }
             if a.state == DadState::Tentative && a.deadline.is_some_and(|t| now >= t) {
-                a.state = DadState::Ready;
-                a.deadline = None;
+                if a.attempts == 0 {
+                    a.attempts = 1;
+                    a.deadline = Some(now + 1000);
+                    let mut b = vec![135, 0, 0, 0, 0, 0, 0, 0];
+                    b.extend(address.octets());
+                    out.push(Tx {
+                        link: *link,
+                        packet: icmp_packet(
+                            Ipv6Addr::UNSPECIFIED,
+                            solicited_node(*address),
+                            255,
+                            b,
+                        )
+                        .unwrap(),
+                    });
+                } else {
+                    a.state = DadState::Ready;
+                    a.deadline = None;
+                }
             }
         }
+        out
     }
     pub(super) fn owned_nd(
         &mut self,
@@ -83,11 +105,13 @@ impl Router {
             let mut bytes = [0; 8];
             rng.fill(&mut bytes)?;
             let iid = (u64::from_be_bytes(bytes) & 0xfdffffffffffffff).max(1);
-            self.identity.iids[link.index()] = iid;
+            if own.prefix.is_none() {
+                self.identity.iids[link.index()] = iid;
+            }
             let prefix = own
                 .prefix
                 .unwrap_or(Prefix::new("fe80::".parse().unwrap(), 64).unwrap());
-            let address = self.identity.address(link, prefix);
+            let address = Ipv6Addr::from(u128::from(prefix.address) | iid as u128);
             let tx = self.begin_dad(link, address, now);
             self.owned.get_mut(&(link, address)).unwrap().attempts = own.attempts + 1;
             return Ok(Some(vec![tx]));
@@ -102,6 +126,14 @@ impl Router {
             e.source
         };
         if !dad {
+            if !self.neighbors.contains_key(&RouterKey {
+                link,
+                address: e.source,
+            }) && self.neighbors.keys().filter(|k| k.link == link).count() >= 256
+            {
+                self.degrade(now, rng)?;
+                return Err(io::Error::other("neighbor capacity exceeded"));
+            }
             let mac = nd
                 .options
                 .iter()
@@ -123,8 +155,14 @@ impl Router {
         }
         let mut b = vec![136, 0, 0, 0, if dad { 0xa0 } else { 0xe0 }, 0, 0, 0];
         b.extend(target.octets());
-        b.extend([2, 1]);
-        b.extend(self.identity.macs[link.index()]);
+        if self.links[link.index()].kind == FrameKind::Ethernet {
+            b.extend([2, 1]);
+            b.extend(
+                self.links[link.index()]
+                    .mac
+                    .unwrap_or(self.identity.macs[link.index()]),
+            );
+        }
         Ok(Some(vec![Tx {
             link,
             packet: icmp_packet(target, dest, 255, b).unwrap(),

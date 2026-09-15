@@ -456,3 +456,52 @@ impl Advertisement {
     }
 }
 pub mod dhcpv6;
+
+/// Process the first Hop-by-Hop header (RFC 8200 sections 4.2–4.3).
+/// Unknown options return a Parameter Problem pointer or a silent discard.
+pub fn hop_options(e: &Envelope<'_>) -> Result<Option<u32>, WireError> {
+    if e.next_header != 0 {
+        return Ok(None);
+    }
+    let p = e.payload;
+    if p.len() < 2 {
+        return Err(WireError::Truncated);
+    }
+    let end = (p[1] as usize + 1) * 8;
+    if end > p.len() {
+        return Err(WireError::Truncated);
+    }
+    let mut at = 2;
+    while at < end {
+        let kind = p[at];
+        if kind == 0 {
+            // Pad1
+            at += 1;
+            continue;
+        }
+        if at + 2 > end || at + 2 + p[at + 1] as usize > end {
+            return Err(WireError::Truncated);
+        }
+        let length = p[at + 1] as usize;
+        if kind == 1 {
+            // PadN
+            if p[at + 2..at + 2 + length].iter().any(|b| *b != 0) {
+                return Err(WireError::Invalid);
+            }
+        } else if kind == 5 {
+            // Router Alert; no supported local alert consumer.
+            if length != 2 {
+                return Err(WireError::Invalid);
+            }
+        } else {
+            match kind >> 6 {
+                0 => {}
+                1 => return Err(WireError::Unsupported),
+                3 if e.destination.is_multicast() => return Err(WireError::Unsupported),
+                _ => return Ok(Some((40 + at) as u32)),
+            }
+        }
+        at += 2 + length;
+    }
+    Ok(None)
+}
