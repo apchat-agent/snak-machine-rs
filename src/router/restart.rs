@@ -37,6 +37,18 @@ impl Router {
             s.rs_next = now + rng.sample(1000)?;
             s.discovery_end = s.rs_next + 9000;
         }
+        if link == Link::Stub {
+            for ((l, p), v) in &self.on_link {
+                if *l == Link::Stub && v.valid.live(now) {
+                    if up {
+                        self.withdrawals.remove(&(Link::Ail, *p));
+                    } else {
+                        self.withdrawals.insert((Link::Ail, *p), 3);
+                    }
+                }
+            }
+            self.links[0].scheduler.changed(now, rng)?;
+        }
         if link == Link::Ail {
             if !up {
                 for r in prior {

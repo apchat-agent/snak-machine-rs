@@ -365,7 +365,7 @@ impl Router {
         let mut rios: Vec<Rio> = if link == Link::Ail {
             self.on_link
                 .iter()
-                .filter(|((l, _), v)| *l == Link::Stub && v.valid.live(now))
+                .filter(|((l, _), v)| self.links[1].up && *l == Link::Stub && v.valid.live(now))
                 .map(|((_, p), v)| Rio {
                     prefix: *p,
                     preference: Preference::Low,
