@@ -56,7 +56,7 @@ pub struct LinkState {
     rs_next: Time,
     discovery_end: Time,
     pub last_valid: Lifetime,
-    pub deprecate_at: Option<Time>,
+    pub deprecate_at: Option<i128>,
 }
 #[derive(Clone, Debug)]
 pub struct Header {
@@ -341,7 +341,7 @@ impl Router {
                                     && p.prefix < own))
                         {
                             self.links[link.index()].state = AilState::Deprecating;
-                            self.links[link.index()].deprecate_at = Some(now);
+                            self.links[link.index()].deprecate_at = Some(now as i128);
                             self.links[link.index()].scheduler.changed(now, rng)?;
                         }
 
@@ -392,7 +392,7 @@ impl Router {
         }
         if state.state == AilState::Deprecating {
             if let Some(at) = state.deprecate_at {
-                let valid = Lifetime::from_secs(at, 1800).remaining(now);
+                let valid = deprecation_remaining(at, now);
                 if valid >= 206 {
                     pios.push(Pio {
                         prefix: self.identity.prefix(link),
@@ -441,6 +441,11 @@ impl Router {
                 )
             });
             rios = self.budget_ail(rios, now);
+        }
+        for r in &mut rios {
+            if self.withdrawals.contains_key(&(link, r.prefix)) {
+                r.lifetime = 0;
+            }
         }
         for ((l, p), valid) in &self.advertised_routes {
             if *l == link && valid.live(now) && !rios.iter().any(|r| r.prefix == *p) {
@@ -794,4 +799,8 @@ impl Router {
         }
         Ok(())
     }
+}
+
+fn deprecation_remaining(at: i128, now: Time) -> u32 {
+    ((at + 1800000 - now as i128).clamp(0, 1800000) / 1000) as u32
 }

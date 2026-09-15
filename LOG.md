@@ -209,3 +209,39 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   validated server, preference and delegation data needed for selection.
   The existing per-link admission and 16-lease bounds also bound these owners.
   `cargo test`: **82 passing**; all-target/all-feature clippy is clean.
+
+### S03 — crash-consistent lifetime and advertisement journal
+
+- RED `1f00a20`: behavioral tests first ran against the S02 implementation:
+  six intended failures (lost deprecation/withdrawal/service IID, PD preferred
+  revival, accepted truncated journal, and non-private file mode). Added the
+  atomic-operation/record API fixtures before production work; the final
+  `cargo test` RED then reported those missing initial seams. The retained
+  baseline and S01/S02 tests passed in the behavioral red run.
+- GREEN: **91 Rust tests pass**. Version 2 snapshots include bounded,
+  successful RIO history/withdrawal progress, link prefix deadlines, ULA and
+  PD deprecation origins, used IA/server leases, fallback deadline and stable
+  owned service addresses. Restored service addresses repeat DAD; suppliers
+  and neighbors are rediscovered. Version 1 snapshots migrate on the next
+  checkpoint. A length and SHA-1 checksum reject accidental truncation and
+  corruption; this checksum is not authentication of untrusted state.
+- File replacement now uses private 0600 temporary files, loops on short
+  writes, syncs before rename and syncs the parent afterwards. The native
+  operations implement the same injectable seam tested for each failure.
+  Failure before replacement preserves the old file; directory-fsync failure
+  may leave the complete new file visible and is not acknowledged as durable.
+  Reads and writes reject journals above 8 MiB before unbounded allocation.
+- Bounded service-record prerequisite: 128 records and 4 MiB aggregate payload,
+  atomic replacement/refusal with no live eviction. Later services validate
+  their record contents; this container alone is not an SRP/certificate store.
+- Fields beyond the old implementation follow PLAN2's journal design.
+  Deprecation origin uses a signed millisecond value so an origin before the
+  reboot's monotonic epoch can be represented without restarting its lifetime.
+  No new dependency; the already-pinned SHA-1 crate also checks file integrity.
+- Fixture correction: the PD retirement case initially used <206 seconds of
+  remaining validity, where the existing deprecation policy correctly omits
+  its PIO. Increased the lease's validity/preferred deadlines while retaining
+  the same T2/crash times, so the assertion inspects an included deprecated PIO.
+- Validation: full tests, fmt and all-target/all-feature clippy pass; the
+  aarch64-apple-darwin all-target pcap check passes. No privileged acceptance
+  is needed for the filesystem logic; no network interface was opened.

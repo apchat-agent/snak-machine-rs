@@ -1,4 +1,5 @@
 use super::*;
+use sha1::{Digest, Sha1};
 impl Router {
     pub fn set_link(
         &mut self,
@@ -84,7 +85,7 @@ impl Router {
             }
         }
         let mut text = format!(
-            "SNAC-SNAPSHOT-1 {wall}\n{}\n",
+            "SNAC-SNAPSHOT-2 {wall}\n{}\n",
             hex(&self.identity.encode()?)
         );
         for evidence in &self.attachment.known {
@@ -98,11 +99,73 @@ impl Router {
                 end(*valid, now, wall)
             ));
         }
-        for link in [Link::Ail, Link::Stub] {
-            let p = self.identity.prefix(link);
-            if let Some(v) = self.on_link.get(&(link, p)) {
-                text.push_str(&format!("U {} {}\n", link.index(), end(v.valid, now, wall)));
+        for ((link, prefix), v) in self.on_link.iter() {
+            if v.valid.live(now) {
+                text.push_str(&format!(
+                    "O {} {} {} {} {}\n",
+                    link.index(),
+                    prefix.address,
+                    prefix.length,
+                    end(v.preferred, now, wall),
+                    end(v.valid, now, wall)
+                ));
             }
+        }
+        for link in [Link::Ail, Link::Stub] {
+            let state = &self.links[link.index()];
+            let deprecation = state.deprecate_at.map_or("-".to_owned(), |at| {
+                ((wall as i128 * 1000 + at + 1800000 - now as i128).max(0) / 1000).to_string()
+            });
+            text.push_str(&format!(
+                "L {} {} {}\n",
+                link.index(),
+                end(state.last_valid, now, wall),
+                deprecation
+            ));
+        }
+        for ((link, prefix), valid) in &self.advertised_routes {
+            if valid.live(now) {
+                text.push_str(&format!(
+                    "H {} {} {} {} {}\n",
+                    link.index(),
+                    prefix.address,
+                    prefix.length,
+                    end(*valid, now, wall),
+                    self.withdrawals.get(&(*link, *prefix)).unwrap_or(&0)
+                ));
+            }
+        }
+        for ((link, address), owned) in &self.owned {
+            if let Some(prefix) = owned.prefix {
+                text.push_str(&format!(
+                    "I {} {} {} {} {}\n",
+                    link.index(),
+                    address,
+                    prefix.address,
+                    prefix.length,
+                    owned.attempts
+                ));
+            }
+        }
+        if let Some(fallback) = self.pd.fallback_at {
+            text.push_str(&format!(
+                "F {}\n",
+                end(Lifetime::Until(fallback), now, wall)
+            ));
+        }
+        for (prefix, owned) in &self.pd_prefixes {
+            let deprecation = owned.deprecate_at.map_or("-".to_owned(), |at| {
+                ((wall as i128 * 1000 + at + 1800000 - now as i128).max(0) / 1000).to_string()
+            });
+            text.push_str(&format!(
+                "D {} {} {} {} {} {}\n",
+                prefix.address,
+                owned.lease.0,
+                owned.lease.1.address,
+                owned.lease.1.length,
+                deprecation,
+                end(owned.last_valid, now, wall)
+            ));
         }
         for ((iaid, p), l) in &self.pd.leases {
             if l.used && l.valid.live(now) {
@@ -118,6 +181,11 @@ impl Router {
                 ));
             }
         }
+        let digest = hex(&Sha1::digest(text.as_bytes()));
+        text.push_str(&format!("Z {} {}\n", text.len(), digest));
+        if text.len() > crate::persist::MAX_JOURNAL_BYTES {
+            return Err(io::Error::other("journal byte capacity"));
+        }
         Ok(text.into_bytes())
     }
     pub fn restore(
@@ -127,11 +195,31 @@ impl Router {
         rng: &mut impl RandomSource,
     ) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid SNAC snapshot");
+        if bytes.len() > crate::persist::MAX_JOURNAL_BYTES {
+            return Err(invalid());
+        }
         let text = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+        let version2 = text.starts_with("SNAC-SNAPSHOT-2 ");
+        let text = if version2 {
+            let (body, footer) = text.rsplit_once("\nZ ").ok_or_else(invalid)?;
+            let footer = footer.strip_suffix('\n').ok_or_else(invalid)?;
+            let (len, digest) = footer.split_once(' ').ok_or_else(invalid)?;
+            let n = len.parse::<usize>().map_err(|_| invalid())?;
+            if n != body.len() + 1 || hex(&Sha1::digest(&bytes[..n])) != digest {
+                return Err(invalid());
+            }
+            &text[..n]
+        } else {
+            text
+        };
         let mut lines = text.lines();
         let first = lines.next().ok_or_else(invalid)?;
         let saved_wall: u64 = first
-            .strip_prefix("SNAC-SNAPSHOT-1 ")
+            .strip_prefix(if version2 {
+                "SNAC-SNAPSHOT-2 "
+            } else {
+                "SNAC-SNAPSHOT-1 "
+            })
             .ok_or_else(invalid)?
             .parse()
             .map_err(|_| invalid())?;
@@ -149,9 +237,155 @@ impl Router {
                 )
             })
         };
-        for line in lines {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut owned_prefixes = BTreeMap::new();
+        let mut owned_addresses = BTreeMap::new();
+        let mut fallback = None;
+        let parse_link = |s: &str| match s {
+            "0" => Ok(Link::Ail),
+            "1" => Ok(Link::Stub),
+            _ => Err(invalid()),
+        };
+        let prefix = |address: &str, length: &str| -> io::Result<Prefix> {
+            let address: Ipv6Addr = address.parse().map_err(|_| invalid())?;
+            let length = u8::try_from(parse(length)?).map_err(|_| invalid())?;
+            Prefix::new(address, length)
+                .filter(|p| p.address == address && p.routable())
+                .ok_or_else(invalid)
+        };
+        let origin = |s: &str| -> io::Result<Option<i128>> {
+            if s == "-" {
+                Ok(None)
+            } else {
+                Ok(Some(
+                    now as i128 + (parse(s)? as i128 - effective_wall as i128) * 1000 - 1800000,
+                ))
+            }
+        };
+        for (line_count, line) in lines.enumerate() {
+            if line_count >= 1024 || line.len() > 4096 || !seen.insert(line) {
+                return Err(invalid());
+            }
             let fields: Vec<_> = line.split_whitespace().collect();
             match fields.as_slice() {
+                ["O", link, address, length, preferred, valid] if version2 => {
+                    let link = parse_link(link)?;
+                    let p = prefix(address, length)?;
+                    let preferred = lifetime(preferred)?;
+                    let valid = lifetime(valid)?;
+                    if preferred > valid
+                        || r.on_link.keys().filter(|(l, _)| *l == link).count() >= 160
+                        || r.on_link.contains_key(&(link, p))
+                    {
+                        return Err(invalid());
+                    }
+                    if valid.live(now) {
+                        r.on_link.insert((link, p), OnLink { preferred, valid });
+                    }
+                }
+                ["L", link, last, at] if version2 => {
+                    let link = parse_link(link)?;
+                    let state = &mut r.links[link.index()];
+                    state.last_valid = lifetime(last)?;
+                    state.deprecate_at = origin(at)?;
+                    if state
+                        .deprecate_at
+                        .is_some_and(|at| deprecation_remaining(at, now) > 0)
+                    {
+                        state.state = AilState::Deprecating;
+                    }
+                }
+                ["H", link, address, length, valid, count] if version2 => {
+                    let link = parse_link(link)?;
+                    let length = u8::try_from(parse(length)?).map_err(|_| invalid())?;
+                    let p = Prefix::new(address.parse().map_err(|_| invalid())?, length)
+                        .filter(|p| p.routable() || p.length == 0)
+                        .ok_or_else(invalid)?;
+                    let valid = lifetime(valid)?;
+                    let count = u8::try_from(parse(count)?).map_err(|_| invalid())?;
+                    if count > 3
+                        || r.advertised_routes.contains_key(&(link, p))
+                        || r.advertised_routes
+                            .keys()
+                            .filter(|(l, _)| *l == link)
+                            .map(|(_, p)| {
+                                Rio {
+                                    prefix: *p,
+                                    preference: Preference::Low,
+                                    lifetime: 0,
+                                }
+                                .encode()
+                                .len()
+                            })
+                            .sum::<usize>()
+                            + (Rio {
+                                prefix: p,
+                                preference: Preference::Low,
+                                lifetime: 0,
+                            })
+                            .encode()
+                            .len()
+                            > Self::route_budget(link)
+                    {
+                        return Err(invalid());
+                    }
+                    if valid.live(now) {
+                        r.advertised_routes.insert((link, p), valid);
+                        if count > 0 {
+                            r.withdrawals.insert((link, p), count);
+                        }
+                    }
+                }
+                ["I", link, address, net, length, attempts] if version2 => {
+                    let link = parse_link(link)?;
+                    let p = prefix(net, length)?;
+                    let address = address.parse().map_err(|_| invalid())?;
+                    let attempts = u8::try_from(parse(attempts)?).map_err(|_| invalid())?;
+                    if !p.contains(address)
+                        || attempts > 3
+                        || owned_addresses.len() >= 32
+                        || owned_addresses
+                            .insert(
+                                (link, address),
+                                OwnedAddress {
+                                    prefix: Some(p),
+                                    state: DadState::Tentative,
+                                    deadline: Some(now),
+                                    attempts,
+                                },
+                            )
+                            .is_some()
+                    {
+                        return Err(invalid());
+                    }
+                }
+                ["F", at] if version2 => {
+                    if fallback.is_some() {
+                        return Err(invalid());
+                    }
+                    fallback = Some(lifetime(at)?);
+                }
+                ["D", address, iaid, net, length, at, last] if version2 => {
+                    let p = prefix(address, "64")?;
+                    let lease = prefix(net, length)?;
+                    let iaid = u32::try_from(parse(iaid)?).map_err(|_| invalid())?;
+                    if ![1, 2].contains(&iaid)
+                        || !lease.contains(p.address)
+                        || owned_prefixes.len() >= 16
+                        || owned_prefixes
+                            .insert(
+                                p,
+                                pd::OwnedPrefix {
+                                    lease: (iaid, lease),
+                                    deprecate_at: origin(at)?,
+                                    last_valid: lifetime(last)?,
+                                },
+                            )
+                            .is_some()
+                    {
+                        return Err(invalid());
+                    }
+                }
                 ["A", evidence] => {
                     let bytes = unhex(evidence)?;
                     if r.attachment.known.len() >= attachment::MAX_ATTACHMENT_IDENTITIES
@@ -253,12 +487,42 @@ impl Router {
             }
             lease.association = shared.clone();
         }
+        if let Some(fallback) = fallback {
+            r.pd.fallback_at = Some(match fallback {
+                Lifetime::Until(at) => at,
+                Lifetime::Infinite => u64::MAX,
+            });
+        }
         if !r.pd.leases.is_empty() {
             r.pd.refresh(6, now, rng)?;
             if wall < saved_wall {
                 r.pd.fallback_at = Some(now);
             }
             r.sync_pd(now, rng)?;
+        }
+        for (p, owned) in owned_prefixes {
+            if let Some(lease) = r.pd.leases.get(&owned.lease) {
+                r.on_link.insert(
+                    (Link::Stub, p),
+                    OnLink {
+                        valid: lease.valid,
+                        preferred: if owned.deprecate_at.is_some() {
+                            Lifetime::Until(now)
+                        } else {
+                            lease.preferred
+                        },
+                    },
+                );
+                r.pd_prefixes.insert(p, owned);
+            }
+        }
+        for (key, owned) in owned_addresses {
+            if owned
+                .prefix
+                .is_some_and(|p| r.on_link.contains_key(&(key.0, p)))
+            {
+                r.owned.insert(key, owned);
+            }
         }
         Ok(r)
     }

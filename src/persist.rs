@@ -1,9 +1,9 @@
 use crate::{time::RandomSource, wire::Prefix, Link};
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     net::Ipv6Addr,
-    os::fd::AsRawFd,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
 };
 pub trait StateStore {
@@ -50,13 +50,26 @@ impl FileStore {
 }
 impl StateStore for FileStore {
     fn load(&mut self) -> io::Result<Option<Vec<u8>>> {
-        match std::fs::read(&self.path) {
-            Ok(b) => Ok(Some(b)),
+        match File::open(&self.path) {
+            Ok(f) => {
+                if f.metadata()?.len() > MAX_JOURNAL_BYTES as u64 {
+                    return Err(io::Error::other("journal byte capacity"));
+                }
+                let mut b = Vec::new();
+                f.take(MAX_JOURNAL_BYTES as u64 + 1).read_to_end(&mut b)?;
+                if b.len() > MAX_JOURNAL_BYTES {
+                    return Err(io::Error::other("journal byte capacity"));
+                }
+                Ok(Some(b))
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
     }
     fn save(&mut self, b: &[u8]) -> io::Result<()> {
+        if b.len() > MAX_JOURNAL_BYTES {
+            return Err(io::Error::other("journal byte capacity"));
+        }
         let temp = sibling(&self.path, ".tmp");
         // The exclusive store lock owns this reserved sibling name. Unlink
         // abandoned files (including symlinks) without following their contents.
@@ -65,22 +78,19 @@ impl StateStore for FileStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        let mut f = OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&temp)?;
-        let result = (|| {
-            f.write_all(b)?;
-            f.sync_all()?;
-            std::fs::rename(&temp, &self.path)?;
-            File::open(
-                self.path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )?
-            .sync_all()
-        })();
+        let result = atomic_replace(
+            &mut NativeReplace {
+                file,
+                temp: &temp,
+                path: &self.path,
+            },
+            b,
+        );
         if result.is_err() {
             let _ = std::fs::remove_file(temp);
         }
@@ -228,12 +238,102 @@ impl CheckpointWriter {
         let (at, epoch) = *self.anchor.get_or_insert((now / 1000, wall));
         let mapped_wall = epoch.saturating_add((now / 1000).saturating_sub(at));
         let snapshot = router.checkpoint(now, mapped_wall)?;
-        let payload = snapshot.splitn(2, |b| *b == b'\n').nth(1).unwrap_or(&[]);
+        let text = std::str::from_utf8(&snapshot).map_err(io::Error::other)?;
+        let body = text.split_once('\n').map_or("", |(_, rest)| rest);
+        let payload = body
+            .rsplit_once("\nZ ")
+            .map_or(body, |(payload, _)| payload)
+            .as_bytes();
         if payload != self.payload || now >= self.next {
             store.save(&snapshot)?;
             self.payload = payload.to_vec();
             self.next = now.saturating_add(300000);
         }
+        Ok(())
+    }
+}
+
+pub const MAX_JOURNAL_BYTES: usize = 8 * 1024 * 1024;
+/// Native operations occur only at this boundary. A failed directory sync can
+/// leave the new complete file visible; callers must not acknowledge durability.
+pub trait AtomicFileOps {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize>;
+    fn sync_file(&mut self) -> io::Result<()>;
+    fn replace(&mut self) -> io::Result<()>;
+    fn sync_parent(&mut self) -> io::Result<()>;
+}
+pub fn atomic_replace(ops: &mut impl AtomicFileOps, mut bytes: &[u8]) -> io::Result<()> {
+    if bytes.len() > MAX_JOURNAL_BYTES {
+        return Err(io::Error::other("journal byte capacity"));
+    }
+    while !bytes.is_empty() {
+        match ops.write(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "short journal write",
+                ))
+            }
+            Ok(n) if n <= bytes.len() => bytes = &bytes[n..],
+            Ok(_) => return Err(io::Error::other("invalid journal write length")),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    ops.sync_file()?;
+    ops.replace()?;
+    ops.sync_parent()
+}
+struct NativeReplace<'a> {
+    file: File,
+    temp: &'a Path,
+    path: &'a Path,
+}
+impl AtomicFileOps for NativeReplace<'_> {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.file.write(b)
+    }
+    fn sync_file(&mut self) -> io::Result<()> {
+        self.file.sync_all()
+    }
+    fn replace(&mut self) -> io::Result<()> {
+        std::fs::rename(self.temp, self.path)
+    }
+    fn sync_parent(&mut self) -> io::Result<()> {
+        File::open(
+            self.path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?
+        .sync_all()
+    }
+}
+/// Authoritative service records are replaced atomically by callers. Four MiB
+/// of payload plus framing fits the eight MiB disk journal. No live eviction.
+#[derive(Default)]
+pub struct Records(std::collections::BTreeMap<u16, Vec<u8>>);
+impl Records {
+    pub fn get(&self, id: u16) -> Option<&[u8]> {
+        self.0.get(&id).map(Vec::as_slice)
+    }
+    pub fn remove(&mut self, id: u16) {
+        self.0.remove(&id);
+    }
+    pub fn set(&mut self, id: u16, bytes: &[u8]) -> io::Result<()> {
+        let size: usize = self
+            .0
+            .iter()
+            .filter(|(k, _)| **k != id)
+            .map(|(_, v)| v.len())
+            .sum();
+        if bytes.len() > 4 * 1024 * 1024
+            || size + bytes.len() > 4 * 1024 * 1024
+            || (!self.0.contains_key(&id) && self.0.len() >= 128)
+        {
+            return Err(io::Error::other("persistent record capacity"));
+        }
+        self.0.insert(id, bytes.to_vec());
         Ok(())
     }
 }

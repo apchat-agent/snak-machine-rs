@@ -308,7 +308,7 @@ pub struct Release {
 #[derive(Clone, Debug)]
 pub struct OwnedPrefix {
     pub lease: LeaseKey,
-    pub deprecate_at: Option<Time>,
+    pub deprecate_at: Option<i128>,
     pub last_valid: Lifetime,
 }
 impl PdClient {
@@ -619,7 +619,7 @@ impl Router {
         }
         for p in self.pd_prefixes.values_mut() {
             if !selected.contains(&p.lease) && p.deprecate_at.is_none() {
-                p.deprecate_at = Some(now);
+                p.deprecate_at = Some(now as i128);
                 changed = true;
             }
         }
@@ -669,7 +669,7 @@ impl Router {
             )
         {
             self.links[1].state = AilState::Deprecating;
-            self.links[1].deprecate_at = Some(now);
+            self.links[1].deprecate_at = Some(now as i128);
             changed = true;
         }
         if changed {
@@ -685,7 +685,7 @@ impl Router {
                 let l = self.pd.leases.get(&p.lease)?;
                 let mut valid = l.valid.remaining(now).min(1800);
                 let preferred = if let Some(at) = p.deprecate_at {
-                    valid = valid.min(Lifetime::from_secs(at, 1800).remaining(now));
+                    valid = valid.min(deprecation_remaining(at, now));
                     0
                 } else {
                     l.preferred.remaining(now).min(valid)

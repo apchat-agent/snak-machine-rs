@@ -230,8 +230,8 @@ fn s03_pd_retirement_and_t2_do_not_become_preferred_after_crash() {
                 t1: Lifetime::Until(20000),
                 t2: Lifetime::Until(30000),
             }),
-            preferred: Lifetime::Until(50000),
-            valid: Lifetime::Until(80000),
+            preferred: Lifetime::Until(500000),
+            valid: Lifetime::Until(800000),
             used: true,
         },
     );
@@ -242,7 +242,7 @@ fn s03_pd_retirement_and_t2_do_not_become_preferred_after_crash() {
         OwnedPrefix {
             lease: key,
             deprecate_at: Some(10000),
-            last_valid: Lifetime::Until(60000),
+            last_valid: Lifetime::Until(600000),
         },
     );
     let saved = r.checkpoint(35000, 100035).unwrap();
@@ -258,10 +258,10 @@ fn s03_pd_retirement_and_t2_do_not_become_preferred_after_crash() {
             pio.preferred, 0,
             "T2/retirement must survive normal and rollback restore"
         );
-        assert!(pio.valid <= 45);
-        assert!(restored.pd_prefixes[&p].last_valid.remaining(0) <= 25);
+        assert!(pio.valid <= 765);
+        assert!(restored.pd_prefixes[&p].last_valid.remaining(0) <= 565);
     }
-    let expired = Router::restore(&saved, 0, 100081, &mut ScriptedRandom::new([])).unwrap();
+    let expired = Router::restore(&saved, 0, 100801, &mut ScriptedRandom::new([])).unwrap();
     assert!(!expired
         .snapshot(Link::Stub, 0)
         .pios

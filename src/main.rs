@@ -44,7 +44,7 @@ fn run() -> io::Result<()> {
     let mut random = OsRandom;
     let attachment = format!("{:?}:{}:{}", config.backend, config.infra, config.stub);
     let mut router = match store.load()? {
-        Some(bytes) if bytes.starts_with(b"SNAC-SNAPSHOT-1 ") => {
+        Some(bytes) if bytes.starts_with(b"SNAC-SNAPSHOT-") => {
             Router::restore(&bytes, 0, wall()?, &mut random)?
         }
         Some(bytes) => Router::new(Identity::decode(&bytes)?, 0, &mut random)?,
