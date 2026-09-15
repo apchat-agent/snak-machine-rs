@@ -512,3 +512,63 @@ fn s07_driver_udp_listener_uses_nd_and_bypasses_dhcpv6_dispatch() {
         assert_eq!(client.receive_udp().unwrap().bytes, b"reply through ND");
     }
 }
+
+#[test]
+fn s07_loopback_udp_tcp_exchange_same_bytes_and_half_close_rootlessly() {
+    use snac_rs::service_io::loopback::Loopback;
+    use std::net::{Shutdown, TcpStream, UdpSocket};
+    for bind in ["127.0.0.1", "::1"] {
+        let mut server = Loopback::bind(bind.parse().unwrap()).unwrap();
+        let udp = UdpSocket::bind((bind, 0)).unwrap();
+        udp.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        udp.send_to(b"byte handler", server.local_addr()).unwrap();
+        server.poll(0).unwrap();
+        let (peer, bytes) = server.receive_udp().unwrap();
+        assert_eq!(bytes, b"byte handler");
+        server.send_udp(peer, &bytes).unwrap();
+        let mut b = [0; 32];
+        assert_eq!(udp.recv_from(&mut b).unwrap().0, 12);
+        let mut tcp = TcpStream::connect(server.local_addr()).unwrap();
+        tcp.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        tcp.write_all(b"byte ").unwrap();
+        tcp.write_all(b"handler").unwrap();
+        tcp.shutdown(Shutdown::Write).unwrap();
+        server.poll(1).unwrap();
+        let id = server.connections()[0];
+        let mut got = vec![];
+        for now in 2..20 {
+            server.poll(now).unwrap();
+            got.extend(server.receive_tcp(id));
+        }
+        assert_eq!(got, b"byte handler");
+        assert_eq!(server.send_tcp(id, &got).unwrap(), 12);
+        server.close(id);
+        server.poll(20).unwrap();
+        let mut answer = vec![];
+        tcp.read_to_end(&mut answer).unwrap();
+        assert_eq!(answer, b"byte handler");
+        server.poll(120021).unwrap();
+        assert!(server.connections().is_empty());
+    }
+    assert!(Loopback::bind("192.0.2.1".parse().unwrap()).is_err());
+}
+#[test]
+fn s07_reassembly_byte_budget_is_independent_of_context_count() {
+    let mut r = snac_rs::ip_reassembly::Reassembler::default();
+    let p = udp6(&vec![42; 65496]);
+    for id in 0..63 {
+        r.input(&fragment6(&p, id, 0, 65504, true), 0).unwrap();
+    }
+    assert_eq!(r.context_count(), 63);
+    assert!(r.retained_bytes() <= 4 * 1024 * 1024);
+    assert!(r.input(&fragment6(&p, 63, 0, 65504, true), 0).is_err());
+    assert_eq!(r.context_count(), 63);
+    r.expire(60000);
+    assert_eq!(r.retained_bytes(), 0);
+    let mut overflow = fragment6(&udp6(&[0; 8]), 1, 0, 16, false);
+    overflow[42..44].copy_from_slice(&65528u16.to_be_bytes());
+    assert!(r.input(&overflow, 60001).is_err());
+    assert_eq!(r.context_count(), 0);
+}
