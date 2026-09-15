@@ -554,17 +554,23 @@ impl Router {
         for key in &selected {
             let prefix = Prefix::new(key.1.address, 64).unwrap();
             let lease = &self.pd.leases[key];
-            if !self.pd_prefixes.contains_key(&prefix) {
+            if self
+                .pd_prefixes
+                .get(&prefix)
+                .is_none_or(|p| p.lease != *key || p.deprecate_at.is_some())
+            {
                 changed = true;
             }
-            self.pd_prefixes
-                .entry(prefix)
-                .or_insert(OwnedPrefix {
-                    lease: *key,
-                    deprecate_at: None,
-                    last_valid: Lifetime::Until(now),
-                })
-                .deprecate_at = None;
+            let owned = self.pd_prefixes.entry(prefix).or_insert(OwnedPrefix {
+                lease: *key,
+                deprecate_at: None,
+                last_valid: Lifetime::Until(now),
+            });
+            owned.lease = *key;
+            owned.deprecate_at = None;
+            if self.links[1].up {
+                self.withdrawals.remove(&(Link::Ail, prefix));
+            }
             self.on_link.insert(
                 (Link::Stub, prefix),
                 OnLink {
