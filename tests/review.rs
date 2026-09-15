@@ -337,3 +337,66 @@ fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
         .any(|r| r.prefix == *p && r.lifetime > 0)));
     assert!(d.router.links[0].scheduler.deadline() <= 20000);
 }
+
+fn dhcp_receive(r: &mut Router, kind: u8, extra: &[u8], now: u64) -> Vec<snac_rs::router::Tx> {
+    let packet = dhcp_packet(
+        &r.identity.link_local(Link::Ail).to_string(),
+        kind,
+        r.pd.exchange.as_ref().unwrap().xid,
+        &r.identity.duid,
+        &[1, 2, 3],
+        extra,
+    );
+    r.receive(Link::Ail, &packet, now, &mut ScriptedRandom::new([]))
+        .unwrap()
+}
+#[test]
+fn review_05_delegation_excludes_ail_subnets_in_offer_and_reply() {
+    for learned in [false, true] {
+        let mut r = router();
+        r.links[1].state = AilState::BeginAdvertising;
+        let (address, length) = if learned {
+            receive_ra(
+                &mut r,
+                Link::Ail,
+                "fe80::99",
+                &pio("2001:db8:aa::", 56, 0x80, 5000, 6000),
+                0,
+            )
+            .unwrap();
+            ("2001:db8:aa::".to_string(), 56)
+        } else {
+            (r.identity.prefix(Link::Ail).address.to_string(), 64)
+        };
+        r.pd.start(0, &mut ScriptedRandom::new([])).unwrap();
+        let mut bad_offer = ia(1, 1000, 2000, &[(&address, length, 5000, 6000)]);
+        bad_offer.extend(option(7, &[255]));
+        dhcp_receive(&mut r, 2, &bad_offer, 1);
+        assert_eq!(r.pd.state, snac_rs::router::pd::PdState::Soliciting);
+        let mut good = ia(1, 1000, 2000, &[("2001:db8:bbbb::", 64, 5000, 6000)]);
+        good.extend(option(7, &[255]));
+        dhcp_receive(&mut r, 2, &good, 2);
+        let output = dhcp_receive(
+            &mut r,
+            7,
+            &ia(1, 1000, 2000, &[(&address, length, 5000, 6000)]),
+            3,
+        );
+        let derived = Prefix::new(ip(&address), 64).unwrap();
+        assert!(!r.on_link.contains_key(&(Link::Stub, derived)));
+        assert!(!r
+            .snapshot(Link::Stub, 3)
+            .pios
+            .iter()
+            .any(|p| p.prefix == derived));
+        assert!(output.iter().any(|t| {
+            let e = envelope(FrameKind::RawIpv6, &t.packet).unwrap();
+            e.next_header == 17 && e.payload[8] == 8
+        }));
+        assert!(r
+            .snapshot(Link::Stub, 3)
+            .pios
+            .iter()
+            .any(|p| p.prefix == r.identity.prefix(Link::Stub) && p.preferred > 0));
+    }
+}
