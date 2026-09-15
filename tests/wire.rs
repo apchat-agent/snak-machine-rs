@@ -92,3 +92,33 @@ fn nd_requires_local_valid_control_packet() {
     let p = nd_packet("::", "ff02::1:ff00:2", ns);
     assert!(decode_nd(&envelope(FrameKind::RawIpv6, &p).unwrap()).is_ok());
 }
+
+use snac_rs::wire::{Pio, Prefix};
+#[test]
+fn pio_suitability_is_not_onlink_status() {
+    for (length, flags, preferred, valid, expected) in [
+        (64, 0xc0, 1800, 1800, true),
+        (64, 0x90, 1800, 3600, true),
+        (64, 0xc0, 1799, 1800, false),
+        (56, 0xc0, 1800, 1800, false),
+        (64, 0x40, 1800, 1800, false),
+        (64, 0x80, 1800, 1800, false),
+        (64, 0xc0, 1801, 1800, false),
+        (64, 0xc0, u32::MAX, u32::MAX, true),
+    ] {
+        let b = pio("fd12:3456:789a:ff::1", length, flags, preferred, valid);
+        let p = Pio::decode(&b).unwrap();
+        assert_eq!(p.suitable(), expected);
+        assert_eq!(p.on_link(), flags & 0x80 != 0);
+        assert!(p.prefix.contains(ip("fd12:3456:789a:ff::1234")));
+        if length == 56 {
+            assert_eq!(p.prefix.address, ip("fd12:3456:789a::"));
+        }
+    }
+    for addr in ["fe80::", "ff02::", "::"] {
+        assert!(!Pio::decode(&pio(addr, 64, 0xc0, 1800, 1800))
+            .unwrap()
+            .suitable());
+    }
+    assert!(Prefix::new(ip("::"), 129).is_none());
+}
