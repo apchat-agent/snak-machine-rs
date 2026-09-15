@@ -119,6 +119,7 @@ fn s02_detected_attachment_rotates_only_after_discovery_and_retains_old_stub() {
     r.set_link(Link::Ail, true, 21000, &mut rng).unwrap();
     observe(&mut r, "fe80::b", "2001:db8:2::", 21000);
     assert_eq!(r.identity.site, old, "one RA cannot establish movement");
+    let promised = r.links[1].last_valid.remaining(30000);
     send(&mut r, 30000);
     assert_ne!(
         r.identity.site, old,
@@ -138,7 +139,7 @@ fn s02_detected_attachment_rotates_only_after_discovery_and_retains_old_stub() {
         .unwrap();
     assert_eq!(p.preferred, 0);
     assert!(
-        p.valid <= 1770,
+        p.valid <= promised,
         "rotation cannot extend the last advertised validity"
     );
 }
@@ -215,4 +216,36 @@ fn s02_pd_renews_due_server_and_keeps_other_ia_lifetimes() {
     .unwrap();
     assert_eq!(pd.leases[&key].valid, Lifetime::from_secs(0, 400));
     assert_eq!(pd.leases[&key].t1, Lifetime::from_secs(0, 100));
+}
+
+#[test]
+fn s02_fixed_policy_and_attachment_bounds() {
+    use snac_rs::router::attachment::{Attachment, UlaPolicy, MAX_ATTACHMENT_IDENTITIES};
+    let mut r = router(90);
+    let old = r.identity.site;
+    r.configure_attachment(
+        UlaPolicy::Fixed,
+        Some("office"),
+        0,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    observe(&mut r, "fe80::a", "2001:db8:1::", 0);
+    send(&mut r, 9000);
+    r.set_link(Link::Ail, false, 10000, &mut ScriptedRandom::new([]))
+        .unwrap();
+    r.set_link(Link::Ail, true, 11000, &mut ScriptedRandom::new([]))
+        .unwrap();
+    observe(&mut r, "fe80::b", "2001:db8:2::", 11000);
+    send(&mut r, 20000);
+    assert_eq!(r.identity.site, old);
+    let mut evidence = Attachment::default();
+    for i in 0..MAX_ATTACHMENT_IDENTITIES {
+        evidence.observe(&[i as u8]).unwrap();
+    }
+    assert_eq!(evidence.evidence_count(), MAX_ATTACHMENT_IDENTITIES);
+    evidence.observe(&[200]).unwrap();
+    assert_eq!(evidence.evidence_count(), MAX_ATTACHMENT_IDENTITIES);
+    assert!(evidence.observe(&[]).is_err());
+    assert!(evidence.observe(&[0; 129]).is_err());
 }
