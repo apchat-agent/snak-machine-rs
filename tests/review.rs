@@ -916,3 +916,18 @@ fn review_01_zero_lifetime_pios_do_not_create_retained_entries() {
     receive_ra(&mut r, Link::Ail, "fe80::99", &options, 0).unwrap();
     assert!(r.on_link.is_empty());
 }
+
+#[test]
+fn review_08_suitable_during_dad_arms_ra_delay_at_readiness() {
+    let mut d = driver();
+    d.start(0, &mut ScriptedRandom::new([])).unwrap();
+    let p = nd_packet(
+        "fe80::99",
+        "ff02::1",
+        ra(0, 0, &pio("2001:db8:1::", 64, 0xc0, 1800, 1800)),
+    );
+    d.accept(incoming(&d, Link::Ail, p), 1, &mut EdgeRandom(true))
+        .unwrap();
+    d.step(1000, &mut EdgeRandom(true)).unwrap();
+    assert_eq!(d.router.links[0].scheduler.deadline(), 17000);
+}
