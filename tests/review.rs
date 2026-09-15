@@ -290,6 +290,7 @@ fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
     let delegated = Prefix::new(ip("2001:db8:aa::"), 64).unwrap();
     lease(&mut d.router, 1, delegated, 5000, 6000);
     d.step(0, &mut ScriptedRandom::new([])).unwrap();
+    d.step(3000, &mut ScriptedRandom::new([])).unwrap();
     let expected = [d.router.identity.prefix(Link::Stub), delegated];
     assert!(expected.iter().all(|p| d
         .router
@@ -299,7 +300,7 @@ fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
         .any(|r| r.prefix == *p && r.lifetime > 0)));
     d.io.output.clear();
     d.io.up[1] = false;
-    for now in [1000, 3000] {
+    for now in [4000, 6000] {
         d.step(now, &mut ScriptedRandom::new([])).unwrap();
     }
     let rios: Vec<_> =
@@ -320,22 +321,22 @@ fn review_04_stub_loss_withdraws_and_recovery_restores_osnrs() {
         .all(|p| rios.iter().any(|r| r.prefix == *p && r.lifetime == 0)));
     assert!(d
         .router
-        .snapshot(Link::Ail, 3000)
+        .snapshot(Link::Ail, 6000)
         .rios
         .iter()
         .all(|r| r.lifetime == 0));
     assert!(expected
         .iter()
-        .all(|p| d.router.on_link[&(Link::Stub, *p)].valid.live(3000)));
+        .all(|p| d.router.on_link[&(Link::Stub, *p)].valid.live(6000)));
     d.io.up[1] = true;
-    d.step(4000, &mut ScriptedRandom::new([])).unwrap();
+    d.step(7000, &mut ScriptedRandom::new([])).unwrap();
     assert!(expected.iter().all(|p| d
         .router
-        .snapshot(Link::Ail, 4000)
+        .snapshot(Link::Ail, 7000)
         .rios
         .iter()
         .any(|r| r.prefix == *p && r.lifetime > 0)));
-    assert!(d.router.links[0].scheduler.deadline() <= 20000);
+    assert!(d.router.links[0].scheduler.deadline() <= 23000);
 }
 
 fn dhcp_receive(r: &mut Router, kind: u8, extra: &[u8], now: u64) -> Vec<snac_rs::router::Tx> {
@@ -646,4 +647,70 @@ fn review_12_exhausted_dad_stops_affected_link() {
     assert!(!d.router.links[1].up);
     assert!(d.io.groups[1].is_empty());
     assert!(d.router.links[0].up);
+}
+
+#[test]
+fn review_13_mixed_rio_sizes_fit_and_degradation_withdraws_every_export() {
+    let mut d = driver();
+    for s in &mut d.router.links {
+        s.state = AilState::BeginAdvertising;
+    }
+    d.step(0, &mut ScriptedRandom::new([])).unwrap();
+    for i in 1..=120 {
+        receive_ra(
+            &mut d.router,
+            Link::Stub,
+            "fe80::99",
+            &pio(
+                &format!("2001:db8:{i:x}::"),
+                [64, 65, 96, 128][i % 4],
+                0x80,
+                0,
+                6000,
+            ),
+            1000,
+        )
+        .unwrap();
+    }
+    assert!(d.router.snapshot(Link::Ail, 1000).encode().is_ok());
+    d.step(3000, &mut ScriptedRandom::new([])).unwrap();
+    let mut advertised = std::collections::BTreeSet::new();
+    for (l, b) in &d.io.output {
+        let e = envelope(FrameKind::Ethernet, b).unwrap();
+        if let Ok(nd) = decode_nd(&e) {
+            for r in nd.options.iter().filter_map(|o| Rio::decode(o.bytes)) {
+                if r.lifetime > 0 {
+                    advertised.insert((*l, r.prefix));
+                }
+            }
+        }
+    }
+    assert!(advertised.len() > 30);
+    d.io.output.clear();
+    for i in 200..=255 {
+        receive_ra(
+            &mut d.router,
+            Link::Ail,
+            "fe80::88",
+            &rio(&format!("2001:db8:{i:x}::"), 96, 24, 6000, 3),
+            4000,
+        )
+        .unwrap();
+    }
+    for now in [6000, 9000, 12000] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    assert_eq!(d.router.lifecycle, Lifecycle::Degraded);
+    let mut withdrawn = std::collections::BTreeSet::new();
+    for (l, b) in &d.io.output {
+        assert!(b.len() <= 1294);
+        let e = envelope(FrameKind::Ethernet, b).unwrap();
+        if let Ok(nd) = decode_nd(&e) {
+            for r in nd.options.iter().filter_map(|o| Rio::decode(o.bytes)) {
+                assert_eq!(r.lifetime, 0);
+                withdrawn.insert((*l, r.prefix));
+            }
+        }
+    }
+    assert!(advertised.is_subset(&withdrawn));
 }

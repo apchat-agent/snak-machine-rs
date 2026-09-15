@@ -746,6 +746,11 @@ fn other_stub_routes_keep_independent_lifetimes() {
         &mut rng,
     )
     .unwrap();
+    let sent = snac_rs::router::Tx {
+        link: Link::Stub,
+        packet: r.snapshot(Link::Stub, 23000).encode().unwrap(),
+    };
+    r.transmitted(&sent, 23000, true, &mut rng).unwrap();
     assert_eq!(exported(&r, 23000), Some(499));
     r.receive(
         Link::Ail,
