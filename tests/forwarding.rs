@@ -17,8 +17,10 @@ fn router() -> Router {
     .unwrap();
     let mut r = Router::new(id, 0, &mut ScriptedRandom::new([])).unwrap();
     let mut rng = ScriptedRandom::new([]);
-    for tx in r.tick(9000, &mut rng).unwrap() {
-        r.transmitted(&tx, 9000, true, &mut rng).unwrap();
+    for now in [0, 4000, 8000, 9000] {
+        for tx in r.tick(now, &mut rng).unwrap() {
+            r.transmitted(&tx, now, true, &mut rng).unwrap();
+        }
     }
     r
 }

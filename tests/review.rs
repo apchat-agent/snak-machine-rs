@@ -468,3 +468,74 @@ fn review_07_noninitial_icmp_fragments_forward_all_data_values() {
         assert_eq!(&output[0].packet[40..], &payload);
     }
 }
+
+#[test]
+fn review_08_driver_discovery_waits_for_successful_rs_and_fresh_ra_delay() {
+    for delay in [0, 16000] {
+        let mut d = driver();
+        d.start(0, &mut ScriptedRandom::new([])).unwrap();
+        d.io.output.clear();
+        for now in [0, 999, 1000, 5000, 9000, 9999] {
+            d.step(now, &mut ScriptedRandom::new([])).unwrap();
+        }
+        assert_eq!(d.router.state(Link::Ail), AilState::Unknown);
+        let rs =
+            d.io.output
+                .iter()
+                .filter(|(l, b)| {
+                    *l == Link::Ail && envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 133
+                })
+                .count();
+        assert_eq!(rs, 3);
+        d.step(10000, &mut ScriptedRandom::new([delay; 20]))
+            .unwrap();
+        assert_eq!(
+            d.router.links[0].scheduler.deadline(),
+            if delay == 0 { 13000 } else { 26000 }
+        );
+        if delay > 0 {
+            assert_eq!(d.router.state(Link::Ail), AilState::BeginAdvertising);
+            d.step(26000, &mut ScriptedRandom::new([])).unwrap();
+        }
+        assert_eq!(d.router.state(Link::Ail), AilState::Advertising);
+    }
+    let mut r = router();
+    let tx = r.tick(5000, &mut ScriptedRandom::new([])).unwrap();
+    let rs = tx
+        .iter()
+        .find(|t| t.link == Link::Ail && t.packet[40] == 133)
+        .unwrap();
+    r.transmitted(rs, 5000, false, &mut ScriptedRandom::new([]))
+        .unwrap();
+    assert_eq!(r.state(Link::Ail), AilState::Unknown);
+    let tx = r.tick(50000, &mut ScriptedRandom::new([])).unwrap();
+    assert!(tx
+        .iter()
+        .any(|t| t.link == Link::Ail && t.packet[40] == 133));
+    assert_eq!(r.state(Link::Ail), AilState::Unknown);
+}
+#[test]
+fn review_08_incoming_ra_during_dad_never_uses_tentative_source() {
+    let mut d = driver();
+    d.start(0, &mut ScriptedRandom::new([])).unwrap();
+    d.io.output.clear();
+    let mut options = pio("2001:db8:1::", 64, 0xc0, 1800, 1800);
+    options.extend([1, 1, 2, 0, 0, 0, 0, 99]);
+    d.accept(
+        incoming(
+            &d,
+            Link::Ail,
+            nd_packet("fe80::99", "ff02::1", ra(0, 0, &options)),
+        ),
+        1,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    assert!(d.io.output.is_empty());
+    d.step(1000, &mut ScriptedRandom::new([])).unwrap();
+    assert!(d
+        .io
+        .output
+        .iter()
+        .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+}

@@ -146,6 +146,9 @@ fn unknown_completes_router_discovery() {
                 .map(|x| x.packet[40]),
         );
         assert!(tx.iter().all(|x| x.packet[40] != 134));
+        for txx in &tx {
+            r.transmitted(txx, t, true, &mut rng).unwrap();
+        }
     }
     assert_eq!(rs, vec![133; 3]);
     let tx = r.tick(9000, &mut rng).unwrap();
@@ -160,6 +163,9 @@ fn unknown_completes_router_discovery() {
     r.transmitted(ail, 9000, true, &mut rng).unwrap();
     assert_eq!(r.state(Link::Ail), AilState::Advertising);
     let mut r = router(10);
+    for tx in r.tick(0, &mut rng).unwrap() {
+        r.transmitted(&tx, 0, true, &mut rng).unwrap();
+    }
     let p = nd_packet(
         "fe80::abcd",
         "ff02::1",
@@ -169,6 +175,11 @@ fn unknown_completes_router_discovery() {
     assert_eq!(r.state(Link::Ail), AilState::Suitable);
     r.receive(Link::Ail, &na_for(&r, "fe80::abcd", true), 101, &mut rng)
         .unwrap();
+    for now in [4000, 8000] {
+        for tx in r.tick(now, &mut rng).unwrap() {
+            r.transmitted(&tx, now, true, &mut rng).unwrap();
+        }
+    }
     let tx = r.tick(9000, &mut rng).unwrap();
     let a = tx
         .iter()
@@ -336,8 +347,10 @@ fn stale_pio_cannot_be_kept_alive_by_other_options() {
 fn providing(seed: u64) -> Router {
     let mut r = router(seed);
     let mut rng = ScriptedRandom::new([]);
-    for tx in r.tick(9000, &mut rng).unwrap() {
-        r.transmitted(&tx, 9000, true, &mut rng).unwrap();
+    for now in [0, 4000, 8000, 9000] {
+        for tx in r.tick(now, &mut rng).unwrap() {
+            r.transmitted(&tx, now, true, &mut rng).unwrap();
+        }
     }
     r
 }
@@ -771,7 +784,12 @@ fn pd_solicit_contains_stable_identity_and_64_hints() {
     .unwrap();
     r.receive(Link::Ail, &na_for(&r, "fe80::9", true), 1, &mut rng)
         .unwrap();
-    let tx = r.tick(9000, &mut rng).unwrap();
+    for now in [1, 4001, 8001] {
+        for tx in r.tick(now, &mut rng).unwrap() {
+            r.transmitted(&tx, now, true, &mut rng).unwrap();
+        }
+    }
+    let tx = r.tick(9001, &mut rng).unwrap();
     let p = &tx
         .iter()
         .find(|x| x.link == Link::Ail && x.packet[6] == 17)
