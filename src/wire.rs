@@ -368,3 +368,90 @@ impl Pref64 {
         })
     }
 }
+
+pub fn ipv6_packet(
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    next: u8,
+    hop: u8,
+    payload: &[u8],
+) -> Result<Vec<u8>, WireError> {
+    let len = u16::try_from(payload.len()).map_err(|_| WireError::Capacity)?;
+    let mut b = vec![0; 40];
+    b[0] = 0x60;
+    b[4..6].copy_from_slice(&len.to_be_bytes());
+    b[6] = next;
+    b[7] = hop;
+    b[8..24].copy_from_slice(&source.octets());
+    b[24..40].copy_from_slice(&destination.octets());
+    b.extend(payload);
+    Ok(b)
+}
+pub fn icmp_packet(
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    hop: u8,
+    mut body: Vec<u8>,
+) -> Result<Vec<u8>, WireError> {
+    if body.len() < 4 {
+        return Err(WireError::Invalid);
+    }
+    body[2] = 0;
+    body[3] = 0;
+    let c = checksum(source, destination, 58, &body);
+    body[2..4].copy_from_slice(&c.to_be_bytes());
+    ipv6_packet(source, destination, 58, hop, &body)
+}
+#[derive(Clone, Debug)]
+pub struct Advertisement {
+    pub link: crate::Link,
+    pub source: Ipv6Addr,
+    pub destination: Ipv6Addr,
+    pub mac: Option<[u8; 6]>,
+    pub mtu: u32,
+    pub mo: u8,
+    pub default_lifetime: u16,
+    pub pios: Vec<Pio>,
+    pub rios: Vec<Rio>,
+}
+impl Advertisement {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        if self.mtu < 1280 || !link_local(self.source) {
+            return Err(WireError::Invalid);
+        }
+        let ail = self.link == crate::Link::Ail;
+        let mut b = vec![134, 0, 0, 0, 0, if ail { 2 | (self.mo & 0xc0) } else { 0 }];
+        b.extend(
+            if ail {
+                0
+            } else {
+                self.default_lifetime.min(1800)
+            }
+            .to_be_bytes(),
+        );
+        b.extend([0; 8]);
+        if let Some(mac) = self.mac {
+            b.extend([1, 1]);
+            b.extend(mac);
+        }
+        if !ail {
+            b.extend([5, 1, 0, 0]);
+            b.extend(self.mtu.to_be_bytes());
+        }
+        let mut pios = self.pios.clone();
+        pios.sort_by_key(|p| p.prefix);
+        for p in pios {
+            b.extend(p.encode());
+        }
+        let mut rios = self.rios.clone();
+        rios.sort_by_key(|r| r.prefix);
+        rios.dedup_by_key(|r| r.prefix);
+        for r in rios {
+            b.extend(r.encode());
+        }
+        if b.len() + 40 > 1280 {
+            return Err(WireError::Capacity);
+        }
+        icmp_packet(self.source, self.destination, 255, b)
+    }
+}
