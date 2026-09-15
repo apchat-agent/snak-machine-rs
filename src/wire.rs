@@ -80,6 +80,7 @@ pub struct Transport<'a> {
     pub protocol: u8,
     pub bytes: &'a [u8],
     pub fragmented: bool,
+    pub non_initial: bool,
 }
 pub fn transport<'a>(e: &Envelope<'a>) -> Result<Transport<'a>, WireError> {
     let mut next = e.next_header;
@@ -108,6 +109,7 @@ pub fn transport<'a>(e: &Envelope<'a>) -> Result<Transport<'a>, WireError> {
                     protocol: next,
                     bytes: p,
                     fragmented,
+                    non_initial: false,
                 })
             }
         };
@@ -122,6 +124,7 @@ pub fn transport<'a>(e: &Envelope<'a>) -> Result<Transport<'a>, WireError> {
                 protocol: next,
                 bytes: p,
                 fragmented,
+                non_initial: true,
             });
         }
     }

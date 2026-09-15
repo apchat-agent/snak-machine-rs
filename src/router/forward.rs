@@ -38,7 +38,9 @@ impl Router {
         let Ok(t) = transport(&e) else {
             return Ok(vec![]);
         };
-        if (t.protocol == 58 && t.bytes.first().is_some_and(|v| (133..=136).contains(v)))
+        if (t.protocol == 58
+            && !t.non_initial
+            && t.bytes.first().is_some_and(|v| (133..=136).contains(v)))
             || self.owned.contains_key(&(link, e.destination))
             || e.destination.is_multicast()
         {
@@ -288,7 +290,7 @@ impl Router {
             return vec![];
         }
         if let Ok(t) = transport(e) {
-            if t.protocol == 58 && t.bytes.first().is_some_and(|b| *b < 128) {
+            if t.protocol == 58 && !t.non_initial && t.bytes.first().is_some_and(|b| *b < 128) {
                 return vec![];
             }
         }
