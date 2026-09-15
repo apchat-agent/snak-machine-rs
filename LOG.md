@@ -668,3 +668,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   byte, cache, compression and configuration bounds all have rootless evidence.
   No new field or dependency. S09 is complete. `cargo build --features pcap`
   and macOS aarch64 all-targets/pcap checking also pass at this boundary.
+
+### S10 — opportunistic DoT and persistent identity (in progress)
+
+- RED `9b15fae`: `cargo test` confirms the missing identity API. GREEN passes
+  **180 tests** and all-feature clippy. Pure-Rust P-256 generation and a
+  self-signed X.509 leaf use injected randomness and an explicit wall clock.
+  One bounded key/certificate envelope uses the existing atomic store; native
+  identity files are mode 0600. Reload checks file type/mode, envelope lengths,
+  key/public-key match, issuer/subject, signature algorithm, self-signature and
+  validity. Expiry renews the certificate with the same key; corrupt, partial,
+  mismatched or future-dated state is an error without overwriting the old key.
+- Tests cover every envelope truncation, tampering, mismatched public key,
+  failed durable renewal, restart identity retention and filesystem modes.
+  Key-containing temporary buffers are zeroized using the pinned elliptic-curve
+  crate's existing zeroize re-export; diagnostics omit key material. No new
+  dependency or field outside the planned identity state. DoT record pumping,
+  listener integration and connection limits follow.

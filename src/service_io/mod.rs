@@ -1,5 +1,6 @@
 //! IP-medium endpoints. ND, routing and address readiness remain router-owned.
 //! S01 provides one bounded TCP endpoint; Driver integration is step S07.
+pub mod identity;
 pub mod loopback;
 pub mod stack;
 use crate::{
