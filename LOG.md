@@ -656,3 +656,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   exception needed for DNSSEC delegation denial. Configured owned zones cannot
   leak into forwarding. Actual SRP/Discovery Proxy view owners are installed
   in S15/S16. Zone names are the planned authority dispatch state; no dependency.
+- S09 final RED `44c65f7` executes an unintended upstream A query after a
+  public CNAME points into a local zone. GREEN passes **177 tests** and
+  all-feature clippy. Alias targets obey local-zone policy as well as direct
+  questions; current empty local views produce no A data, with registry/proxy
+  lookup integration following in S15/S16. Queries exceeding the 4 KiB UDP
+  transport budget begin over TCP.
+- The client stream table is filled to 64 and a 65th refused; idle expiry
+  releases it. Driver fixtures reject malformed TCP framing and retain the
+  response path after client half-close. Upstream slot, per-client, per-poll,
+  byte, cache, compression and configuration bounds all have rootless evidence.
+  No new field or dependency. S09 is complete. `cargo build --features pcap`
+  and macOS aarch64 all-targets/pcap checking also pass at this boundary.

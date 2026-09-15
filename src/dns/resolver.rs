@@ -355,7 +355,7 @@ impl Resolver {
             exchange: self.next,
             server,
             source_port,
-            tcp: false,
+            tcp: bytes.len() > 4096,
             bytes,
         })
     }
@@ -404,6 +404,12 @@ impl Resolver {
             return self.finish(p, b, now);
         }
         if let Some(aq) = additional_question(&m, &p.question, self.additional_a) {
+            // The local empty-zone lookup is negative until a view owner provides data.
+            if in_zone(&aq.name, &"service.arpa.".parse().unwrap())
+                || self.local_zones.iter().any(|z| in_zone(&aq.name, z))
+            {
+                return self.finish(p, bytes.to_vec(), now);
+            }
             let mut q = Message::new(0, 0x100 | (p.original.flags & 0x10));
             q.questions.push(aq);
             q.additional = p.original.additional.clone();
