@@ -32,6 +32,13 @@ pub struct Service {
 pub struct Registry {
     hosts: BTreeMap<Name, Host>,
     services: BTreeMap<Name, Service>,
+    replies: BTreeMap<[u8; 32], Receipt>,
+}
+#[derive(Clone)]
+struct Receipt {
+    grant: Grant,
+    received_at: i128,
+    expires: u64,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Grant {
@@ -39,6 +46,24 @@ pub struct Grant {
     pub key_lease: u32,
 }
 impl Registry {
+    pub fn cached(&self, bytes: &[u8], now: u64) -> Option<Grant> {
+        if bytes.len() > 65535 {
+            return None;
+        }
+        self.cached_digest(&super::wire::fingerprint(bytes), now)
+    }
+    fn cached_digest(&self, digest: &[u8; 32], now: u64) -> Option<Grant> {
+        let r = self.replies.get(digest).filter(|r| r.expires > now)?;
+        let elapsed = ((now as i128 - r.received_at).max(0) / 1000).min(u32::MAX.into()) as u32;
+        Some(Grant {
+            lease: r.grant.lease.saturating_sub(elapsed),
+            key_lease: r.grant.key_lease.saturating_sub(elapsed),
+        })
+    }
+    pub fn replay_count(&self) -> usize {
+        self.replies.len()
+    }
+
     pub fn hosts(&self) -> impl Iterator<Item = (&Name, &Host)> {
         self.hosts.iter()
     }
@@ -120,6 +145,7 @@ impl Registry {
             .min()
     }
     pub fn expire(&mut self, now: u64) {
+        self.replies.retain(|_, r| r.expires > now);
         self.hosts.retain(|_, h| h.key_expires > now);
         for h in self.hosts.values_mut() {
             if h.expires <= now {
@@ -170,7 +196,7 @@ impl Registry {
             })
             .sum();
         // Two reducer images plus wire journal/work space. No unbounded retry history.
-        (hosts + services) * 3
+        (hosts + services + 192 * self.replies.len()) * 3
     }
     pub fn apply(
         &mut self,
@@ -179,6 +205,9 @@ impl Registry {
         now: u64,
         wall: u64,
     ) -> Result<Grant, Error> {
+        if let Some(grant) = self.cached_digest(&u.digest, now) {
+            return Ok(grant);
+        }
         for n in std::iter::once(&u.host).chain(u.services.iter().map(|s| &s.name)) {
             if self.key(n, now).is_some_and(|k| !k.same_public_key(&u.key)) {
                 return Err(Error::YxDomain);
@@ -251,6 +280,23 @@ impl Registry {
                 );
             }
         }
+        if next.replies.len() == 128 {
+            let oldest = *next
+                .replies
+                .iter()
+                .min_by_key(|(_, r)| r.received_at)
+                .unwrap()
+                .0;
+            next.replies.remove(&oldest);
+        }
+        next.replies.insert(
+            u.digest,
+            Receipt {
+                grant,
+                received_at: now.into(),
+                expires: now.saturating_add(30000),
+            },
+        );
         next.check_bounds()?;
         let bytes = next.encode(now, wall).map_err(|_| Error::ServFail)?;
         store.save(&bytes).map_err(|_| Error::ServFail)?;
@@ -259,7 +305,7 @@ impl Registry {
     }
     fn check_bounds(&self) -> Result<(), Error> {
         let (hosts, services, bytes) = self.counts();
-        if hosts > 128 || services > 1024 || bytes > MAX_BYTES {
+        if hosts > 128 || services > 1024 || self.replies.len() > 128 || bytes > MAX_BYTES {
             return Err(Error::ServFail);
         }
         let mut per_host = BTreeMap::new();

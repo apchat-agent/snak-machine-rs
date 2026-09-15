@@ -127,6 +127,7 @@ pub struct ServiceUpdate {
 }
 #[derive(Clone, Debug)]
 pub struct Update {
+    pub(crate) digest: [u8; 32],
     pub id: u16,
     pub zone: Name,
     pub host: Name,
@@ -374,6 +375,7 @@ impl Validator {
             .copy_from_slice(&(m.additional.len() as u16 - 1).to_be_bytes());
         key.verify(&signed, signature)?;
         Ok(Update {
+            digest: fingerprint(bytes),
             id: m.id,
             zone: zone.clone(),
             host: host.clone(),
@@ -419,4 +421,16 @@ fn discovery_owner(owner: &Name, target: &Name, zone: &Name) -> bool {
     owner.labels().len() == base.labels().len() + 2
         && owner.labels()[1].eq_ignore_ascii_case(b"_sub")
         && Name::from_labels(owner.labels()[2..].to_vec()).is_ok_and(|n| n == base)
+}
+
+pub(crate) fn fingerprint(bytes: &[u8]) -> [u8; 32] {
+    rustls_rustcrypto::TLS13_AES_128_GCM_SHA256
+        .tls13()
+        .unwrap()
+        .common
+        .hash_provider
+        .hash(bytes)
+        .as_ref()
+        .try_into()
+        .unwrap()
 }

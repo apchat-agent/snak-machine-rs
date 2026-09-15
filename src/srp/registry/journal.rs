@@ -1,7 +1,7 @@
 use super::*;
 use crate::dns::wire::{Context, Message};
 use sha1::{Digest, Sha1};
-const MAGIC: &[u8] = b"SNAC-SRP-1\0";
+const MAGIC: &[u8] = b"SNAC-SRP-2\0";
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid SRP journal")
 }
@@ -35,6 +35,7 @@ impl Registry {
         b.extend(wall.to_be_bytes());
         b.extend((self.hosts.len() as u16).to_be_bytes());
         b.extend((self.services.len() as u16).to_be_bytes());
+        b.extend((self.replies.len() as u16).to_be_bytes());
         for (name, h) in &self.hosts {
             put_name(&mut b, name);
             put_key(&mut b, &h.key);
@@ -56,6 +57,15 @@ impl Registry {
             );
             put_records(&mut b, &s.records)?;
             put_records(&mut b, &s.discovery)?;
+        }
+        for (digest, r) in &self.replies {
+            b.extend(digest);
+            b.extend(r.grant.lease.to_be_bytes());
+            b.extend(r.grant.key_lease.to_be_bytes());
+            b.extend(r.expires.saturating_sub(now).to_be_bytes());
+            b.extend(
+                ((now as i128 - r.received_at).max(0).min(u64::MAX.into()) as u64).to_be_bytes(),
+            );
         }
         let digest = Sha1::digest(&b);
         b.extend(digest);
@@ -80,7 +90,8 @@ impl Registry {
         let elapsed = wall.saturating_sub(saved_wall).saturating_mul(1000);
         let hosts = p.u16()?;
         let services = p.u16()?;
-        if hosts > 128 || services > 1024 {
+        let replies = p.u16()?;
+        if hosts > 128 || services > 1024 || replies > 128 {
             return Err(invalid());
         }
         let deadline = |remaining: u64| {
@@ -157,6 +168,35 @@ impl Registry {
                         expires: deadline(lease),
                         key_expires: deadline(key_lease),
                         received_at,
+                    },
+                )
+                .is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        for _ in 0..replies {
+            let digest: [u8; 32] = p.take(32)?.try_into().unwrap();
+            let lease = p.u32()?;
+            let key_lease = p.u32()?;
+            let remaining = p.u64()?;
+            let age = p.u64()?;
+            if lease > 7200
+                || key_lease > 1209600
+                || lease > key_lease
+                || remaining > 30000
+                || age > 30000
+            {
+                return Err(invalid());
+            }
+            if out
+                .replies
+                .insert(
+                    digest,
+                    Receipt {
+                        grant: Grant { lease, key_lease },
+                        received_at: now as i128 - age as i128 - elapsed as i128,
+                        expires: deadline(remaining),
                     },
                 )
                 .is_some()

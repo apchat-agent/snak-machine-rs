@@ -812,3 +812,18 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   never for signature verification. No new dependency. Registry state fields
   are the planned records, key claims, independent deadlines and reception time.
   Capacity/retry and live durable service wiring follow.
+- S12 bound/retry RED `9ee8819` confirms absent replay support; RED
+  `bba51ed` distinguishes released ownership from retained acknowledgments.
+  GREEN passes **204 tests** and all-feature clippy. Rootless fixtures fill
+  128 host claims and 1024 service tombstones, refuse the next host and ninth
+  service atomically, and independently exhaust the four-MiB byte budget.
+- Exact successful requests retain at most 128 durable acknowledgments for
+  30 seconds. Replays return remaining grants without another disk transaction
+  or a new reception timestamp, including after restart. Only acknowledgment
+  entries may be evicted; live name claims never are. The strong request digest
+  uses SHA-256 through S01's explicit RustCrypto provider. No dependency.
+- Added digest/receipt fields implement PLAN2's retry-ID/exact retransmission
+  requirement; receipts are included in byte accounting and the journal. The
+  host-release test now asserts zero host/service claims immediately, retaining
+  bounded release acknowledgments until expiry, then zero total bytes. This
+  preserves its ownership assertions while testing the added replay state.
