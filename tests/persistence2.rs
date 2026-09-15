@@ -355,3 +355,68 @@ fn s03_opaque_durable_records_have_transactional_count_and_byte_bounds() {
     records.set(1, &[3]).unwrap();
     records.set(2, &[4]).unwrap();
 }
+#[test]
+fn s03_rotated_prefixes_restore_once_and_retirement_has_a_bound() {
+    use snac_rs::router::attachment::{UlaPolicy, MAX_RETIRED_PREFIXES};
+    let mut r = router();
+    r.links[0].state = AilState::Advertising;
+    r.links[1].state = AilState::Advertising;
+    sent(&mut r, Link::Ail, 0);
+    sent(&mut r, Link::Stub, 0);
+    let old = r.identity.prefix(Link::Stub);
+    r.configure_attachment(
+        UlaPolicy::Rotate,
+        Some("other-ail"),
+        10000,
+        &mut ScriptedRandom::new([456]),
+    )
+    .unwrap();
+    let bytes = r.checkpoint(10000, 100010).unwrap();
+    let restored = Router::restore(&bytes, 0, 100020, &mut ScriptedRandom::new([])).unwrap();
+    assert_eq!(
+        restored
+            .on_link
+            .get(&(Link::Stub, old))
+            .unwrap()
+            .valid
+            .remaining(0),
+        1780
+    );
+    assert_eq!(
+        restored
+            .snapshot(Link::Stub, 0)
+            .pios
+            .iter()
+            .filter(|p| p.prefix == old)
+            .count(),
+        1
+    );
+    let mut r = router();
+    for i in 0..MAX_RETIRED_PREFIXES / 2 {
+        r.links[0].state = AilState::Advertising;
+        r.links[1].state = AilState::Advertising;
+        sent(&mut r, Link::Ail, 0);
+        sent(&mut r, Link::Stub, 0);
+        r.configure_attachment(
+            UlaPolicy::Rotate,
+            Some(&format!("ail-{i}")),
+            0,
+            &mut ScriptedRandom::new([500 + i as u64]),
+        )
+        .unwrap();
+    }
+    assert_eq!(r.retired_ulas.len(), MAX_RETIRED_PREFIXES);
+    sent(&mut r, Link::Ail, 0);
+    sent(&mut r, Link::Stub, 0);
+    let identity = r.identity.clone();
+    assert!(r
+        .configure_attachment(
+            UlaPolicy::Rotate,
+            Some("over-cap"),
+            0,
+            &mut ScriptedRandom::new([900])
+        )
+        .is_err());
+    assert_eq!(r.identity, identity);
+    assert_eq!(r.retired_ulas.len(), MAX_RETIRED_PREFIXES);
+}
