@@ -533,11 +533,12 @@ impl Router {
         self.routes.retain(|_, r| r.valid.live(now));
         self.reap_headers(now);
         self.owned.retain(|(link, _), a| {
-            a.prefix.is_none_or(|p| {
-                self.on_link
-                    .get(&(*link, p))
-                    .is_some_and(|p| p.valid.live(now))
-            })
+            a.state == DadState::Failed
+                || a.prefix.is_none_or(|p| {
+                    self.on_link
+                        .get(&(*link, p))
+                        .is_some_and(|p| p.valid.live(now))
+                })
         });
         for link in [Link::Stub, Link::Ail] {
             if !self.links[link.index()].up
