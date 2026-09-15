@@ -548,3 +548,50 @@ fn s14_tsr_time_comparison_tolerates_wire_quantization_without_changing_key_conf
     assert_eq!(compare(None, Some(local)), Relation::Conflict);
     assert_eq!(compare(None, None), Relation::Unstamped);
 }
+
+#[test]
+fn s14_metadata_budget_counts_dense_label_and_empty_txt_vector_allocations() {
+    use snac_rs::{
+        mdns::{cache::Cache, publish::Publisher},
+        time::ScriptedRandom,
+    };
+    let mut rng = ScriptedRandom::new([]);
+    let name = Name::from_labels(vec![vec![b'x']; 125]).unwrap();
+    let name_heap = 125 * std::mem::size_of::<Vec<u8>>() + 125 + 251;
+    let r = Record {
+        name,
+        kind: 1,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::A([192, 0, 2, 1]),
+    };
+    let mut m = Message::new(0, 0x8400);
+    m.answers.push(r.clone());
+    let mut c = Cache::default();
+    c.receive(&m, 0, &mut rng).unwrap();
+    assert!(
+        c.counts().2 >= name_heap * 2,
+        "cache entry and RRset key own distinct label vectors"
+    );
+    let mut p = Publisher::default();
+    p.replace(1, &[], &[r], 0, &mut rng).unwrap();
+    assert!(
+        p.counts().2 >= name_heap * 4,
+        "projection plus NSEC owner/next and publication identity"
+    );
+    let r = Record {
+        name: "txt.local.".parse().unwrap(),
+        kind: 16,
+        class: 1,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![]; 2048]),
+    };
+    let mut m = Message::new(0, 0x8400);
+    m.answers.push(r.clone());
+    let mut c = Cache::default();
+    c.receive(&m, 0, &mut rng).unwrap();
+    assert!(c.counts().2 >= 2 * 2048 * std::mem::size_of::<Vec<u8>>());
+    let mut p = Publisher::default();
+    p.replace(1, &[], &[r], 0, &mut rng).unwrap();
+    assert!(p.counts().2 >= 2 * 2048 * std::mem::size_of::<Vec<u8>>());
+}
