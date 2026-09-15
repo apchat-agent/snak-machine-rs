@@ -595,3 +595,244 @@ fn s14_metadata_budget_counts_dense_label_and_empty_txt_vector_allocations() {
     p.replace(1, &[], &[r], 0, &mut rng).unwrap();
     assert!(p.counts().2 >= 2 * 2048 * std::mem::size_of::<Vec<u8>>());
 }
+
+fn stamps(
+    records: &[Record],
+    time: i128,
+) -> std::collections::BTreeMap<Name, snac_rs::mdns::tsr::Stamp> {
+    records
+        .iter()
+        .filter(|r| r.class & 0x8000 != 0)
+        .map(|r| {
+            (
+                r.name.clone(),
+                snac_rs::mdns::tsr::Stamp {
+                    key_checksum: 7,
+                    received_at: time,
+                },
+            )
+        })
+        .collect()
+}
+#[test]
+fn s14_tsr_local_registration_distinguishes_conflict_staleness_and_already_known_data() {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, RegistrationError, OPTION_CODE},
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let records = vec![record("host.local.", 1)];
+    let mut rng = ScriptedRandom::new([]);
+    for (cached_time, proposed_time, expected) in [
+        (10000, 0, Some(RegistrationError::Stale)),
+        (10000, 10000, None),
+    ] {
+        let mut e = Engine::default();
+        let mut cached = Message::new(0, 0x8400);
+        cached.answers = records.clone();
+        let times = stamps(&records, cached_time);
+        attach(&mut cached, OPTION_CODE, 10000, &|n| times.get(n).copied()).unwrap();
+        e.querier.cache.receive(&cached, 10000, &mut rng).unwrap();
+        let result = e.register_tsr(
+            1,
+            (&[], &records),
+            &stamps(&records, proposed_time),
+            10000,
+            &mut rng,
+        );
+        assert_eq!(result.err(), expected);
+        if expected.is_none() {
+            assert!(e.publisher.ready(1));
+            assert!(e
+                .publisher
+                .poll(&|_, _| records.clone(), 10000)
+                .unwrap()
+                .is_none());
+            assert!(e
+                .querier
+                .cache
+                .owner_stamp(&records[0].name, 10000)
+                .is_none());
+        }
+    }
+    let mut e = Engine::default();
+    let mut cached = Message::new(0, 0x8400);
+    cached.answers = records.clone();
+    e.querier.cache.receive(&cached, 0, &mut rng).unwrap();
+    assert_eq!(
+        e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng),
+        Err(RegistrationError::Conflict)
+    );
+    let mut shared = records.clone();
+    shared[0].class = 1;
+    assert_eq!(
+        Engine::default().register_tsr(1, (&[], &shared), &stamps(&records, 0), 0, &mut rng),
+        Err(RegistrationError::Invalid)
+    );
+}
+#[test]
+fn s14_tsr_filters_stale_packets_and_silently_suppresses_only_superseded_owners() {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut records = vec![record("host.local.", 1)];
+    records.push(Record {
+        name: "service.local.".parse().unwrap(),
+        kind: 16,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Txt(vec![b"k=v".to_vec()]),
+    });
+    let source = |_, _| records.clone();
+    e.register_tsr(
+        1,
+        (&[], &records),
+        &stamps(&records, 10000),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    for at in [10000, 10250, 10500, 10750, 11750] {
+        let b = e.publisher.poll(&source, at).unwrap().unwrap();
+        e.publisher.sent(b.token, true, at);
+    }
+    let mut peer = Message::new(0, 0x8400);
+    peer.answers.push(record("host.local.", 1));
+    peer.answers[0].ttl = 0;
+    attach(&mut peer, OPTION_CODE, 12000, &|n| {
+        stamps(&records, 0).get(n).copied()
+    })
+    .unwrap();
+    let mut d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: peer,
+    };
+    e.receive(&d, true, &source, 12000, &mut rng).unwrap();
+    assert!(e
+        .querier
+        .cache
+        .owner_stamp(&records[0].name, 12000)
+        .is_none());
+    assert!(e.publisher.ready(1));
+    assert!(e.publisher.take_conflict().is_none());
+    d.message.answers[0].ttl = 120;
+    d.message.answers[0].data = Rdata::A([192, 0, 2, 200]);
+    attach(&mut d.message, OPTION_CODE, 20000, &|n| {
+        stamps(&records, 20000).get(n).copied()
+    })
+    .unwrap();
+    e.receive(&d, true, &source, 20000, &mut rng).unwrap();
+    assert_eq!(e.take_stale(), Some((1, records[0].name.clone())));
+    assert!(e.take_stale().is_none());
+    assert_eq!(e.publisher.goodbye_count(), 0);
+    assert!(e.publisher.poll(&source, 20000).unwrap().is_none());
+    let mut q = Message::new(0, 0);
+    q.questions.push(Question {
+        name: records[1].name.clone(),
+        kind: 16,
+        class: 1,
+    });
+    d.message = q;
+    e.receive(&d, true, &source, 21000, &mut rng).unwrap();
+    let reply = e
+        .responder
+        .poll(&e.publisher, &source, 21000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply.messages[0].answers[0].name, records[1].name);
+}
+#[test]
+fn s14_equal_tsr_probes_and_announcements_suppress_redundant_work_and_time_only_refresh_does_not_probe(
+) {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, extract, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![record("host.local.", 1)];
+    let source = |_, _| records.clone();
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    let mut m = Message::new(0, 0);
+    m.questions.push(Question {
+        name: records[0].name.clone(),
+        kind: 255,
+        class: 0x8001,
+    });
+    m.authority = records.clone();
+    attach(&mut m, OPTION_CODE, 0, &|n| {
+        stamps(&records, 0).get(n).copied()
+    })
+    .unwrap();
+    let mut d = Datagram {
+        source: "[fe80::2]:5353".parse().unwrap(),
+        destination: "[ff02::fb]:5353".parse().unwrap(),
+        message: m,
+    };
+    e.receive(&d, true, &source, 0, &mut rng).unwrap();
+    assert!(e.publisher.poll(&source, 0).unwrap().is_none());
+    assert!(e.publisher.poll(&source, 999).unwrap().is_none());
+    d.message = Message::new(0, 0x8400);
+    d.message.answers = records.clone();
+    attach(&mut d.message, OPTION_CODE, 750, &|n| {
+        stamps(&records, 0).get(n).copied()
+    })
+    .unwrap();
+    e.receive(&d, true, &source, 750, &mut rng).unwrap();
+    assert!(e.publisher.ready(1));
+    assert!(e.publisher.poll(&source, 1000).unwrap().is_none());
+    e.register_tsr(
+        1,
+        (&records, &records),
+        &stamps(&records, 10000),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    assert!(e.publisher.ready(1));
+    assert!(e.publisher.poll(&source, 10000).unwrap().is_none());
+    let mut answer = Message::new(0, 0x8400);
+    answer.answers = records.clone();
+    let output = e.prepare_outgoing(vec![answer], 12000).unwrap();
+    assert_eq!(
+        extract(&output[0], OPTION_CODE, 12000).unwrap()[&records[0].name].received_at,
+        10000
+    );
+}
+#[test]
+fn s14_local_tsr_owner_metadata_has_a_tested_per_dataset_bound() {
+    use snac_rs::{
+        mdns::{tsr::RegistrationError, Engine},
+        time::ScriptedRandom,
+    };
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut records: Vec<_> = (0..128)
+        .map(|i| record(&format!("n{i}.local."), 1))
+        .collect();
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    let before = e.publisher.counts();
+    let old = records.clone();
+    records.push(record("overflow.local.", 1));
+    assert_eq!(
+        e.register_tsr(1, (&old, &records), &stamps(&records, 0), 0, &mut rng),
+        Err(RegistrationError::Capacity)
+    );
+    assert_eq!(e.publisher.counts(), before);
+}
