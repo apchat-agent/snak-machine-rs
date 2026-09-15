@@ -805,3 +805,129 @@ fn s07_matching_icmp_feedback_reduces_tcp_packet_size() {
     }
     assert!(data > 0);
 }
+
+#[test]
+fn s07_hostile_fragment_sources_are_rejected_before_reassembly() {
+    let mut b = stack("fd11:22::2");
+    b.listen_udp(1053).unwrap();
+    let p = udp6(&vec![42; 2000]);
+    for source in ["::", "::1", "ff02::1"] {
+        let mut f = fragment6(&p, 1, 0, 1024, true);
+        f[8..24].copy_from_slice(&common::ip(source).octets());
+        assert!(b.input(&f, 0).is_err(), "invalid fragment source {source}");
+    }
+    let mut f = fragment6(&p, 1, 0, 1024, true);
+    f[7] = 0;
+    assert!(b.input(&f, 0).is_err());
+    let mut a = stack("192.0.2.1");
+    let p = ip4([240, 0, 0, 1], [192, 0, 2, 1], 6, &[0; 20]);
+    assert!(a.input(&p, 0).is_err());
+    // Invalid TCP checksum/options must not create a connection or output.
+    b.listen_tcp(1053).unwrap();
+    let mut p = syn("fd11:22::1", "fd11:22::2", 40000);
+    p[56] ^= 1;
+    let _ = b.input(&p, 0);
+    b.poll(0).unwrap();
+    assert!(b.connections().is_empty());
+    assert!(b.output().is_none());
+}
+#[test]
+fn s07_loopback_caps_partial_writes_and_udp_floods() {
+    use snac_rs::service_io::loopback::Loopback;
+    use std::net::{TcpStream, UdpSocket};
+    let mut s = Loopback::bind("127.0.0.1".parse().unwrap()).unwrap();
+    let mut peers = vec![];
+    for n in 0..5 {
+        peers.push(TcpStream::connect(s.local_addr()).unwrap());
+        s.poll(n).unwrap();
+    }
+    assert_eq!(s.connections().len(), 4);
+    let id = s.connections()[0];
+    assert_eq!(s.send_tcp(id, &vec![1; 100000]).unwrap(), 65536);
+    assert_eq!(s.send_tcp(id, b"x").unwrap(), 0);
+    let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    for n in 10..75 {
+        udp.send_to(b"flood", s.local_addr()).unwrap();
+        s.poll(n).unwrap();
+    }
+    assert_eq!(s.queued_udp(), (64, 64 * 69));
+    while s.receive_udp().is_some() {}
+    for n in 75..78 {
+        udp.send_to(&vec![42; 30000], s.local_addr()).unwrap();
+        s.poll(n).unwrap();
+    }
+    assert_eq!(s.queued_udp(), (2, 60128));
+    drop(peers);
+    s.poll(120100).unwrap();
+    assert!(s.connections().is_empty());
+}
+#[test]
+fn s07_driver_tcp_recovers_lost_syn_and_reordered_duplicate_segments_then_reset() {
+    let mut d = service_driver();
+    let mut r = ScriptedRandom::new([]);
+    d.start(0, &mut r).unwrap();
+    d.step(1000, &mut r).unwrap();
+    let link = Link::Stub;
+    let own = d.router.identity.link_local(link);
+    let peer = common::ip("fe80::99");
+    let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+    ns.extend(own.octets());
+    ns.extend([1, 1, 2, 0, 0, 0, 0, 99]);
+    d.accept(
+        service_rx(
+            link,
+            common::nd_packet(
+                "fe80::99",
+                &snac_rs::wire::solicited_node(own).to_string(),
+                ns,
+            ),
+        ),
+        1001,
+        &mut r,
+    )
+    .unwrap();
+    d.stack_mut(link).unwrap().listen_tcp(1053).unwrap();
+    let mut c = stack("fe80::99");
+    let id = c
+        .connect(peer.into(), 40000, own.into(), 1053, 1002)
+        .unwrap();
+    c.poll(1002).unwrap();
+    assert!(c.output().is_some()); // Drop the initial SYN.
+    let drive = |d: &mut Driver<MemoryIo>, c: &mut Stack, now, r: &mut ScriptedRandom| {
+        c.poll(now).unwrap();
+        let mut packets = vec![];
+        while let Some(p) = c.output() {
+            packets.push(p);
+        }
+        for p in packets.into_iter().rev() {
+            let mut rx = service_rx(Link::Stub, p);
+            rx.bytes[..6].copy_from_slice(&[2, 0, 0, 0, 0, 2]);
+            d.accept(rx.clone(), now, r).unwrap();
+            d.accept(rx, now, r).unwrap();
+        }
+        d.step(now, r).unwrap();
+        for (l, p) in std::mem::take(&mut d.io.output) {
+            if l == Link::Stub && p.len() > 60 && p[12..14] == [0x86, 0xdd] && p[20] == 6 {
+                c.input(&p[14..], now).unwrap();
+            }
+        }
+    };
+    for now in (1010..7000).step_by(10) {
+        drive(&mut d, &mut c, now, &mut r);
+    }
+    assert!(c.established(id));
+    let server = d.stack_mut(link).unwrap().connections()[0];
+    let payload: Vec<_> = (0..6000).map(|n| (n % 251) as u8).collect();
+    assert_eq!(c.send_tcp(id, &payload).unwrap(), 6000);
+    let mut received = vec![];
+    for now in (7000..9000).step_by(10) {
+        drive(&mut d, &mut c, now, &mut r);
+        received.extend(d.stack_mut(link).unwrap().receive_tcp(server));
+    }
+    assert_eq!(received, payload);
+    c.abort(id);
+    for now in (9000..9100).step_by(10) {
+        drive(&mut d, &mut c, now, &mut r);
+    }
+    assert!(d.stack_mut(link).unwrap().connections().is_empty());
+}
