@@ -284,3 +284,87 @@ impl Pio {
         b
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum Preference {
+    Low,
+    Medium,
+    High,
+}
+impl Preference {
+    pub fn decode(flags: u8) -> Option<Self> {
+        match flags & 0x18 {
+            0 => Some(Self::Medium),
+            8 => Some(Self::High),
+            24 => Some(Self::Low),
+            _ => None,
+        }
+    }
+    pub fn bits(self) -> u8 {
+        match self {
+            Self::Low => 24,
+            Self::Medium => 0,
+            Self::High => 8,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rio {
+    pub prefix: Prefix,
+    pub preference: Preference,
+    pub lifetime: u32,
+}
+impl Rio {
+    pub fn decode(b: &[u8]) -> Option<Self> {
+        if b.len() < 8
+            || b[0] != 24
+            || !(1..=3).contains(&b[1])
+            || b.len() != b[1] as usize * 8
+            || b[2] > 128
+            || (b[2] > 0 && b[1] < 2)
+            || (b[2] > 64 && b[1] < 3)
+        {
+            return None;
+        }
+        let mut a = [0; 16];
+        a[..b.len() - 8].copy_from_slice(&b[8..]);
+        Some(Self {
+            prefix: Prefix::new(Ipv6Addr::from(a), b[2])?,
+            preference: Preference::decode(b[3])?,
+            lifetime: u32_at(b, 4),
+        })
+    }
+    pub fn encode(self) -> Vec<u8> {
+        let n = if self.prefix.length == 0 {
+            1
+        } else if self.prefix.length <= 64 {
+            2
+        } else {
+            3
+        };
+        let mut b = vec![24, n, self.prefix.length, self.preference.bits()];
+        b.extend(self.lifetime.to_be_bytes());
+        b.extend(&self.prefix.address.octets()[..(n as usize - 1) * 8]);
+        b
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Pref64 {
+    pub prefix: Prefix,
+    pub lifetime: u32,
+}
+impl Pref64 {
+    pub fn decode(b: &[u8]) -> Option<Self> {
+        if b.len() != 16 || b[0] != 38 || b[1] != 2 {
+            return None;
+        }
+        let word = u16::from_be_bytes([b[2], b[3]]);
+        let length = *[96, 64, 56, 48, 40, 32].get((word & 7) as usize)?;
+        let mut a = [0; 16];
+        a[..12].copy_from_slice(&b[4..]);
+        Some(Self {
+            prefix: Prefix::new(Ipv6Addr::from(a), length)?,
+            lifetime: (word & 0xfff8) as u32,
+        })
+    }
+}
