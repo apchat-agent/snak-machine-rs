@@ -161,7 +161,22 @@ impl Router {
             && e.destination == self.identity.link_local(link)
             && transport(&e).is_ok_and(|t| t.protocol == 17)
         {
-            if let Err(e) = self.pd.receive(&e, &self.identity.duid, now, rng) {
+            let excluded: Vec<_> = self
+                .on_link
+                .iter()
+                .filter(|((l, _), v)| *l == Link::Ail && v.valid.live(now))
+                .map(|((_, p), _)| *p)
+                .chain([self.identity.prefix(Link::Ail)])
+                .collect();
+            if let Err(e) = self
+                .pd
+                .receive_with_policy(&e, &self.identity.duid, now, rng, |p| {
+                    let local = Prefix::new(p.address, 64).unwrap();
+                    !excluded
+                        .iter()
+                        .any(|p| p.contains(local.address) || local.contains(p.address))
+                })
+            {
                 self.degrade(now, rng)?;
                 return Err(e);
             }
@@ -321,7 +336,7 @@ impl Router {
                 }
             }
         }
-        if link == Link::Stub && nd.kind == 134 {
+        if nd.kind == 134 {
             self.sync_pd(now, rng)?;
         }
         let out = self.observe_neighbor(link, &e, &nd, now)?;

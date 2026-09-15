@@ -210,8 +210,18 @@ impl PdClient {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
+        self.receive_with_policy(e, duid, now, rng, |_| true)
+    }
+    pub(super) fn receive_with_policy(
+        &mut self,
+        e: &Envelope<'_>,
+        duid: &[u8],
+        now: Time,
+        rng: &mut impl RandomSource,
+        allowed: impl Fn(Prefix) -> bool,
+    ) -> io::Result<()> {
         let Ok(b) = udp_payload(e) else { return Ok(()) };
-        let Ok(m) = decode(b) else { return Ok(()) };
+        let Ok(mut m) = decode(b) else { return Ok(()) };
         if m.kind == 7 && m.client == duid {
             self.releases
                 .retain(|r| r.exchange.xid != m.xid || r.exchange.server != m.server);
@@ -232,6 +242,7 @@ impl PdClient {
             return self.install(m, now, rng);
         }
         if self.state == PdState::Soliciting && m.kind == 2 {
+            m.delegations.retain(|d| allowed(d.prefix));
             if let Some(max) = m.sol_max_rt {
                 self.sol_max_rt_seen = Some(match self.sol_max_rt_seen {
                     None => Some(max),
@@ -475,7 +486,53 @@ impl PdClient {
     }
 }
 impl Router {
+    pub(super) fn pd_conflicts(&self, prefix: Prefix, now: Time) -> bool {
+        let local = Prefix::new(prefix.address, 64).unwrap();
+        local == self.identity.prefix(Link::Ail)
+            || self.on_link.iter().any(|((l, p), v)| {
+                *l == Link::Ail
+                    && v.valid.live(now)
+                    && (p.contains(local.address) || local.contains(p.address))
+            })
+    }
     pub(super) fn sync_pd(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        // Recheck on every synchronization: an AIL PIO can arrive after the offer.
+        let conflicts: Vec<_> = self
+            .pd
+            .leases
+            .iter()
+            .filter(|((_, p), _)| self.pd_conflicts(*p, now))
+            .map(|(k, l)| (*k, l.clone()))
+            .collect();
+        for ((iaid, prefix), l) in conflicts {
+            self.pd.queue_release(
+                l.server,
+                vec![Delegation {
+                    iaid,
+                    prefix,
+                    t1: 0,
+                    t2: 0,
+                    preferred: l.preferred.remaining(now),
+                    valid: l.valid.remaining(now),
+                }],
+                now,
+                rng,
+            )?;
+            self.pd.leases.remove(&(iaid, prefix));
+        }
+        for offer in &mut self.pd.offers {
+            let own = self.identity.prefix(Link::Ail);
+            offer.delegations.retain(|d| {
+                let local = Prefix::new(d.prefix.address, 64).unwrap();
+                local != own
+                    && !self.on_link.iter().any(|((l, p), v)| {
+                        *l == Link::Ail
+                            && v.valid.live(now)
+                            && (p.contains(local.address) || local.contains(p.address))
+                    })
+            });
+        }
+        self.pd.offers.retain(|o| !o.delegations.is_empty());
         let had_pd = !self.pd_prefixes.is_empty();
         let mut selected = self.pd.selected(now);
         selected.retain(|key| {
