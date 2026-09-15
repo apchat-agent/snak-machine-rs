@@ -71,40 +71,83 @@ impl Router {
             link,
             address: e.source,
         };
+        // Reclaim expired evidence before considering the entire prospective RA.
+        self.pd_hints.retain(|_, l| l.live(now));
+        self.on_link.retain(|_, p| p.valid.live(now));
+        self.routes.retain(|_, r| r.valid.live(now));
+        self.suppliers.retain(|_, s| {
+            s.valid.live(now) && s.preferred.live(now) && now < s.pio_at.saturating_add(600000)
+        });
         let headers = self.headers.keys().filter(|k| k.link == link).count()
             + usize::from(!self.headers.contains_key(&key));
+        let neighbors = self.neighbors.keys().filter(|k| k.link == link).count()
+            + usize::from(!self.neighbors.contains_key(&key));
         let mut prefixes: std::collections::BTreeSet<_> = self
             .on_link
             .keys()
             .filter(|(l, _)| *l == link)
             .map(|(_, p)| *p)
             .collect();
+        let mut hints: std::collections::BTreeSet<_> = self.pd_hints.keys().copied().collect();
         let mut routes: std::collections::BTreeSet<_> = self.routes.keys().copied().collect();
+        let mut suppliers: std::collections::BTreeSet<_> = self
+            .suppliers
+            .keys()
+            .filter(|(k, _)| k.link == link)
+            .copied()
+            .collect();
+        if link == Link::Ail {
+            let default = (e.source, Prefix::new(Ipv6Addr::UNSPECIFIED, 0).unwrap());
+            routes.remove(&default);
+            if u16::from_be_bytes([nd.body[6], nd.body[7]]) > 0 {
+                routes.insert(default);
+            }
+        }
         for o in &nd.options {
             if let Some(p) = Pio::decode(o.bytes) {
                 if p.on_link() && p.prefix.routable() {
-                    prefixes.insert(p.prefix);
+                    prefixes.remove(&p.prefix);
+                    if p.valid > 0 {
+                        prefixes.insert(p.prefix);
+                    }
+                }
+                if p.suitable() {
+                    suppliers.insert((key, p.prefix));
+                } else if p.on_link() {
+                    suppliers.remove(&(key, p.prefix));
+                }
+                if link == Link::Ail {
+                    hints.remove(&p.prefix);
+                    if p.flags & 0x10 != 0 && p.preferred > 0 && p.preferred <= p.valid {
+                        hints.insert(p.prefix);
+                    }
                 }
             }
             if link == Link::Ail {
                 if let Some(r) = Rio::decode(o.bytes) {
-                    routes.insert((e.source, r.prefix));
+                    if r.prefix.length == 0
+                        || (r.prefix.routable()
+                            && !self.on_link.contains_key(&(Link::Stub, r.prefix)))
+                    {
+                        routes.remove(&(e.source, r.prefix));
+                        if r.lifetime > 0 {
+                            routes.insert((e.source, r.prefix));
+                        }
+                    }
                 }
             }
         }
-        let suppliers = self
-            .suppliers
-            .keys()
-            .filter(|(k, _)| k.link == link)
-            .count()
-            + nd.options
-                .iter()
-                .filter_map(|o| Pio::decode(o.bytes))
-                .filter(|p| p.suitable() && !self.suppliers.contains_key(&(key, p.prefix)))
-                .count();
-        if headers > 32 || prefixes.len() > 128 || routes.len() > 128 || suppliers > 128 {
+        if headers > 32
+            || neighbors > 256
+            || prefixes.len() > 128
+            || hints.len() > 128
+            || routes.len() > 128
+            || suppliers.len() > 128
+        {
             self.degrade(now, rng)?;
-            return Err(io::Error::other("router/prefix/route capacity exceeded"));
+            return Err(io::Error::other(
+                "router/prefix/route/neighbor capacity exceeded",
+            ));
         }
         Ok(())
     }

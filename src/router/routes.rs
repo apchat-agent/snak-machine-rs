@@ -32,9 +32,10 @@ impl Router {
                 if r.prefix.length == 0
                     || (r.prefix.routable() && !self.on_link.contains_key(&(Link::Stub, r.prefix)))
                 {
-                    self.routes.remove(&(key.address, r.prefix));
+                    let existed = self.routes.remove(&(key.address, r.prefix)).is_some();
                     if r.prefix.length > 0
                         && r.lifetime == 0
+                        && existed
                         && !self
                             .routes
                             .iter()
