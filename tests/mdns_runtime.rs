@@ -654,3 +654,82 @@ fn s14_query_at_last_fractional_lease_second_withdraws_before_reading_the_projec
     assert_eq!(d.mdns.publisher.counts().0, 0);
     d.step(5500, &mut rng).unwrap();
 }
+
+#[test]
+fn s14_ail_reconnect_reprobes_only_still_registered_hosts() {
+    use snac_rs::{dns::resolver::Client, srp::registry::LeasePolicy};
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.dns
+        .enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    d.dns
+        .set_srp_policy(LeasePolicy {
+            max_lease: 30,
+            max_key_lease: 60,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let mut short = common::srp::update();
+    short.additional[0].data = Rdata::Opt(vec![(
+        2,
+        [3u32.to_be_bytes(), 60u32.to_be_bytes()].concat(),
+    )]);
+    d.dns
+        .submit(
+            Client::udp("[fe80::99]:40000".parse().unwrap()),
+            &common::srp::sign(short),
+            1000,
+            &mut rng,
+        )
+        .unwrap();
+    let mut live = common::srp::update();
+    live.authority.truncate(3);
+    let name: Name = "survivor.default.service.arpa.".parse().unwrap();
+    for r in &mut live.authority {
+        r.name = name.clone();
+    }
+    if let Rdata::Sig { signer, .. } = &mut live.additional.last_mut().unwrap().data {
+        *signer = name;
+    }
+    d.dns
+        .submit(
+            Client::udp("[fe80::99]:40000".parse().unwrap()),
+            &common::srp::sign(live),
+            1000,
+            &mut rng,
+        )
+        .unwrap();
+    for at in [1000, 1250, 1500, 1750] {
+        d.step(at, &mut rng).unwrap();
+    }
+    assert_eq!(d.mdns.publisher.counts().0, 2);
+    d.io.up[0] = false;
+    d.router.set_link(Link::Ail, false, 2000, &mut rng).unwrap();
+    d.step(2000, &mut rng).unwrap();
+    d.io.output.clear();
+    d.step(5000, &mut rng).unwrap();
+    assert_eq!(d.mdns.publisher.counts().0, 1);
+    assert!(d
+        .io
+        .output
+        .iter()
+        .all(|(l, b)| Datagram::parse(*l, &b[14..]).is_err()));
+    d.io.up[0] = true;
+    d.router.set_link(Link::Ail, true, 5001, &mut rng).unwrap();
+    d.step(5001, &mut rng).unwrap();
+    d.io.output.clear();
+    for at in [6001, 6251, 6501, 6751] {
+        d.step(at, &mut rng).unwrap();
+    }
+    let probes: Vec<_> =
+        d.io.output
+            .iter()
+            .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+            .flat_map(|d| d.message.authority)
+            .collect();
+    assert!(!probes.is_empty());
+    assert!(probes.iter().all(|r| r.name.labels()[0] == b"survivor"));
+}

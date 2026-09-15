@@ -1292,3 +1292,214 @@ fn s14_registrar_slot_and_pending_tables_fill_coalesce_and_release_at_their_boun
     assert_eq!(registrar.advertising_counts(), (0, 0, 0));
     assert_eq!(engine.publisher.counts().0, 0);
 }
+
+#[test]
+fn s14_equal_goodbye_or_nonprobe_query_cannot_cancel_local_probing() {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    for goodbye in [false, true] {
+        let mut e = Engine::default();
+        let mut rng = ScriptedRandom::new([]);
+        let records = vec![record("host.local.", 1)];
+        e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+            .unwrap();
+        let mut m = Message::new(0, if goodbye { 0x8400 } else { 0 });
+        if goodbye {
+            m.answers = records.clone();
+            m.answers[0].ttl = 0;
+        } else {
+            m.additional = records.clone();
+        }
+        attach(&mut m, OPTION_CODE, 0, &|n| {
+            stamps(&records, 0).get(n).copied()
+        })
+        .unwrap();
+        e.receive(
+            &Datagram {
+                source: "[fe80::2]:5353".parse().unwrap(),
+                destination: "[ff02::fb]:5353".parse().unwrap(),
+                message: m,
+            },
+            true,
+            &|_, _| records.clone(),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+        let b = e
+            .publisher
+            .poll(&|_, _| records.clone(), 0)
+            .unwrap()
+            .expect("only actual peer probes/live announcements suppress probing");
+        assert!(!b.messages[0].authority.is_empty());
+    }
+}
+#[test]
+fn s14_srp_admission_reserves_tsr_and_probe_overhead_before_durable_success() {
+    use snac_rs::{
+        mdns::advertise::Mapping,
+        srp::{
+            service::Registrar,
+            wire::{CryptoBudget, Error, Validator},
+        },
+    };
+    let mut m = common::srp::update();
+    let txt = m.authority.iter_mut().find(|r| r.kind == 16).unwrap();
+    txt.data = Rdata::Txt(vec![vec![]]);
+    let mapping = Mapping::new(m.questions[0].name.clone(), &[0; 8]).unwrap();
+    let mut single = Message::new(0, 0x8400);
+    single.answers.push(mapping.rewrite(txt).unwrap().unwrap());
+    let overhead = single.encode_context(Context::Mdns).unwrap().len() - 1;
+    let length = 8930 - overhead;
+    let mut chunks = vec![vec![b'x'; 255]; length / 256];
+    if length % 256 != 0 {
+        chunks.push(vec![b'x'; length % 256 - 1]);
+    }
+    txt.data = Rdata::Txt(chunks);
+    let u = Validator::new(&[])
+        .unwrap()
+        .verify(
+            &common::srp::sign(m),
+            common::srp::NOW,
+            &mut CryptoBudget::default(),
+            |_| None,
+        )
+        .unwrap();
+    let store = common::srp::Store::default();
+    let mut registrar = Registrar::open(Box::new(store.clone()), 0, common::srp::NOW).unwrap();
+    assert_eq!(
+        registrar.apply(&u, 0, common::srp::NOW),
+        Err(Error::ServFail)
+    );
+    assert!(store.bytes.borrow().is_none());
+    assert_eq!(registrar.registry().counts(), (0, 0, 0));
+}
+#[test]
+fn s14_expired_full_publication_table_admits_new_host_before_the_next_sync() {
+    use snac_rs::{
+        mdns::Engine,
+        srp::{
+            registry::LeasePolicy,
+            service::Registrar,
+            wire::{CryptoBudget, Validator},
+        },
+        time::ScriptedRandom,
+    };
+    let mut registrar = Registrar::open(
+        Box::new(snac_rs::persist::MemoryStore::default()),
+        0,
+        common::srp::NOW,
+    )
+    .unwrap();
+    registrar
+        .set_policy(LeasePolicy {
+            max_lease: 10,
+            max_key_lease: 20,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let make = |label: &str| {
+        let name: Name = format!("{label}.default.service.arpa.").parse().unwrap();
+        let mut m = common::srp::update();
+        m.authority.truncate(3);
+        for r in &mut m.authority {
+            r.name = name.clone();
+        }
+        if let Rdata::Sig { signer, .. } = &mut m.additional.last_mut().unwrap().data {
+            *signer = name;
+        }
+        Validator::new(&[])
+            .unwrap()
+            .verify(
+                &common::srp::sign(m),
+                common::srp::NOW,
+                &mut CryptoBudget::default(),
+                |_| None,
+            )
+            .unwrap()
+    };
+    for i in 0..128 {
+        registrar
+            .apply(&make(&format!("host{i}")), 0, common::srp::NOW)
+            .unwrap();
+    }
+    registrar
+        .sync_advertising(&mut engine, 0, &mut rng)
+        .unwrap();
+    assert_eq!(registrar.advertising_counts().0, 128);
+    registrar
+        .apply(&make("new"), 21000, common::srp::NOW + 21)
+        .unwrap();
+    registrar
+        .sync_advertising(&mut engine, 21000, &mut rng)
+        .unwrap();
+    assert_eq!(registrar.advertising_counts().0, 1);
+    assert_eq!(engine.publisher.counts().0, 1);
+}
+
+#[test]
+fn s14_legacy_unicast_reply_to_a_stamped_publication_keeps_ordinary_dns_limits() {
+    use snac_rs::{
+        mdns::{wire::Datagram, Engine},
+        time::ScriptedRandom,
+    };
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![record("host.local.", 1)];
+    engine
+        .register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    for at in [0, 250, 500, 750, 1750] {
+        let b = engine
+            .publisher
+            .poll(&|_, _| records.clone(), at)
+            .unwrap()
+            .unwrap();
+        engine.publisher.sent(b.token, true, at);
+    }
+    let mut m = Message::new(55, 0);
+    m.questions.push(Question {
+        name: records[0].name.clone(),
+        kind: 1,
+        class: 1,
+    });
+    engine
+        .receive(
+            &Datagram {
+                source: "[fe80::2]:40000".parse().unwrap(),
+                destination: "[ff02::fb]:5353".parse().unwrap(),
+                message: m,
+            },
+            true,
+            &|_, _| records.clone(),
+            3000,
+            &mut rng,
+        )
+        .unwrap();
+    let b = engine
+        .responder
+        .poll(&engine.publisher, &|_, _| records.clone(), 3000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(b.destination.port(), 40000);
+    let output = engine.prepare_outgoing(b.messages, 3000).unwrap();
+    assert_eq!(output[0].id, 55);
+    assert_eq!(output[0].questions.len(), 1);
+    assert!(output[0]
+        .answers
+        .iter()
+        .all(|r| r.class == 1 && r.ttl <= 10));
+    assert!(
+        output[0].additional.iter().all(|r| r.kind != 41),
+        "legacy request did not negotiate EDNS"
+    );
+    assert!(output[0].encode().unwrap().len() <= 512);
+}
