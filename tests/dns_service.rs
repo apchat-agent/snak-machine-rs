@@ -477,3 +477,91 @@ fn s09_service_upstream_slot_bounds_release_on_expiry() {
         assert_eq!(svc.counts(), (0, 0, 0));
     }
 }
+
+#[test]
+fn s09_service_client_stream_table_has_shared_connection_cap() {
+    use snac_rs::dns::{resolver::Resolver, service::Service};
+    let mut r = Resolver::new(true);
+    let mut rng = ScriptedRandom::new([]);
+    let mut svc = Service::default();
+    let mut stacks = [
+        stack("fe80::1".parse().unwrap()),
+        stack("fe80::2".parse().unwrap()),
+    ];
+    stacks[1].listen_tcp(53).unwrap();
+    stacks[1].listen_udp(53).unwrap();
+    for n in 0..17 {
+        let source: IpAddr = format!("fe80::{:x}", 100 + n).parse().unwrap();
+        let mut h = stack(source);
+        for port in 40000..if n == 16 { 40001 } else { 40004 } {
+            h.connect(source, port, "fe80::2".parse().unwrap(), 53, 0)
+                .unwrap();
+            h.poll(0).unwrap();
+            while let Some(p) = h.output() {
+                stacks[1].input(&p, 0).unwrap();
+                stacks[1].poll(0).unwrap();
+                svc.poll(&mut r, &mut stacks, 0, &mut rng).unwrap();
+                while let Some(p) = stacks[1].output() {
+                    h.input(&p, 0).unwrap();
+                }
+            }
+        }
+        assert_eq!(svc.counts().1, ((n + 1) * 4).min(64));
+    }
+    stacks[1].poll(120001).unwrap();
+    svc.poll(&mut r, &mut stacks, 120001, &mut rng).unwrap();
+    assert_eq!(svc.counts().1, 0);
+}
+#[test]
+fn s09_driver_rejects_bad_tcp_framing_and_answers_after_client_half_close() {
+    use snac_rs::dns::wire::TcpFrames;
+    for bad in [true, false] {
+        let mut d = driver();
+        let mut rng = ScriptedRandom::new([]);
+        d.start(0, &mut rng).unwrap();
+        d.step(1000, &mut rng).unwrap();
+        learn(&mut d, Link::Stub, &mut rng);
+        let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+        let id = hosts[1]
+            .connect(
+                peer(Link::Stub),
+                40001,
+                d.router.identity.link_local(Link::Stub).into(),
+                53,
+                1001,
+            )
+            .unwrap();
+        for now in (1010..1500).step_by(10) {
+            cycle(&mut d, &mut hosts, now, &mut rng);
+        }
+        let b = if bad {
+            vec![0, 1, 42]
+        } else {
+            TcpFrames::frame(&query("offline.test.", 1, 15)).unwrap()
+        };
+        hosts[1].send_tcp(id, &b).unwrap();
+        if !bad {
+            hosts[1].close(id);
+        }
+        let mut bytes = vec![];
+        for now in (1500..3000).step_by(10) {
+            cycle(&mut d, &mut hosts, now, &mut rng);
+            bytes.extend(hosts[1].receive_tcp(id));
+        }
+        assert_eq!(d.dns.pending_count(), 0);
+        if bad {
+            assert!(bytes.is_empty());
+            assert!(!hosts[1].established(id));
+        } else {
+            let mut f = TcpFrames::new(65535).unwrap();
+            f.input(&bytes).unwrap();
+            let m = Message::parse(
+                &f.pop().expect("half-close still permits response"),
+                Context::Unicast,
+            )
+            .unwrap();
+            assert_eq!(m.id, 15);
+            assert_eq!(m.flags & 15, 2);
+        }
+    }
+}

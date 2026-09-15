@@ -714,3 +714,42 @@ fn s09_authoritative_answers_share_canonical_a_and_size_rules() {
     assert_ne!(result.flags & 0x400, 0);
     assert_eq!(result.id, 80);
 }
+
+#[test]
+fn s09_cname_to_local_zone_never_leaks_an_a_lookup_and_large_queries_use_tcp() {
+    let (mut r, mut rng) = setup();
+    let q = upstream(
+        r.submit(client(1), &query("alias.public.test.", 28, 1), 0, &mut rng)
+            .unwrap(),
+    );
+    let mut m = Message::parse(&response(&q, 0, None), Context::Unicast).unwrap();
+    m.answers.push(Record {
+        name: m.questions[0].name.clone(),
+        kind: 5,
+        class: 1,
+        ttl: 60,
+        data: Rdata::Name("host.default.service.arpa.".parse().unwrap()),
+    });
+    assert!(matches!(
+        receive(&mut r, &q, &m.encode().unwrap(), 1, &mut rng)[0],
+        Action::Reply { .. }
+    ));
+    let mut m = Message::parse(&query("largequery.test.", 1, 1), Context::Unicast).unwrap();
+    m.additional.push(Record {
+        name: ".".parse().unwrap(),
+        kind: 41,
+        class: 4096,
+        ttl: 0,
+        data: Rdata::Opt(vec![(65000, vec![42; 5000])]),
+    });
+    let q = upstream(
+        r.submit(
+            Client::tcp(client(1).address, 1),
+            &m.encode().unwrap(),
+            2,
+            &mut rng,
+        )
+        .unwrap(),
+    );
+    assert!(q.tcp);
+}
