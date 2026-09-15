@@ -1,3 +1,4 @@
+pub mod journal;
 use crate::{time::RandomSource, wire::Prefix, Link};
 use std::{
     fs::{File, OpenOptions},

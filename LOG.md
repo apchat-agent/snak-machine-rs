@@ -827,3 +827,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   host-release test now asserts zero host/service claims immediately, retaining
   bounded release acknowledgments until expiry, then zero total bytes. This
   preserves its ownership assertions while testing the added replay state.
+- S12 combined-journal RED `383e133`: `cargo test` confirms the missing
+  independent state-owner adapter. GREEN passes **206 tests** and all-feature
+  clippy. Two logical stores share one existing atomic FileStore transaction,
+  checksum and eight-MiB aggregate limit. Updating either portion preserves
+  the other's latest committed bytes; failed writes publish neither change.
+- Legacy router snapshots/identity records become the router portion on the
+  first write. Hostile combined headers, every truncation/corruption, oversized
+  component sums and failed saves are covered rootlessly. The fixed two-part
+  ownership array is persistence plumbing for the planned extended checkpoint;
+  no extra journal file or dependency is introduced. Native/service wiring follows.
