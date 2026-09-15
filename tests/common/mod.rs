@@ -79,3 +79,38 @@ pub fn option(code: u16, b: &[u8]) -> Vec<u8> {
     out.extend(b);
     out
 }
+
+pub fn ia(iaid: u32, t1: u32, t2: u32, prefixes: &[(&str, u8, u32, u32)]) -> Vec<u8> {
+    let mut b = iaid.to_be_bytes().to_vec();
+    b.extend(t1.to_be_bytes());
+    b.extend(t2.to_be_bytes());
+    for (prefix, length, preferred, valid) in prefixes {
+        let mut p = preferred.to_be_bytes().to_vec();
+        p.extend(valid.to_be_bytes());
+        p.push(*length);
+        p.extend(ip(prefix).octets());
+        b.extend(option(26, &p));
+    }
+    option(25, &b)
+}
+pub fn dhcp_packet(
+    dest: &str,
+    kind: u8,
+    xid: [u8; 3],
+    duid: &[u8],
+    server: &[u8],
+    extra: &[u8],
+) -> Vec<u8> {
+    let mut body = vec![kind];
+    body.extend(xid);
+    body.extend(option(1, duid));
+    body.extend(option(2, server));
+    body.extend(extra);
+    let mut udp = vec![2, 35, 2, 34];
+    udp.extend(((body.len() + 8) as u16).to_be_bytes());
+    udp.extend([0, 0]);
+    udp.extend(body);
+    let c = sum(ip("fe80::feed"), ip(dest), 17, &udp);
+    udp[6..8].copy_from_slice(&c.to_be_bytes());
+    packet("fe80::feed", dest, 17, 1, &udp)
+}

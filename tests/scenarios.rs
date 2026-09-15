@@ -811,3 +811,55 @@ fn pd_solicit_contains_stable_identity_and_64_hints() {
     assert_eq!(&retry[49..52], &original);
     assert!(!r.snapshot(Link::Stub, 11000).pios.is_empty());
 }
+
+use snac_rs::router::pd::PdState;
+fn pd_response(r: &Router, kind: u8, extra: &[u8]) -> Vec<u8> {
+    dhcp_packet(
+        &r.identity.link_local(Link::Ail).to_string(),
+        kind,
+        r.pd.exchange.as_ref().unwrap().xid,
+        &r.identity.duid,
+        b"server",
+        extra,
+    )
+}
+#[test]
+fn pd_offer_selection_rejects_short_lifetimes() {
+    for (length, preferred, acceptable) in [
+        (56, 1800, true),
+        (64, 1800, true),
+        (65, 3600, false),
+        (64, 1799, false),
+    ] {
+        let mut r = providing(61);
+        let mut rng = ScriptedRandom::new([]);
+        let mut extra = ia(1, 900, 1500, &[("2001:db8:aa::", length, preferred, 3600)]);
+        extra.extend(option(7, &[255]));
+        extra.extend(option(82, &120u32.to_be_bytes()));
+        let tx = r
+            .receive(Link::Ail, &pd_response(&r, 2, &extra), 9100, &mut rng)
+            .unwrap();
+        assert_eq!(
+            r.pd.state,
+            if acceptable {
+                PdState::Requesting
+            } else {
+                PdState::Soliciting
+            }
+        );
+        assert_eq!(r.pd.sol_max_rt, 120000);
+        assert_eq!(
+            tx.iter().any(|x| x.packet[6] == 17 && x.packet[48] == 3),
+            acceptable
+        );
+        assert!(!r.snapshot(Link::Stub, 9100).pios.is_empty());
+    }
+    let mut r = providing(62);
+    let mut rng = ScriptedRandom::new([]);
+    let extra = ia(1, 900, 1500, &[("2001:db8:aa::", 64, 1800, 3600)]);
+    r.receive(Link::Ail, &pd_response(&r, 2, &extra), 9200, &mut rng)
+        .unwrap();
+    assert_eq!(r.pd.state, PdState::Soliciting);
+    let tx = r.tick(11000, &mut rng).unwrap();
+    assert!(tx.iter().any(|x| x.packet[6] == 17 && x.packet[48] == 3));
+}
