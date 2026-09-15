@@ -473,3 +473,140 @@ fn s14_driver_sends_tsr_and_accepts_a_fragmented_record_with_its_opt() {
         .owner_stamp(&m.answers[0].name, 2001)
         .is_some());
 }
+
+#[test]
+fn s14_native_signed_srp_udp_drives_ail_probe_browse_update_and_expiry() {
+    use snac_rs::{service_io::stack::Stack, srp::registry::LeasePolicy};
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.dns
+        .enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    d.dns
+        .set_srp_policy(LeasePolicy {
+            max_lease: 10,
+            max_key_lease: 60,
+            ..LeasePolicy::default()
+        })
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let own = d.router.identity.link_local(Link::Stub);
+    let mut rx = frame(common::nd_packet(
+        "fe80::99",
+        &snac_rs::wire::solicited_node(own).to_string(),
+        {
+            let mut ns = vec![135, 0, 0, 0, 0, 0, 0, 0];
+            ns.extend(own.octets());
+            ns.extend([1, 1, 2, 0, 0, 0, 0, 99]);
+            ns
+        },
+    ));
+    rx.link = Link::Stub;
+    d.accept(rx, 1001, &mut rng).unwrap();
+    let mut peer = Stack::new(0, &mut rng).unwrap();
+    let client: std::net::IpAddr = "fe80::99".parse().unwrap();
+    peer.set_addresses(&[client]).unwrap();
+    peer.listen_udp(40000).unwrap();
+    let mut request = common::srp::update();
+    if let Some(r) = request.authority.iter_mut().find(|r| r.kind == 16) {
+        r.data = Rdata::Txt(vec![vec![0, 255, b'=']]);
+    }
+    let signed = common::srp::sign(request.clone());
+    peer.send_udp(client, 40000, own.into(), 53, &signed)
+        .unwrap();
+    peer.poll(1002).unwrap();
+    let mut rx = frame(peer.output().unwrap());
+    rx.link = Link::Stub;
+    rx.bytes[..6].copy_from_slice(&[2, 0, 0, 0, 0, 2]);
+    d.accept(rx, 1002, &mut rng).unwrap();
+    d.io.output.clear();
+    d.step(1002, &mut rng).unwrap();
+    for (link, b) in &d.io.output {
+        if *link == Link::Stub && b.len() > 62 && b[20] == 17 {
+            peer.input(&b[14..], 1002).unwrap();
+        }
+    }
+    peer.poll(1002).unwrap();
+    let ack = peer.receive_udp().unwrap();
+    assert_eq!(
+        Message::parse(&ack.bytes, snac_rs::dns::wire::Context::Unicast)
+            .unwrap()
+            .flags
+            & 15,
+        0
+    );
+    let first =
+        d.io.output
+            .iter()
+            .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+            .find(|m| !m.message.authority.is_empty())
+            .expect("accepted SRP automatically starts AIL probing");
+    assert!(first
+        .message
+        .authority
+        .iter()
+        .all(|r| r.name.labels().last().unwrap() == b"local"));
+    for at in [1252, 1502, 1752, 2752] {
+        d.step(at, &mut rng).unwrap();
+    }
+    d.io.output.clear();
+    let mut browse = Message::new(0, 0);
+    browse.questions.push(Question {
+        name: "_http._tcp.local.".parse().unwrap(),
+        kind: 12,
+        class: 1,
+    });
+    d.accept(
+        frame(packet(true, &browse.encode().unwrap())),
+        3000,
+        &mut rng,
+    )
+    .unwrap();
+    d.step(3020, &mut rng).unwrap();
+    let reply =
+        d.io.output
+            .iter()
+            .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+            .find(|m| !m.message.answers.is_empty())
+            .unwrap();
+    assert!(reply.message.answers.iter().any(|r| r.kind == 12));
+    assert!(reply
+        .message
+        .additional
+        .iter()
+        .any(|r| r.data == Rdata::Txt(vec![vec![0, 255, b'=']])));
+    assert!(reply.message.additional.iter().any(|r| r.kind == 28));
+    request.id += 1;
+    if let Some(r) = request.authority.iter_mut().find(|r| r.kind == 16) {
+        r.data = Rdata::Txt(vec![b"updated".to_vec()]);
+    }
+    peer.send_udp(client, 40000, own.into(), 53, &common::srp::sign(request))
+        .unwrap();
+    peer.poll(4000).unwrap();
+    let mut rx = frame(peer.output().unwrap());
+    rx.link = Link::Stub;
+    rx.bytes[..6].copy_from_slice(&[2, 0, 0, 0, 0, 2]);
+    d.accept(rx, 4000, &mut rng).unwrap();
+    d.io.output.clear();
+    for at in [4000, 4250, 4500, 4750, 5750] {
+        d.step(at, &mut rng).unwrap();
+    }
+    assert!(d
+        .io
+        .output
+        .iter()
+        .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+        .flat_map(|d| d.message.answers)
+        .any(|r| r.data == Rdata::Txt(vec![b"updated".to_vec()])));
+    d.io.output.clear();
+    d.step(14000, &mut rng).unwrap();
+    assert!(d
+        .io
+        .output
+        .iter()
+        .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+        .flat_map(|d| d.message.answers)
+        .any(|r| r.ttl == 0));
+    assert_eq!(d.mdns.publisher.counts().0, 0);
+}
