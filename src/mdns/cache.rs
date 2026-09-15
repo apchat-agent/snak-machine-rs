@@ -56,7 +56,9 @@ pub(crate) fn charge(r: &Record) -> Option<usize> {
     // Vec slack, and the bounded response/encoding work copy.
     let mut m = Message::new(0, 0x8400);
     m.answers.push(r.clone());
-    m.encode().ok().map(|b| 1024 + 16 * b.len())
+    m.encode()
+        .ok()
+        .map(|b| 1024 + 16 * b.len() + decoded_overhead(r))
 }
 pub(crate) fn cacheable(r: &Record) -> bool {
     !matches!(r.kind, 0 | 41 | 249 | 250 | 251 | 252 | 253 | 254 | 255)
@@ -413,4 +415,40 @@ pub(crate) fn bitmap_has(mut b: &[u8], kind: u16) -> bool {
 
 fn interested(q: &Question, r: &Record) -> bool {
     matches(q, r) || (r.kind == 47 && r.name == q.name && r.class & 0x7fff == q.class & 0x7fff)
+}
+
+// Wire-byte multipliers alone miss a long name made of one-byte labels, or
+// TXT containing many empty character strings. Charge their Vec structures
+// and the bounded projection/response copies explicitly as well.
+pub(crate) fn decoded_overhead(r: &Record) -> usize {
+    let mut labels = r.name.labels().len();
+    let vectors = match &r.data {
+        Rdata::Name(n)
+        | Rdata::Srv { target: n, .. }
+        | Rdata::Preference { name: n, .. }
+        | Rdata::Nsec { next: n, .. }
+        | Rdata::Sig { signer: n, .. }
+        | Rdata::Svcb { target: n, .. } => {
+            labels += n.labels().len();
+            0
+        }
+        Rdata::TwoNames { first, second } => {
+            labels += first.labels().len() + second.labels().len();
+            0
+        }
+        Rdata::Px {
+            map822, mapx400, ..
+        } => {
+            labels += map822.labels().len() + mapx400.labels().len();
+            0
+        }
+        Rdata::Soa { mname, rname, .. } => {
+            labels += mname.labels().len() + rname.labels().len();
+            0
+        }
+        Rdata::Txt(v) => v.len(),
+        Rdata::Opt(v) => v.len(),
+        _ => 0,
+    };
+    128 * (labels + vectors)
 }

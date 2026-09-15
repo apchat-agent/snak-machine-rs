@@ -215,7 +215,7 @@ fn record_charge(r: &Record) -> io::Result<usize> {
         return Err(invalid());
     }
     // Includes the projected record, output work copy, and per-record sent digest.
-    Ok(256 + n * 8)
+    Ok(256 + n * 8 + super::cache::decoded_overhead(r))
 }
 impl Publisher {
     pub fn goodbye_count(&self) -> usize {

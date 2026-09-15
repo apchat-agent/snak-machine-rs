@@ -1064,3 +1064,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   observations cannot advance it. Different keys always conflict. Excessive
   TSR input is dropped at runtime admission. No dependency. Local-publication
   stale/equal/newer decisions and native SRP synchronization follow.
+- S14 allocation RED `fcfab8f` fails on a wire-small but allocation-heavy name.
+  GREEN passes **254 tests** and all-feature clippy. Reviewing owner metadata
+  exposed that a wire-byte multiplier alone undercounted 125 one-byte labels
+  and thousands of empty TXT strings. Cache/publication charges now include
+  their decoded Vec structures and work copies explicitly. Independent lower
+  bounds use actual Rust Vec sizes, and the existing 4096-record and aggregate
+  capacity tests still pass. This corrects byte accounting within PLAN2's
+  existing budget; no new field, dependency or design change.
