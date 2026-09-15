@@ -51,3 +51,159 @@ pub fn envelope(kind: FrameKind, frame: &[u8]) -> Result<Envelope<'_>, WireError
         hop_limit: p[7],
     })
 }
+
+pub fn link_local(a: Ipv6Addr) -> bool {
+    a.segments()[0] & 0xffc0 == 0xfe80
+}
+pub fn solicited_node(a: Ipv6Addr) -> Ipv6Addr {
+    Ipv6Addr::from(0xff0200000000000000000001ff000000u128 | (u128::from(a) & 0xffffff))
+}
+pub fn checksum(source: Ipv6Addr, destination: Ipv6Addr, next: u8, data: &[u8]) -> u16 {
+    fn add(n: &mut u32, b: &[u8]) {
+        for p in b.chunks(2) {
+            *n += ((p[0] as u32) << 8) | *p.get(1).unwrap_or(&0) as u32;
+        }
+    }
+    let mut n = 0;
+    add(&mut n, &source.octets());
+    add(&mut n, &destination.octets());
+    add(&mut n, &(data.len() as u32).to_be_bytes());
+    n += next as u32;
+    add(&mut n, data);
+    while n >> 16 != 0 {
+        n = (n & 65535) + (n >> 16);
+    }
+    !(n as u16)
+}
+#[derive(Debug)]
+pub struct Transport<'a> {
+    pub protocol: u8,
+    pub bytes: &'a [u8],
+    pub fragmented: bool,
+}
+pub fn transport<'a>(e: &Envelope<'a>) -> Result<Transport<'a>, WireError> {
+    let mut next = e.next_header;
+    let mut p = e.payload;
+    let mut fragmented = false;
+    for _ in 0..16 {
+        let n = match next {
+            0 | 43 | 60 => {
+                if p.len() < 2 {
+                    return Err(WireError::Truncated);
+                }
+                (p[1] as usize + 1) * 8
+            }
+            44 => {
+                fragmented = true;
+                8
+            }
+            51 => {
+                if p.len() < 2 {
+                    return Err(WireError::Truncated);
+                }
+                (p[1] as usize + 2) * 4
+            }
+            _ => {
+                return Ok(Transport {
+                    protocol: next,
+                    bytes: p,
+                    fragmented,
+                })
+            }
+        };
+        if p.len() < n {
+            return Err(WireError::Truncated);
+        }
+        let nonfirst = next == 44 && u16::from_be_bytes([p[2], p[3]]) & 0xfff8 != 0;
+        next = p[0];
+        p = &p[n..];
+        if nonfirst {
+            return Ok(Transport {
+                protocol: next,
+                bytes: p,
+                fragmented,
+            });
+        }
+    }
+    Err(WireError::Invalid)
+}
+#[derive(Clone, Copy, Debug)]
+pub struct NdOption<'a> {
+    pub kind: u8,
+    pub bytes: &'a [u8],
+}
+#[derive(Debug)]
+pub struct Nd<'a> {
+    pub kind: u8,
+    pub body: &'a [u8],
+    pub options: Vec<NdOption<'a>>,
+}
+pub fn decode_nd<'a>(e: &Envelope<'a>) -> Result<Nd<'a>, WireError> {
+    let t = transport(e)?;
+    let b = t.bytes;
+    if t.protocol != 58
+        || t.fragmented
+        || e.hop_limit != 255
+        || b.len() < 4
+        || b[1] != 0
+        || checksum(e.source, e.destination, 58, b) != 0
+    {
+        return Err(WireError::Invalid);
+    }
+    let base = match b[0] {
+        133 => 8,
+        134 => 16,
+        135 | 136 => 24,
+        _ => return Err(WireError::Unsupported),
+    };
+    if b.len() < base {
+        return Err(WireError::Truncated);
+    }
+    if b[0] == 134 && !link_local(e.source) {
+        return Err(WireError::Invalid);
+    }
+    if e.source.is_multicast() {
+        return Err(WireError::Invalid);
+    }
+    let mut options = Vec::new();
+    let mut rest = &b[base..];
+    while !rest.is_empty() {
+        if rest.len() < 2 {
+            return Err(WireError::Truncated);
+        }
+        let n = rest[1] as usize * 8;
+        if n == 0 || n > rest.len() {
+            return Err(WireError::Invalid);
+        }
+        options.push(NdOption {
+            kind: rest[0],
+            bytes: &rest[..n],
+        });
+        rest = &rest[n..];
+    }
+    if (b[0] == 133 || b[0] == 135)
+        && e.source.is_unspecified()
+        && options.iter().any(|o| o.kind == 1)
+    {
+        return Err(WireError::Invalid);
+    }
+    if b[0] >= 135 {
+        let target = Ipv6Addr::from(<[u8; 16]>::try_from(&b[8..24]).unwrap());
+        if target.is_multicast() || target.is_unspecified() {
+            return Err(WireError::Invalid);
+        }
+        if b[0] == 135 && e.source.is_unspecified() && e.destination != solicited_node(target) {
+            return Err(WireError::Invalid);
+        }
+        if b[0] == 136
+            && (e.source.is_unspecified() || (e.destination.is_multicast() && b[4] & 0x40 != 0))
+        {
+            return Err(WireError::Invalid);
+        }
+    }
+    Ok(Nd {
+        kind: b[0],
+        body: b,
+        options,
+    })
+}

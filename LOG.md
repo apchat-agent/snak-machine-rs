@@ -4,3 +4,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 
 - 01 envelope RED — 1 test; missing library/envelope API, cargo test failed as intended.
 - 01 envelope GREEN — 1 passed; checked borrowed envelopes, Ethernet padding and payload bounds; no router state yet.
+- 02 nd-validation RED — 2 tests specified; cargo test failed for the new contract (see paired test commit).
+- 02 nd-validation GREEN — 2 passed; Shared ND validation rejects a malformed final TLV before any consumer can update state; transit fragment metadata is separate.
