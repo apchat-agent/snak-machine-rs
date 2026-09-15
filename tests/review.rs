@@ -931,3 +931,34 @@ fn review_08_suitable_during_dad_arms_ra_delay_at_readiness() {
     d.step(1000, &mut EdgeRandom(true)).unwrap();
     assert_eq!(d.router.links[0].scheduler.deadline(), 17000);
 }
+
+#[test]
+fn review_12_exhausted_service_dad_remains_halted_after_prefix_expiry() {
+    let mut d = driver();
+    for s in &mut d.router.links {
+        s.state = AilState::BeginAdvertising;
+    }
+    d.step(0, &mut ScriptedRandom::new([])).unwrap();
+    d.step(1, &mut ScriptedRandom::new([])).unwrap();
+    let prefix = d.router.identity.prefix(Link::Stub);
+    for (now, value) in [(2, 77), (3, 88), (4, 99)] {
+        let target = d
+            .router
+            .owned
+            .iter()
+            .find(|((l, _), a)| *l == Link::Stub && a.prefix == Some(prefix))
+            .unwrap()
+            .0
+             .1;
+        d.accept(
+            incoming(&d, Link::Stub, ns("::", target, None)),
+            now,
+            &mut ScriptedRandom::new([value]),
+        )
+        .unwrap();
+    }
+    for now in [2000000, 2000001] {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    assert!(!d.router.links[1].up);
+}
