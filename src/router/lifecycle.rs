@@ -71,6 +71,7 @@ impl Router {
             link,
             address: e.source,
         };
+        self.reap_failed_neighbors(now);
         // Reclaim expired evidence before considering the entire prospective RA.
         self.pd_hints.retain(|_, l| l.live(now));
         self.on_link.retain(|_, p| p.valid.live(now));

@@ -150,6 +150,7 @@ impl Router {
 
 impl Router {
     pub(super) fn tick_neighbors(&mut self, now: Time) -> io::Result<Vec<Tx>> {
+        self.reap_failed_neighbors(now);
         let keys: Vec<_> = self
             .neighbors
             .iter()
@@ -168,7 +169,7 @@ impl Router {
             }
             if n.probes_sent >= 3 {
                 n.state = NeighborState::Failed;
-                n.deadline = None;
+                n.deadline = Some(now.saturating_add(30000));
                 if let Some(Pending::Transit(pending)) = n.pending.take() {
                     if let Ok(e) = envelope(FrameKind::RawIpv6, &pending.packet) {
                         out.extend(self.icmp_error(pending.link, &e, 1, 3, 0, now));
@@ -179,6 +180,24 @@ impl Router {
             }
         }
         Ok(out)
+    }
+    pub(super) fn reap_failed_neighbors(&mut self, now: Time) {
+        let expired: Vec<_> = self
+            .neighbors
+            .iter()
+            .filter(|(_, n)| {
+                n.state == NeighborState::Failed && n.deadline.is_some_and(|t| now >= t)
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        for key in expired {
+            // Dead supplier/default evidence must not revive when its cache entry is removed.
+            self.suppliers.retain(|(k, _), _| *k != key);
+            if key.link == Link::Ail {
+                self.routes.retain(|(a, _), _| *a != key.address);
+            }
+            self.neighbors.remove(&key);
+        }
     }
     pub(super) fn confirmed_supplier(&self, link: Link, now: Time) -> bool {
         self.suppliers.iter().any(|((k, _), s)| {

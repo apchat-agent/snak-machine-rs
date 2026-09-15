@@ -170,6 +170,7 @@ impl Router {
         if e.packet.len() > self.links[egress.index()].mtu as usize {
             return Ok(self.icmp_error(link, e, 2, 0, self.links[egress.index()].mtu, now));
         }
+        self.reap_failed_neighbors(now);
         let key = RouterKey {
             link: egress,
             address: next,
@@ -245,6 +246,7 @@ impl Router {
         Ok(vec![])
     }
     pub fn resolve_output(&mut self, tx: Tx, now: Time) -> io::Result<Vec<Tx>> {
+        self.reap_failed_neighbors(now);
         let Ok(e) = envelope(FrameKind::RawIpv6, &tx.packet) else {
             return Ok(vec![]);
         };

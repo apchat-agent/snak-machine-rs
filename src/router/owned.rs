@@ -139,10 +139,19 @@ impl Router {
                 .iter()
                 .find(|o| o.kind == 1 && o.bytes.len() == 8)
                 .map(|o| o.bytes[2..8].try_into().unwrap());
+            self.reap_failed_neighbors(now);
             self.neighbors
                 .entry(RouterKey {
                     link,
                     address: e.source,
+                })
+                .and_modify(|n| {
+                    if mac.is_some() && (n.mac != mac || n.state == NeighborState::Failed) {
+                        n.mac = mac;
+                        n.state = NeighborState::Stale;
+                        n.deadline = None;
+                        n.probes_sent = 0;
+                    }
                 })
                 .or_insert(Neighbor {
                     mac,
