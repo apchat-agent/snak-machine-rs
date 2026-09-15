@@ -348,3 +348,57 @@ fn s10_identity_expiry_and_startup_path_are_explicit() {
     );
     assert_eq!(store.0, saved);
 }
+
+#[test]
+fn s10_tls_fragmented_handshake_has_an_input_budget() {
+    let (_, mut s) = tls_pair();
+    // A legal record sequence advertising a 32 KiB ClientHello, never completed.
+    // Its body has not been parsed yet: rejection must precede body allocation.
+    let mut rejected = false;
+    for index in 0..5 {
+        let mut record = vec![22, 3, 3, 0x10, 0];
+        let mut body = vec![0; 4096];
+        if index == 0 {
+            body[..4].copy_from_slice(&[1, 0, 0x80, 0]);
+        }
+        record.extend(body);
+        let mut rest = record.as_slice();
+        while !rest.is_empty() {
+            match s.input(rest, 1) {
+                Ok(n) => {
+                    assert!(n > 0);
+                    rest = &rest[n..];
+                }
+                Err(_) => {
+                    rejected = true;
+                    break;
+                }
+            }
+        }
+        if rejected {
+            break;
+        }
+    }
+    assert!(
+        rejected,
+        "incomplete handshakes cannot accumulate more than 16 KiB of input"
+    );
+    assert!(s.tick(2).is_err());
+}
+#[test]
+fn s10_every_client_hello_prefix_expires_without_plaintext() {
+    let (mut c, _) = tls_pair();
+    let mut hello = vec![];
+    c.write_tls(&mut hello).unwrap();
+    for end in 0..hello.len() {
+        let (_, mut s) = tls_pair();
+        let mut rest = &hello[..end];
+        while !rest.is_empty() {
+            let n = s.input(rest, 9999).unwrap();
+            assert!(n > 0);
+            rest = &rest[n..];
+        }
+        assert!(s.plaintext(100).unwrap().is_empty());
+        assert!(s.tick(10000).is_err());
+    }
+}
