@@ -75,3 +75,50 @@ fn solicitations_coalesce_without_postponement() {
     assert_eq!(&sent[0].1[24..40], &ip("ff02::1").octets());
     assert_eq!(&sent[0].1[64..], &pio("fd00:1::", 64, 0xc0, 1800, 1800));
 }
+
+use snac_rs::persist::{FileStore, Identity, MemoryStore, StateStore};
+#[test]
+fn ula_identity_is_random_distinct_and_persistent() {
+    let mut a = MemoryStore::default();
+    let mut r = ScriptedRandom::new([0x123456789a, 11, 12, 13, 14, 15, 16, 17]);
+    let first = Identity::load_or_create(&mut a, "tap:a,b", &mut r).unwrap();
+    assert_eq!(first.site.length, 48);
+    assert_eq!(first.site.address.octets()[0], 0xfd);
+    assert_ne!(first.prefix(Link::Ail), first.prefix(Link::Stub));
+    assert_eq!(first.prefix(Link::Ail).address.segments()[3], 1);
+    assert_eq!(first.prefix(Link::Stub).address.segments()[3], 2);
+    assert_eq!(
+        Identity::load_or_create(&mut a, "tap:a,b", &mut r).unwrap(),
+        first
+    );
+    let other = Identity::load_or_create(
+        &mut MemoryStore::default(),
+        "tap:a,b",
+        &mut ScriptedRandom::new([88, 1, 2, 3, 4, 5, 6, 7]),
+    )
+    .unwrap();
+    assert_ne!(first.site, other.site);
+    a.save(b"corrupt").unwrap();
+    assert!(Identity::load_or_create(&mut a, "tap:a,b", &mut r).is_err());
+    struct Fail;
+    impl snac_rs::time::RandomSource for Fail {
+        fn fill(&mut self, _: &mut [u8]) -> std::io::Result<()> {
+            Err(std::io::Error::other("entropy failed"))
+        }
+    }
+    assert!(Identity::load_or_create(&mut MemoryStore::default(), "a", &mut Fail).is_err());
+    let path = std::env::temp_dir().join(format!("snac-tdd-{}", std::process::id()));
+    std::fs::create_dir_all(&path).unwrap();
+    let file = path.join("identity");
+    let mut disk = FileStore::open(&file).unwrap();
+    assert!(FileStore::open(&file).is_err());
+    let saved = Identity::load_or_create(&mut disk, "fixture", &mut r).unwrap();
+    drop(disk);
+    let mut disk = FileStore::open(&file).unwrap();
+    assert_eq!(
+        Identity::load_or_create(&mut disk, "fixture", &mut Fail).unwrap(),
+        saved
+    );
+    drop(disk);
+    std::fs::remove_dir_all(path).unwrap();
+}
