@@ -289,3 +289,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   carrier transitions, bridge enumeration, external-interface FDs and scoped
   IPv4/IPv6 multicast reception. Native paths compile; no real interface was
   opened or provisioned in these tests.
+
+### S05 — IPv4/ARP/ICMP next-hop layer (in progress)
+
+- Initial RED `2e3dda3` confirms the missing IPv4 module/API for independently
+  constructed IPv4, ARP and ICMP packets and ARP-resolved Ethernet output.
+- Initial GREEN: **97 tests pass**. Checked borrowed IPv4/ARP/ICMP views and a
+  bounded next-hop/ARP reducer deliver the original IPv4 packet through its
+  resolved MAC. Header checksum, option lengths and fragment metadata are
+  checked. Neighbor state has 256 slots; queues have four packets per next
+  hop, 64 packets/256 KiB total, with timed probe retries and expiry.
+  The next RED exercises hostile/capacity and Driver integration behaviors
+  against these executable APIs. No dependency; state is PLAN2's ARP/address/
+  pending packet state. This is not yet S05's complete acceptance pass.

@@ -1,3 +1,4 @@
+pub mod ipv4;
 pub mod wire;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
