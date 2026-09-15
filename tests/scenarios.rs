@@ -209,3 +209,45 @@ fn mo_comes_from_latest_eligible_non_snac_ra() {
     assert_eq!(r.snapshot(Link::Ail, 900002).encode().unwrap()[45], 0x42);
     assert_eq!(r.snapshot(Link::Stub, 900002).encode().unwrap()[45], 0);
 }
+
+use snac_rs::router::{NeighborState, RouterKey};
+fn supplier_packet(source: &str, prefix: &str) -> Vec<u8> {
+    let mut opts = vec![1, 1, 2, 0, 0, 0, 0, 9];
+    opts.extend(pio(prefix, 64, 0xc0, 3600, 7200));
+    nd_packet(source, "ff02::1", ra(0, 1800, &opts))
+}
+fn na_for(r: &Router, source: &str, solicited: bool) -> Vec<u8> {
+    let mut b = vec![136, 0, 0, 0, if solicited { 0xe0 } else { 0xa0 }, 0, 0, 0];
+    b.extend(ip(source).octets());
+    b.extend([2, 1, 2, 0, 0, 0, 0, 9]);
+    nd_packet(source, &r.identity.link_local(Link::Ail).to_string(), b)
+}
+#[test]
+fn ra_is_not_nud_confirmation() {
+    let mut r = router(5);
+    let mut rng = ScriptedRandom::new([]);
+    let key = RouterKey {
+        link: Link::Ail,
+        address: ip("fe80::9"),
+    };
+    let out = r
+        .receive(
+            Link::Ail,
+            &supplier_packet("fe80::9", "2001:db8::"),
+            100,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].packet[40], 135);
+    assert_eq!(&out[0].packet[24..40], &ip("fe80::9").octets());
+    assert_ne!(r.neighbors[&key].state, NeighborState::Reachable);
+    r.receive(Link::Ail, &na_for(&r, "fe80::9", false), 200, &mut rng)
+        .unwrap();
+    assert_ne!(r.neighbors[&key].state, NeighborState::Reachable);
+    r.receive(Link::Ail, &na_for(&r, "fe80::9", true), 300, &mut rng)
+        .unwrap();
+    assert_eq!(r.neighbors[&key].state, NeighborState::Reachable);
+    assert!(r.reachable(key, 60299));
+    assert!(!r.reachable(key, 60300));
+}
