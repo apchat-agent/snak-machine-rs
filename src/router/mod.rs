@@ -1,3 +1,4 @@
+mod nd;
 use crate::{
     persist::Identity,
     scheduler::RaScheduler,
@@ -5,6 +6,7 @@ use crate::{
     wire::*,
     Link,
 };
+pub use nd::{Neighbor, NeighborState};
 use std::{collections::BTreeMap, io, net::Ipv6Addr};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AilState {
@@ -52,6 +54,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub neighbors: BTreeMap<RouterKey, Neighbor>,
     pub headers: BTreeMap<RouterKey, Header>,
     pub identity: Identity,
     pub links: [LinkState; 2],
@@ -73,6 +76,7 @@ impl Router {
             })
         }
         Ok(Self {
+            neighbors: BTreeMap::new(),
             headers: BTreeMap::new(),
             identity,
             links: [link(now, rng)?, link(now, rng)?],
@@ -159,7 +163,7 @@ impl Router {
                 }
             }
         }
-        Ok(vec![])
+        self.observe_neighbor(link, &e, &nd, now)
     }
     pub fn snapshot(&self, link: Link, now: Time) -> Advertisement {
         let mut pios = vec![];

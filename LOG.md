@@ -22,3 +22,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 09 discovery GREEN — 9 passed; Two normalized link machines with finite discovery windows; raw packet validation precedes supplier updates. Send failures do not advance advertising state.
 - 10 mo-selection RED — 10 tests specified; cargo test failed for the new contract (see paired test commit).
 - 10 mo-selection GREEN — 10 passed; Header records contain only last receipt, SNAC, paired M/O bits and raw nonzero header deadline; zero-lifetime headers remain eligible.
+- 11 nud-confirmation RED — 11 tests specified; cargo test failed for the new contract (see paired test commit).
+- 11 nud-confirmation GREEN — 11 passed; RA/SLLAO learns presence and MAC only; NA override semantics and a single reachability deadline drive confirmation.
