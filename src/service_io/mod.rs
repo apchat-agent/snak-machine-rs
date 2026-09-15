@@ -24,8 +24,16 @@ const TCP_BUFFER: usize = 65536;
 struct IpDevice {
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
+    mtu: usize,
 }
 impl IpDevice {
+    fn mtu(&self) -> usize {
+        if self.mtu == 0 {
+            MTU
+        } else {
+            self.mtu
+        }
+    }
     fn bytes(&self) -> usize {
         self.rx.iter().chain(&self.tx).map(Vec::len).sum()
     }
@@ -71,7 +79,7 @@ impl Device for IpDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip;
-        caps.max_transmission_unit = MTU;
+        caps.max_transmission_unit = self.mtu();
         caps.max_burst_size = Some(IP_QUEUE_PACKETS);
         caps
     }

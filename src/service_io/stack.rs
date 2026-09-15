@@ -46,6 +46,7 @@ pub struct Stack {
     reassembly: crate::ip_reassembly::Reassembler,
     fragment_id: u32,
     connection_limit: usize,
+    interface_seed: u64,
 }
 impl Stack {
     pub fn new(now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -68,6 +69,7 @@ impl Stack {
             reassembly: Default::default(),
             fragment_id: u32::from_le_bytes(seed[..4].try_into().unwrap()),
             connection_limit: CONNECTIONS,
+            interface_seed: u64::from_le_bytes(seed),
         })
     }
     pub fn set_addresses(&mut self, addresses: &[IpAddr]) -> io::Result<()> {
@@ -364,8 +366,61 @@ impl Stack {
         if !self.device.space(b.len()) {
             return Err(capacity());
         }
+        if proto == 1 {
+            self.ipv4_pmtu(b, now)?;
+        }
         self.device.rx.push_back(b.to_vec());
         Ok(())
+    }
+    fn ipv4_pmtu(&mut self, b: &[u8], now: u64) -> io::Result<()> {
+        use crate::ipv4::wire::{Icmp, Packet};
+        let p = Packet::parse(b)?;
+        let Ok(icmp) = Icmp::parse(p.payload) else {
+            return Ok(());
+        };
+        if icmp.kind != 3 || icmp.code != 4 {
+            return Ok(());
+        }
+        let q = Packet::quoted(&icmp.bytes[8..])?;
+        if q.protocol != 6
+            || q.fragment_offset != 0
+            || q.payload.len() < 8
+            || p.destination != q.source
+        {
+            return Ok(());
+        }
+        let source_port = u16::from_be_bytes([q.payload[0], q.payload[1]]);
+        let dest_port = u16::from_be_bytes([q.payload[2], q.payload[3]]);
+        if !self.connections.keys().any(|id| {
+            self.endpoints(*id).is_some_and(|(l, r)| {
+                l.ip() == IpAddr::V4(q.source)
+                    && r.ip() == IpAddr::V4(q.destination)
+                    && l.port() == source_port
+                    && r.port() == dest_port
+            })
+        }) {
+            return Ok(());
+        }
+        let mut mtu = usize::from(u16::from_be_bytes([icmp.bytes[6], icmp.bytes[7]]));
+        if mtu == 0 {
+            let old = usize::from(u16::from_be_bytes([q.bytes[2], q.bytes[3]]));
+            mtu = [
+                65535, 32000, 17914, 8166, 4352, 2002, 1492, 1006, 508, 296, 68,
+            ]
+            .into_iter()
+            .find(|m| *m < old)
+            .unwrap_or(68);
+        }
+        if mtu < 68 || mtu >= self.device.mtu() {
+            return Ok(());
+        }
+        self.device.mtu = mtu;
+        // smoltcp snapshots capabilities in Interface; sockets retain their TCP state.
+        self.interface_seed = self.interface_seed.wrapping_add(1);
+        let mut cfg = Config::new(HardwareAddress::Ip);
+        cfg.random_seed = self.interface_seed;
+        self.iface = Interface::new(cfg, &mut self.device, instant(now));
+        self.set_addresses(&self.addresses.clone())
     }
     pub fn poll(&mut self, now: u64) -> io::Result<()> {
         self.now = now;
@@ -439,11 +494,15 @@ impl Stack {
     }
     pub fn output(&mut self) -> Option<Vec<u8>> {
         let packet = self.device.tx.pop_front()?;
-        if packet.len() <= super::MTU {
+        let mtu = if packet[0] >> 4 == 6 {
+            self.device.mtu().max(1280)
+        } else {
+            self.device.mtu()
+        };
+        if packet.len() <= mtu {
             return Some(packet);
         }
-        let fragments =
-            crate::ip_reassembly::fragment(&packet, super::MTU, self.fragment_id).ok()?;
+        let fragments = crate::ip_reassembly::fragment(&packet, mtu, self.fragment_id).ok()?;
         self.fragment_id = self.fragment_id.wrapping_add(1);
         if self.device.rx.len() + self.device.tx.len() + fragments.len() > super::IP_QUEUE_PACKETS
             || self.device.bytes() + fragments.iter().map(Vec::len).sum::<usize>() > IP_QUEUE_BYTES

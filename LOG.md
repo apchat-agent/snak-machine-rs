@@ -483,3 +483,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   44 addresses (40 peer, two local ULA, two link-local), not the initially
   guessed 42. It now checks all original keys after restore. Production was
   removed for its RED run; the absent probe-status seam still failed as intended.
+- S07 PMTU RED `34146d0`: a real TCP retransmission remains 1280 bytes after
+  a matching ICMPv4 fragmentation-needed report specifies 576. GREEN passes
+  **131 tests** and all-feature clippy. Valid quoted TCP tuples lower the
+  endpoint MTU; a zero reported MTU uses RFC 1191's next lower plateau.
+  Existing sockets retain their TCP state while the interface's cached device
+  capabilities are refreshed. Outgoing UDP uses the same fragmentation path.
+- Fields beyond the literal PLAN2 layout: one conservative MTU per IP stack
+  (rather than a new unbounded destination cache) and a seed for rebuilding
+  the smoltcp interface, whose capabilities are immutable after construction.
+  This can reduce segment sizes on other connections in that stack; it does
+  not increase path MTU or change routing. No dependency. IPv6 retains its
+  1280-byte minimum at the output boundary.
