@@ -569,3 +569,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   charged buffer/index overhead and deterministic capacity checks. Native
   packet/stream adapters execute returned actions; the production service
   dispatcher is integrated in later S09/S23 fixtures. No dependency.
+- S09 capacity/EDNS RED `5c507f8`: `cargo test` fails on the absent rate-table
+  seam. GREEN passes **156 tests** and all-feature clippy. Exact limits are
+  exercised: 128 pending queries, 256 waiters/eight per client, eight upstreams,
+  1024 cache RRsets and independent 4 MiB pending/cache charges. Cache eviction
+  does not consume pending slots; expiry releases state. A 32-client rate table
+  permits 32 queries/client/second, rejects new work atomically and expires.
+- EDNS version mismatch returns BADVERS with version zero, and extended RCODE
+  is considered when applying the sole NXDOMAIN exception. No new dependency
+  or field outside PLAN2's explicit rate/EDNS/cache state.

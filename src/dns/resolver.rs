@@ -4,7 +4,7 @@ use crate::time::RandomSource;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
 };
 const PENDING: usize = 128;
 const WAITERS: usize = 256;
@@ -86,6 +86,7 @@ pub struct Resolver {
     pending: BTreeMap<u64, Pending>,
     cache: BTreeMap<Vec<u8>, Cache>,
     next: u64,
+    rates: BTreeMap<IpAddr, (u64, u8)>,
 }
 impl Resolver {
     pub fn new(additional_a: bool) -> Self {
@@ -95,6 +96,7 @@ impl Resolver {
             pending: BTreeMap::new(),
             cache: BTreeMap::new(),
             next: 0,
+            rates: BTreeMap::new(),
         }
     }
     pub fn set_additional_a(&mut self, enabled: bool) {
@@ -122,6 +124,9 @@ impl Resolver {
         }
         self.upstreams = unique;
         Ok(())
+    }
+    pub fn rate_entries(&self) -> usize {
+        self.rates.len()
     }
     pub fn pending_count(&self) -> usize {
         self.pending.len()
@@ -169,6 +174,35 @@ impl Resolver {
             || client.address.ip().is_unspecified()
         {
             return Err(invalid());
+        }
+        self.rates.retain(|_, (until, _)| *until > now);
+        if !self.rates.contains_key(&client.address.ip()) && self.rates.len() >= 32 {
+            return Err(capacity());
+        }
+        let (_, count) = self
+            .rates
+            .entry(client.address.ip())
+            .or_insert((now.saturating_add(1000), 0));
+        if *count >= 32 {
+            return Err(capacity());
+        }
+        *count += 1;
+        if m.additional.iter().any(|r| (r.ttl >> 16) & 255 != 0) {
+            let mut answer = Message::new(m.id, 0x8080 | (m.flags & 0x110));
+            answer.questions = m.questions.clone();
+            answer.additional.push(Record {
+                name: Name::root(),
+                kind: 41,
+                class: 4096,
+                ttl: 1 << 24,
+                data: Rdata::Opt(vec![]),
+            });
+            let waiter = Waiter {
+                limit: client_limit(&client, &m),
+                client,
+                id: m.id,
+            };
+            return Ok(vec![deliver(waiter, &answer.encode()?)?]);
         }
         let key = query_key(&m)?;
         let waiter = Waiter {
@@ -294,7 +328,7 @@ impl Resolver {
         }
         if self.additional_a
             && p.question.kind == 28
-            && m.flags & 15 != 3
+            && rcode(&m) != 3
             && !m.answers.iter().any(|r| r.kind == 28)
         {
             let Ok(name) = canonical(&m, &p.question.name) else {
@@ -337,9 +371,9 @@ impl Resolver {
             .filter(|r| r.kind != 41)
             .collect();
         let positive = m.answers.iter().any(|r| r.kind == m.questions[0].kind);
-        let life = if m.flags & 15 == 0 && positive {
+        let life = if rcode(&m) == 0 && positive {
             records.iter().map(|r| r.ttl).min()
-        } else if m.flags & 15 == 0 || m.flags & 15 == 3 {
+        } else if rcode(&m) == 0 || rcode(&m) == 3 {
             m.authority
                 .iter()
                 .filter_map(|r| {
@@ -405,6 +439,7 @@ impl Resolver {
         Ok(())
     }
     pub fn tick(&mut self, now: u64, rng: &mut impl RandomSource) -> io::Result<Vec<Action>> {
+        self.rates.retain(|_, (until, _)| *until > now);
         self.cache.retain(|_, c| c.expires > now);
         let ids: Vec<_> = self.pending.keys().copied().collect();
         let mut out = vec![];
@@ -508,7 +543,7 @@ fn canonical(m: &Message, start: &Name) -> io::Result<Name> {
     Err(invalid())
 }
 fn augment(base: &[u8], a: &Message, start: &Name) -> io::Result<Vec<u8>> {
-    if a.flags & 15 != 0 {
+    if rcode(a) != 0 {
         return Ok(base.to_vec());
     }
     let target = canonical(a, start)?;
@@ -560,4 +595,13 @@ fn decay(b: &[u8], elapsed: u64) -> io::Result<Vec<u8>> {
         }
     }
     Ok(b)
+}
+
+fn rcode(m: &Message) -> u16 {
+    (m.flags & 15)
+        | (m.additional
+            .iter()
+            .find(|r| r.kind == 41)
+            .map_or(0, |r| (r.ttl >> 24) as u16)
+            << 4)
 }
