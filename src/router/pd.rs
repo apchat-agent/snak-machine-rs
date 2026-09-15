@@ -134,24 +134,17 @@ impl PdClient {
         }
         let packet = udp_packet(source, "ff02::1:2".parse().unwrap(), 546, 547, &b)
             .map_err(|_| io::Error::other("DHCP packet capacity"))?;
-        e.interval = if e.count == 0 {
+        e.interval = retransmission(
+            e,
             if e.kind == 1 {
-                1001 + rng.sample(199)?
-            } else if e.kind == 5 || e.kind == 6 {
-                9000 + rng.sample(2000)?
-            } else {
-                900 + rng.sample(200)?
-            }
-        } else {
-            let base = e.interval.saturating_mul(2).min(if e.kind == 1 {
                 self.sol_max_rt
             } else if e.kind == 5 || e.kind == 6 {
                 600000
             } else {
                 30000
-            });
-            base * 9 / 10 + rng.sample(base / 5)?
-        };
+            },
+            rng,
+        )?;
         e.next = now + e.interval;
         e.count = e.count.saturating_add(1);
         if e.kind == 6 && e.count == 1 {
@@ -353,6 +346,15 @@ impl PdClient {
             self.exchange = None;
             return Err(io::Error::other("acquired DHCP prefix capacity"));
         }
+        let mut shortest = BTreeMap::new();
+        for d in &m.delegations {
+            if d.preferred > 0 && d.valid > 0 {
+                shortest
+                    .entry(d.iaid)
+                    .and_modify(|p: &mut u32| *p = (*p).min(d.preferred))
+                    .or_insert(d.preferred);
+            }
+        }
         for d in m.delegations {
             let key = (d.iaid, d.prefix);
             if d.valid == 0 {
@@ -360,13 +362,17 @@ impl PdClient {
                 continue;
             }
             let used = self.leases.get(&key).is_some_and(|l| l.used);
-            let t1 = if d.t1 == 0 {
-                (d.preferred / 2).max(1)
-            } else {
-                d.t1
+            let preferred = shortest.get(&d.iaid).copied().unwrap_or(1);
+            let derived = |numerator: u64, denominator: u64| {
+                if preferred == u32::MAX {
+                    u32::MAX
+                } else {
+                    ((preferred as u64 * numerator / denominator) as u32).max(1)
+                }
             };
+            let t1 = if d.t1 == 0 { derived(1, 2) } else { d.t1 };
             let t2 = if d.t2 == 0 {
-                (d.preferred.saturating_mul(4) / 5).max(t1)
+                derived(4, 5).max(t1)
             } else {
                 d.t2
             };
@@ -476,9 +482,9 @@ impl PdClient {
                 udp_packet(source, "ff02::1:2".parse().unwrap(), 546, 547, &b)
                     .map_err(|_| io::Error::other("Release encoding"))?,
             );
+            e.interval = retransmission(e, 0, rng)?;
             e.count += 1;
-            e.next = now + e.interval * 9 / 10 + rng.sample(e.interval / 5)?;
-            e.interval *= 2;
+            e.next = now.saturating_add(e.interval);
         }
         self.releases
             .retain(|r| r.exchange.count < 4 || now < r.exchange.next);
@@ -716,4 +722,29 @@ impl PdClient {
         };
         self.begin(kind, server, now, now, rng)
     }
+}
+
+// RFC 9915 section 15: jitter is relative to RTprev, not 2*RTprev.
+fn retransmission(e: &Exchange, mrt: u64, rng: &mut impl RandomSource) -> io::Result<u64> {
+    if e.count == 0 && e.kind == 1 {
+        return Ok(1001 + rng.sample(99)?);
+    }
+    let previous = if e.count == 0 {
+        if e.kind == 5 || e.kind == 6 {
+            10000
+        } else {
+            1000
+        }
+    } else {
+        e.interval
+    };
+    let rand = rng.sample(2000)? as i128 - 1000;
+    let base = previous as i128 * if e.count == 0 { 1 } else { 2 };
+    let rt = (base * 10000 + previous as i128 * rand) / 10000;
+    let rt = if mrt != 0 && rt > mrt as i128 {
+        (mrt as i128 * (10000 + rand)) / 10000
+    } else {
+        rt
+    };
+    Ok(rt.clamp(1, u64::MAX as i128) as u64)
 }
