@@ -307,7 +307,7 @@ impl Querier {
         {
             return Ok(false);
         }
-        self.receive_admitted(d, now, rng)?;
+        self.receive_admitted(d, now, rng, super::tsr::OPTION_CODE)?;
         Ok(true)
     }
     pub(crate) fn admit_datagram(
@@ -339,12 +339,13 @@ impl Querier {
         d: &Datagram,
         now: Time,
         rng: &mut impl RandomSource,
+        code: u16,
     ) -> io::Result<()> {
         let m = &d.message;
         if m.flags & 0x8000 != 0 {
-            self.cache.receive(m, now, rng)?;
+            self.cache.receive_with_code(m, code, now, rng)?;
         } else if d.destination.ip().is_multicast() && d.source.port() == 5353 {
-            self.cache.receive(m, now, rng)?;
+            self.cache.receive_with_code(m, code, now, rng)?;
             for question in &m.questions {
                 self.cache.observe_question(question, &m.answers, now);
                 if question.class & 0x8000 != 0 || m.flags & 0x200 != 0 {

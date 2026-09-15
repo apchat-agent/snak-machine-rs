@@ -1124,3 +1124,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   PTR browsing with SRV/binary TXT/AAAA additions, changed TXT and expiry goodbye.
   No extra field or dependency. Native physical interfaces/external clients
   remain **needs privileged acceptance**; this fixture uses MemoryIo throughout.
+- S14 convention/bounds RED `ad9ae19` confirms the missing configurable code.
+  GREEN passes **268 tests** and all-feature clippy. `--tsr-option-code` now
+  defaults to experimental 65002; checked nonzero u16 values reach encoding,
+  input comparisons and cache indexing. Changing the code on an active engine
+  is refused. Config/Engine fields implement PLAN2's explicit convention option.
+- The registrar fixture fills 128 publication slots and 128 coalesced pending
+  changes, rejects further ownership atomically, then expires/releases both
+  tables. A last-fractional-second query now synchronizes publication expiry
+  before projecting records; its scheduled deadline permits withdrawal before
+  any positive one-second TTL would outlive the lease. This closes an ordering
+  gap exposed by the native integration. No dependency or design change.

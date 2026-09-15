@@ -299,6 +299,11 @@ impl Resolver {
             .map(|p| p.retry.min(p.deadline))
             .chain(self.cache.values().map(|c| c.expires))
             .chain(self.registry().and_then(|r| r.next_deadline()))
+            .chain(
+                self.registrar
+                    .as_ref()
+                    .and_then(|r| r.advertising_deadline()),
+            )
             .min()
     }
     fn admit(&mut self, source: IpAddr, now: u64) -> io::Result<()> {

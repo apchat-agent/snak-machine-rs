@@ -29,6 +29,9 @@ fn mapping() -> Mapping {
     Mapping::new(zone, &digest[..8]).unwrap()
 }
 impl Proxy {
+    pub fn next_deadline(&self) -> Option<Time> {
+        self.slots.values().map(|s| s.next_change).min()
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (
             self.slots.len(),

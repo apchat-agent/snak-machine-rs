@@ -7,14 +7,43 @@ pub mod tsr;
 pub mod wire;
 
 /// Shared reducers for the AIL. The runtime supplies authoritative projections.
-#[derive(Default)]
 pub struct Engine {
+    tsr_code: u16,
     pub querier: query::Querier,
     pub publisher: publish::Publisher,
     pub responder: respond::Responder,
 }
 
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            tsr_code: tsr::OPTION_CODE,
+            querier: Default::default(),
+            publisher: Default::default(),
+            responder: Default::default(),
+        }
+    }
+}
 impl Engine {
+    pub fn tsr_code(&self) -> u16 {
+        self.tsr_code
+    }
+    pub fn set_tsr_code(&mut self, code: u16) -> std::io::Result<()> {
+        if code == 0
+            || self.querier.counts().0 != 0
+            || self.querier.cache.counts().0 != 0
+            || self.publisher.counts().0 != 0
+            || self.publisher.goodbye_count() != 0
+            || self.responder.counts().0 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "TSR code requires an idle engine and nonzero value",
+            ));
+        }
+        self.tsr_code = code;
+        Ok(())
+    }
     pub fn retained_bytes(&self) -> usize {
         self.querier.owned_bytes() + self.publisher.counts().2 + self.responder.counts().2
     }
@@ -124,7 +153,7 @@ impl Engine {
     ) -> std::io::Result<Vec<crate::dns::wire::Message>> {
         let mut output = vec![];
         for m in messages.drain(..) {
-            output.extend(tsr::packetize(m, tsr::OPTION_CODE, now, &|n| {
+            output.extend(tsr::packetize(m, self.tsr_code, now, &|n| {
                 self.publisher.output_stamp(n)
             })?);
         }
@@ -141,7 +170,7 @@ impl Engine {
     ) -> std::io::Result<bool> {
         use std::collections::BTreeSet;
         use tsr::Relation as R;
-        let Ok(stamps) = tsr::extract(&d.message, tsr::OPTION_CODE, now) else {
+        let Ok(stamps) = tsr::extract(&d.message, self.tsr_code, now) else {
             return Ok(false);
         };
         let probe = self.publisher.expects_unicast(d, now);
@@ -184,9 +213,10 @@ impl Engine {
             handled.insert(r.name.clone());
         }
         let mut input = d.clone();
-        input.message = tsr::filtered(&d.message, &stale, &stamps, now)?;
-        self.querier.receive_admitted(&input, now, rng)?;
-        input.message = tsr::filtered(&d.message, &handled, &stamps, now)?;
+        input.message = tsr::filtered(&d.message, &stale, &stamps, now, self.tsr_code)?;
+        self.querier
+            .receive_admitted(&input, now, rng, self.tsr_code)?;
+        input.message = tsr::filtered(&d.message, &handled, &stamps, now, self.tsr_code)?;
         self.publisher.receive(&input, source, now, rng)?;
         // Equal TSR data may suppress duplicate answers; stale/conflicting data may not.
         handled.retain(|n| {
@@ -196,7 +226,7 @@ impl Engine {
                     stamps.get(n).copied(),
                 ) == R::Conflict
         });
-        input.message = tsr::filtered(&d.message, &handled, &stamps, now)?;
+        input.message = tsr::filtered(&d.message, &handled, &stamps, now, self.tsr_code)?;
         match self
             .responder
             .receive(&input, on_link, &mut self.publisher, source, now, rng)

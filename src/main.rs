@@ -105,6 +105,7 @@ fn run() -> io::Result<()> {
         snac_rs::service_io::identity::TlsIdentity::load_file(&tls_path, wall()?, &mut random)?;
     let mut tls_renew_at = identity.expires_at()?;
     let mut driver = Driver::new(router, backend)?;
+    driver.mdns.set_tsr_code(config.tsr_option_code)?;
     driver.enable_dot(identity.server_config()?.into())?;
 
     driver.dns.enable_srp(Box::new(srp_store), 0, wall()?)?;

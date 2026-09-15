@@ -59,6 +59,9 @@ impl Registrar {
         self.registry.expire(now);
         self.changed |= before != self.visible_count();
     }
+    pub fn advertising_deadline(&self) -> Option<u64> {
+        self.advertising.next_deadline()
+    }
     pub fn registry(&self) -> &Registry {
         &self.registry
     }

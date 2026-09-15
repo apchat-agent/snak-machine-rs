@@ -204,6 +204,7 @@ pub(crate) fn filtered(
     ignored: &BTreeSet<Name>,
     stamps: &BTreeMap<Name, Stamp>,
     now: Time,
+    code: u16,
 ) -> io::Result<Message> {
     let mut out = m.clone();
     out.answers.retain(|r| !ignored.contains(&r.name));
@@ -211,13 +212,7 @@ pub(crate) fn filtered(
     out.additional
         .retain(|r| r.kind == 41 || !ignored.contains(&r.name));
     // Incoming cache-flush flags are not local registration instructions.
-    attach_inner(
-        &mut out,
-        OPTION_CODE,
-        now,
-        &|n| stamps.get(n).copied(),
-        false,
-    )?;
+    attach_inner(&mut out, code, now, &|n| stamps.get(n).copied(), false)?;
     Ok(out)
 }
 

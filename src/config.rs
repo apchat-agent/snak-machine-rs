@@ -6,6 +6,7 @@ pub enum BackendKind {
 }
 #[derive(Debug)]
 pub struct Config {
+    pub tsr_option_code: u16,
     pub srp_policy: crate::srp::registry::LeasePolicy,
     pub ula_policy: crate::router::attachment::UlaPolicy,
     pub attachment_id: Option<String>,
@@ -20,7 +21,7 @@ pub struct Config {
     pub no_additional_a: bool,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery proxies and NAT64 are not yet implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --tsr-option-code CODE (experimental default 65002)\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery proxies and NAT64 are not yet implemented.\nReal backends require root; --help opens no interfaces.";
 impl Config {
     pub fn tls_identity_path(&self) -> PathBuf {
         let mut name = self.state.as_os_str().to_owned();
@@ -43,6 +44,7 @@ impl Config {
         if args.iter().any(|a| a == "--help" || a == "-h") {
             return Ok(None);
         }
+        let mut tsr_option_code = crate::mdns::tsr::OPTION_CODE;
         let mut srp_policy = crate::srp::registry::LeasePolicy::default();
         let mut dns_upstreams = vec![];
         let mut no_additional_a = false;
@@ -70,6 +72,12 @@ impl Config {
                 .next()
                 .ok_or_else(|| io::Error::other(format!("missing value for {key}")))?;
             match key.as_str() {
+                "--tsr-option-code" => {
+                    tsr_option_code = value.parse().map_err(io::Error::other)?;
+                    if tsr_option_code == 0 {
+                        return Err(io::Error::other("invalid TSR option code"));
+                    }
+                }
                 "--srp-max-lease" => {
                     srp_policy.max_lease = value.parse().map_err(io::Error::other)?
                 }
@@ -147,6 +155,7 @@ impl Config {
         };
         srp_policy.validate()?;
         Ok(Some(Self {
+            tsr_option_code,
             srp_policy,
             ula_policy,
             attachment_id,

@@ -186,6 +186,7 @@ impl<I: PacketIo> Driver<I> {
         {
             return Ok(true);
         }
+        self.dns.sync_advertising(&mut self.mdns, now, rng)?;
         let source = |id, at| (self.mdns_source)(id, at, &self.router, &self.dns);
         if self.mdns.receive(&d, on_link, &source, now, rng)? && rx.kind == FrameKind::Ethernet {
             self.mdns.querier.remember_peer(
@@ -297,7 +298,7 @@ impl<I: PacketIo> Driver<I> {
                     self.mdns_complete(owner, true, now);
                     continue;
                 };
-                crate::mdns::tsr::attach(&mut message, crate::mdns::tsr::OPTION_CODE, now, &|n| {
+                crate::mdns::tsr::attach(&mut message, self.mdns.tsr_code(), now, &|n| {
                     self.mdns.publisher.output_stamp(n)
                 })?;
                 for source in &output.sources {
