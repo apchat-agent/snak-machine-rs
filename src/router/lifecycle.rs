@@ -78,10 +78,9 @@ impl Router {
         rng: &mut impl RandomSource,
     ) -> io::Result<()> {
         if link == Link::Stub && nd.body[5] & 2 != 0 {
-            self.degrade(now, rng)?;
-            return Err(io::Error::other(
-                "SNAC-flagged RA on stub: unsupported chained or swapped topology",
-            ));
+            eprintln!(
+                "{now}ms SNAC-flagged RA on stub: check for swapped or chained links (draft §9.7)"
+            );
         }
         let key = RouterKey {
             link,

@@ -1,3 +1,4 @@
+pub mod attachment;
 mod budget;
 mod lifecycle;
 pub use lifecycle::Lifecycle;
@@ -68,6 +69,8 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub attachment: attachment::Attachment,
+    pub retired_ulas: BTreeMap<(Link, Prefix), Lifetime>,
     pub lifecycle: Lifecycle,
     final_ras: [u8; 2],
     pub error_after: Option<Time>,
@@ -107,6 +110,11 @@ impl Router {
             })
         }
         Ok(Self {
+            attachment: attachment::Attachment {
+                discovering: true,
+                ..Default::default()
+            },
+            retired_ulas: BTreeMap::new(),
             lifecycle: Lifecycle::Running,
             final_ras: [0; 2],
             error_after: None,
@@ -245,6 +253,9 @@ impl Router {
         }
         if nd.kind == 134 {
             self.admit_ra(link, &e, &nd, now, rng)?;
+            if link == Link::Ail && self.attachment.discovering {
+                self.attachment.observe(&e.source.octets())?;
+            }
             if u16::from_be_bytes([nd.body[6], nd.body[7]]) > 0 {
                 let s = &mut self.links[link.index()];
                 s.rs_count = 3;
@@ -395,6 +406,17 @@ impl Router {
                 }
             }
         }
+        pios.extend(
+            self.retired_ulas
+                .iter()
+                .filter(|((l, _), v)| *l == link && v.remaining(now) >= 206)
+                .map(|((_, prefix), v)| Pio {
+                    prefix: *prefix,
+                    flags: 0xc0,
+                    preferred: 0,
+                    valid: v.remaining(now),
+                }),
+        );
         if link == Link::Stub {
             pios.extend(self.delegated_pios(now));
             pios.sort_by_key(|p| p.prefix);
@@ -501,6 +523,8 @@ impl Router {
         }
 
         if self.links[0].up {
+            self.finish_attachment(now, rng)?;
+            self.retired_ulas.retain(|_, v| v.live(now));
             self.pd.advance(now, rng)?;
         }
         self.reap_exports(now);

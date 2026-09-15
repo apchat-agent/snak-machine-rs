@@ -698,7 +698,12 @@ impl PdClient {
             return Ok(());
         }
         let server = if kind == 5 {
-            self.leases.values().next().unwrap().server.clone()
+            self.leases
+                .values()
+                .min_by_key(|l| l.t1)
+                .unwrap()
+                .server
+                .clone()
         } else {
             vec![]
         };

@@ -44,7 +44,8 @@ fn s02_stub_flag_does_not_change_two_router_election() {
             .identity
             .prefix(Link::Stub)
             .min(b.identity.prefix(Link::Stub));
-        for (receiver, sender) in [(&mut a, &b)] {
+        {
+            let (receiver, sender) = (&mut a, &b);
             let packet = nd_packet(
                 &sender.identity.link_local(Link::Stub).to_string(),
                 "ff02::1",

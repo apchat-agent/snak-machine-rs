@@ -69,6 +69,8 @@ impl Router {
             self.routes.clear();
             self.links[1].scheduler.changed(now, rng)?;
             if up {
+                self.attachment.discovering = true;
+                self.attachment.observed.clear();
                 self.pd.refresh(6, now, rng)?;
             }
         }
@@ -85,6 +87,17 @@ impl Router {
             "SNAC-SNAPSHOT-1 {wall}\n{}\n",
             hex(&self.identity.encode()?)
         );
+        for evidence in &self.attachment.known {
+            text.push_str(&format!("A {}\n", hex(evidence)));
+        }
+        for ((link, prefix), valid) in &self.retired_ulas {
+            text.push_str(&format!(
+                "R {} {} {}\n",
+                link.index(),
+                prefix.address,
+                end(*valid, now, wall)
+            ));
+        }
         for link in [Link::Ail, Link::Stub] {
             let p = self.identity.prefix(link);
             if let Some(v) = self.on_link.get(&(link, p)) {
@@ -139,6 +152,41 @@ impl Router {
         for line in lines {
             let fields: Vec<_> = line.split_whitespace().collect();
             match fields.as_slice() {
+                ["A", evidence] => {
+                    let bytes = unhex(evidence)?;
+                    if r.attachment.known.len() >= attachment::MAX_ATTACHMENT_IDENTITIES
+                        || bytes.is_empty()
+                        || bytes.len() > 128
+                        || !r.attachment.known.insert(bytes)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                ["R", link, address, end] => {
+                    let link = match *link {
+                        "0" => Link::Ail,
+                        "1" => Link::Stub,
+                        _ => return Err(invalid()),
+                    };
+                    let prefix = Prefix::new(address.parse().map_err(|_| invalid())?, 64)
+                        .filter(|p| p.ula())
+                        .ok_or_else(invalid)?;
+                    let valid = lifetime(end)?;
+                    if r.retired_ulas.len() >= attachment::MAX_RETIRED_PREFIXES
+                        || r.retired_ulas.insert((link, prefix), valid).is_some()
+                    {
+                        return Err(invalid());
+                    }
+                    if valid.live(now) {
+                        r.on_link.insert(
+                            (link, prefix),
+                            OnLink {
+                                valid,
+                                preferred: Lifetime::Until(now),
+                            },
+                        );
+                    }
+                }
                 ["U", link, end] => {
                     let link = match *link {
                         "0" => Link::Ail,

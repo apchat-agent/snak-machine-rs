@@ -163,3 +163,40 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Both provisional audits pass. Transcripts: `.lane/step6-validation/final-*.log`.
   README/STATUS are the final documentation commit; the completion marker
   records the stopped run, not completion of S02–S24 or full conformance.
+
+### S02 — resumed under lane-owner ADDENDUM 1
+
+- RED `308c60a`: `cargo test --no-fail-fast` failed on the four intended
+  behaviors: rejected stub SNAC flag, absent attachment/policy handling and
+  renewal selecting server 1 when server 2's IA expired first. The original
+  suite retained 71 passing tests; its lifecycle test reached the replaced
+  assertion and failed there, with its other assertions unchanged.
+- Baseline assertion superseded: `lifecycle_loss_and_shutdown_do_not_leave_false_routes`
+  formerly required `receive(...).is_err()` and `Lifecycle::Degraded` for a
+  valid flagged stub RA. It now requires success and `Lifecycle::Running`,
+  under draft §5.2 (ignore the flag for arbitration) and §9.7 (warning is
+  appropriate). All other assertions in that test are retained.
+- Additional RED `3b8d473` covers the initial configured-policy/evidence API;
+  `cargo test` confirmed the absent module/method before applying the saved
+  production patch. This fixture was first drafted against the working fix,
+  so its creation was not strictly test-first; the four behavioral fixtures
+  in the first RED were test-first. No history was squashed.
+- GREEN: **82 Rust tests pass**. Valid flagged stub RAs warn and participate
+  in the same election. A bounded persisted identity set distinguishes new
+  AIL router identities after discovery, preserving identity for unchanged
+  reboot/reconnect, prefix renumbering, absent evidence, or explicit fixed
+  policy. CLI accepts `--ula-policy=rotate|fixed` and a bounded attachment ID.
+  Rotation retains the last successfully advertised old prefix deadlines and
+  deprecates old stub addresses. DHCP renewal chooses the due server and a
+  reply preserves the other IA's independent timers/validity.
+- Surprise: the rotation fixture originally assumed no intervening RA sends;
+  its helper actually refreshed the stub ULA. The follow-up RED compares the
+  retirement deadline to the last successful advertisement rather than an
+  incorrect absolute 1770-second expectation. Election fixtures use distinct
+  IIDs so input cannot be mistaken for self-egress.
+- Fields: attachment policy, bounded known/current evidence (32 identities,
+  128 bytes each), discovery phase, and at most 16 retiring ULA prefixes are
+  PLAN2's planned attachment/retirement state. No additional dependency.
+  The state-layout normalization follows in a separate refactor commit.
+- Needs privileged acceptance: same-interface carrier reconnect and observed
+  router-identity changes on actual AIL media; no native interfaces were opened.

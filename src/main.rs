@@ -1,7 +1,7 @@
 use snac_rs::{
     config::{BackendKind, Config, HELP},
     io::{self as packet_io, PacketIo},
-    persist::{FileStore, Identity, MemoryStore, StateStore},
+    persist::{FileStore, Identity, StateStore},
     router::{Lifecycle, Router},
     runtime::Driver,
     time::OsRandom,
@@ -53,11 +53,12 @@ fn run() -> io::Result<()> {
             Router::new(identity, 0, &mut random)?
         }
     };
-    if router.identity.attachment != attachment {
-        let id = Identity::load_or_create(&mut MemoryStore::default(), &attachment, &mut random)?;
-        store.save(&id.encode()?)?;
-        router = Router::new(id, 0, &mut random)?;
-    }
+    router.configure_attachment(
+        config.ula_policy,
+        Some(config.attachment_id.as_deref().unwrap_or(&attachment)),
+        0,
+        &mut random,
+    )?;
     router.no_stub_default = config.no_stub_default;
     router.always_advertise_ail_routes = config.always_advertise_ail_routes;
     let backend = match config.backend {

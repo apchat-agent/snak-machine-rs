@@ -6,6 +6,8 @@ pub enum BackendKind {
 }
 #[derive(Debug)]
 pub struct Config {
+    pub ula_policy: crate::router::attachment::UlaPolicy,
+    pub attachment_id: Option<String>,
     pub backend: BackendKind,
     pub infra: String,
     pub stub: String,
@@ -15,13 +17,25 @@ pub struct Config {
     pub pcap_library: Option<String>,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --no-stub-default  --always-advertise-ail-routes\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nRouting prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nRouting prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.\nReal backends require root; --help opens no interfaces.";
 impl Config {
     pub fn parse<S: Into<String>>(args: impl IntoIterator<Item = S>) -> io::Result<Option<Self>> {
-        let args: Vec<String> = args.into_iter().map(Into::into).collect();
+        let args: Vec<String> = args
+            .into_iter()
+            .map(Into::into)
+            .flat_map(|s: String| {
+                if let Some((key, value)) = s.split_once('=') {
+                    vec![key.to_owned(), value.to_owned()]
+                } else {
+                    vec![s]
+                }
+            })
+            .collect();
         if args.iter().any(|a| a == "--help" || a == "-h") {
             return Ok(None);
         }
+        let mut ula_policy = crate::router::attachment::UlaPolicy::Rotate;
+        let mut attachment_id = None;
         let mut iter = args.into_iter();
         let (mut backend, mut infra, mut stub) = (None, None, None);
         let mut state = PathBuf::from("snac.state");
@@ -40,6 +54,19 @@ impl Config {
                 .next()
                 .ok_or_else(|| io::Error::other(format!("missing value for {key}")))?;
             match key.as_str() {
+                "--ula-policy" => {
+                    ula_policy = match value.as_str() {
+                        "rotate" => crate::router::attachment::UlaPolicy::Rotate,
+                        "fixed" => crate::router::attachment::UlaPolicy::Fixed,
+                        _ => return Err(io::Error::other("ULA policy must be rotate or fixed")),
+                    }
+                }
+                "--attachment-id" => {
+                    if value.is_empty() || value.len() > 128 {
+                        return Err(io::Error::other("attachment ID must contain 1..128 bytes"));
+                    }
+                    attachment_id = Some(value);
+                }
                 "--backend" => {
                     backend = Some(match value.as_str() {
                         "tap" => BackendKind::Tap,
@@ -84,6 +111,8 @@ impl Config {
             )),
         };
         Ok(Some(Self {
+            ula_policy,
+            attachment_id,
             backend,
             infra,
             stub,
