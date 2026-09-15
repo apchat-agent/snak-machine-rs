@@ -320,3 +320,31 @@ fn s10_tls_channel_uses_actual_loopback_tcp() {
     }
     assert_eq!(got, b"\0\x0cDNS bytes!!!");
 }
+
+#[test]
+fn s10_identity_expiry_and_startup_path_are_explicit() {
+    let c = snac_rs::config::Config::parse([
+        "--backend",
+        "tap",
+        "--infra",
+        "a",
+        "--stub",
+        "b",
+        "--state",
+        "/tmp/custom.name.state",
+    ])
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        c.tls_identity_path(),
+        std::path::PathBuf::from("/tmp/custom.name.state.tls")
+    );
+    let mut store = MemoryStore::default();
+    let i = TlsIdentity::load_or_create(&mut store, NOW, &mut ScriptedRandom::new(1..100)).unwrap();
+    assert_eq!(i.expires_at().unwrap(), NOW + 365 * 86400);
+    let saved = store.0.clone();
+    assert!(
+        TlsIdentity::load_or_create(&mut store, NOW - 301, &mut ScriptedRandom::new([])).is_err()
+    );
+    assert_eq!(store.0, saved);
+}

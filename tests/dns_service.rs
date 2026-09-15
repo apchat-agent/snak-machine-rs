@@ -680,3 +680,58 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
         8192
     );
 }
+
+#[test]
+fn s10_dot_activation_refuses_another_owners_port_and_bounds_ring_sizes() {
+    use snac_rs::service_io::identity::TlsIdentity;
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(1..10000);
+    d.start(0, &mut rng).unwrap();
+    d.stack_mut(Link::Stub).unwrap().listen_tcp(853).unwrap();
+    let i = TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
+    assert!(d.enable_dot(i.server_config().unwrap().into()).is_err());
+    let mut s = stack("fe80::2".parse().unwrap());
+    assert!(s.listen_tcp_buffered(853, 4095).is_err());
+    assert!(s.listen_tcp_buffered(853, 8193).is_err());
+    assert!(s.listen_tcp_buffered(853, 4096).is_ok());
+    assert!(s.listen_tcp_buffered(854, 8192).is_ok());
+}
+#[test]
+fn s10_tls_handshake_exhaustion_shares_sixty_four_slots_and_expires() {
+    use snac_rs::dns::{resolver::Resolver, service::Service};
+    use snac_rs::service_io::identity::TlsIdentity;
+    let mut r = Resolver::new(true);
+    let mut rng = ScriptedRandom::new(1..10000);
+    let identity =
+        TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
+    let mut svc = Service::default();
+    svc.enable_tls(identity.server_config().unwrap().into());
+    let mut stacks = [
+        stack("fe80::1".parse().unwrap()),
+        stack("fe80::2".parse().unwrap()),
+    ];
+    stacks[1].listen_tcp_buffered(853, 4096).unwrap();
+    for n in 0..17 {
+        let source: IpAddr = format!("fe80::{:x}", 100 + n).parse().unwrap();
+        let mut h = stack(source);
+        for port in 40000..if n == 16 { 40001 } else { 40004 } {
+            h.connect(source, port, "fe80::2".parse().unwrap(), 853, 0)
+                .unwrap();
+            h.poll(0).unwrap();
+            while let Some(p) = h.output() {
+                stacks[1].input(&p, 0).unwrap();
+                stacks[1].poll(0).unwrap();
+                svc.poll(&mut r, &mut stacks, 0, &mut rng).unwrap();
+                while let Some(p) = stacks[1].output() {
+                    h.input(&p, 0).unwrap();
+                }
+            }
+        }
+        assert_eq!(svc.counts().1, ((n + 1) * 4).min(64));
+    }
+    assert_eq!(svc.next_deadline(0), Some(10000));
+    svc.poll(&mut r, &mut stacks, 10000, &mut rng).unwrap();
+    stacks[1].poll(10001).unwrap();
+    svc.poll(&mut r, &mut stacks, 10001, &mut rng).unwrap();
+    assert_eq!(svc.counts().1, 0);
+}
