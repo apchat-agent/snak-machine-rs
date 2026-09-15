@@ -9,6 +9,7 @@ pub struct Driver<I> {
     pub router: Router,
     pub io: I,
     groups: [BTreeSet<Ipv6Addr>; 2],
+    mdns4: bool,
 }
 impl<I: PacketIo> Driver<I> {
     pub fn new(mut router: Router, io: I) -> io::Result<Self> {
@@ -30,17 +31,34 @@ impl<I: PacketIo> Driver<I> {
             router,
             io,
             groups: Default::default(),
+            mdns4: false,
         })
     }
     fn sync_groups(&mut self) -> io::Result<()> {
+        let mdns4 = self.router.lifecycle != Lifecycle::Stopped
+            && self.router.links[0].up
+            && self.io.info(Link::Ail).kind == crate::wire::FrameKind::Ethernet;
+        if mdns4 != self.mdns4 {
+            let group = "224.0.0.251".parse().unwrap();
+            if mdns4 {
+                self.io.join_v4(Link::Ail, group)?;
+            } else {
+                self.io.leave_v4(Link::Ail, group)?;
+            }
+            self.mdns4 = mdns4;
+        }
+
         for link in [Link::Ail, Link::Stub] {
-            let wanted = if self.router.lifecycle == Lifecycle::Stopped
+            let mut wanted = if self.router.lifecycle == Lifecycle::Stopped
                 || !self.router.links[link.index()].up
             {
                 BTreeSet::new()
             } else {
                 self.router.memberships(link)
             };
+            if link == Link::Ail && !wanted.is_empty() {
+                wanted.insert("ff02::fb".parse().unwrap());
+            }
             let join: Vec<_> = wanted
                 .difference(&self.groups[link.index()])
                 .copied()

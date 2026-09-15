@@ -102,7 +102,9 @@ impl PcapHandle {
             if (a.pcap_datalink)(h) != 1 {
                 return Err(io::Error::other("pcap backend requires DLT_EN10MB Ethernet; VLAN trunks/cooked/radiotap/utun unsupported"));
             }
-            let filter = CString::new("ether proto 0x86dd").unwrap();
+            let filter =
+                CString::new("ether proto 0x86dd or ether proto 0x0800 or ether proto 0x0806")
+                    .unwrap();
             let mut program = BpfProgram {
                 len: 0,
                 insns: ptr::null_mut(),

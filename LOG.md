@@ -251,3 +251,41 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   behavior. **92 tests pass**, including exact retirement capacity (16) plus
   one, atomic overflow refusal, and one old PIO after rotation/restart. No
   new field, dependency or design change.
+
+### S04 — Ethernet families and native edges
+
+- RED `733f73f`: existing `Device::send` rejected IPv4/ARP Ethernet frames
+  before atomic transmission. That behavioral failure was observed with
+  `cargo test`; initial native-query/Driver handoff APIs then produced the
+  expected compile-red before production implementation.
+- GREEN: **95 Rust tests pass**. Ethernet family dispatch admits IPv6, IPv4
+  and ARP; unsupported/VLAN families and short headers are rejected. AIL
+  IPv4/ARP input uses a FIFO bounded to 64 frames/65535 bytes, with wrong-link,
+  own-egress and full-queue cases tested. The FIFO is the S04-to-S05 protocol
+  handoff; IPv4/ARP packet semantics remain S05, and no IPv4 service is ready.
+  TAP/pcap keep exact atomic writes; pcap captures all three EtherTypes.
+- Driver joins/leaves AIL mDNS IPv6 and, on Ethernet, IPv4 memberships. Native
+  IPv4 membership uses an interface-indexed `ip_mreqn`, limited to the single
+  mDNS group; the existing IPv6 membership map now has a 64-group ceiling.
+- Native status separates IFF_UP from carrier: Linux uses IFF_RUNNING and
+  Darwin uses SIOCGIFMEDIA's valid/active bits for Ethernet, with the point-
+  to-point/loopback flag path retained. Native bridge lookups use Linux sysfs
+  master identity and Darwin SIOCGDRVSPEC/BRDGGIFS, with bounded 256-interface/
+  256-member scans and explicit query failures.
+- External FDs are duplicated and validated against their actual kernel
+  interface/framing before use: Linux TUNGETIFF, Darwin utun control identity
+  and interface name. Regular files, unrelated datagram sockets, invalid FDs,
+  wrong interfaces and framing mismatches are rejected in rootless fixtures.
+  These calls share the injected NativeQueries policy exercised by the tests.
+- Fields: bounded family ingress FIFO, one optional IPv4 membership socket and
+  Driver's completed-membership bit implement PLAN2's family/scheduler/native
+  requirements. No new dependency. Fmt, all-feature clippy and aarch64 macOS
+  all-target pcap check pass; the original 72 retained tests pass.
+- Native ABI sources checked: [XNU if.h](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/net/if.h),
+  [if_bridgevar.h](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/net/if_bridgevar.h),
+  [sockio.h](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/sockio.h).
+  The Darwin pack(4) sizes have compile-time assertions.
+- Needs privileged acceptance: actual Linux TAP/pcap and Darwin utun/pcap
+  carrier transitions, bridge enumeration, external-interface FDs and scoped
+  IPv4/IPv6 multicast reception. Native paths compile; no real interface was
+  opened or provisioned in these tests.

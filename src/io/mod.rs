@@ -1,3 +1,4 @@
+pub mod families;
 use crate::{
     wire::{envelope, FrameKind},
     Link,
@@ -5,7 +6,7 @@ use crate::{
 use std::{
     collections::{BTreeSet, VecDeque},
     io,
-    net::Ipv6Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     time::{Duration, Instant},
 };
 #[cfg(feature = "pcap")]
@@ -88,8 +89,23 @@ impl<P: PacketPort> Device<P> {
         } else {
             FrameKind::RawIpv6
         };
-        envelope(kind, p)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid transmit frame"))?;
+        if kind == FrameKind::Ethernet {
+            if families::ethernet_family(p).is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsupported Ethernet family",
+                ));
+            }
+            if families::ethernet_family(p) == Some(families::Family::Ipv6) {
+                envelope(kind, p).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "invalid transmit frame")
+                })?;
+            }
+        } else {
+            envelope(kind, p).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid transmit frame")
+            })?;
+        }
         let mut framed = vec![];
         let bytes = if self.framing == NativeFraming::Utun {
             framed.extend([0, 0, 0, 30]);
@@ -147,6 +163,12 @@ pub trait PacketIo {
     fn send(&mut self, link: Link, bytes: &[u8]) -> io::Result<()>;
     fn join(&mut self, link: Link, group: Ipv6Addr) -> io::Result<()>;
     fn leave(&mut self, link: Link, group: Ipv6Addr) -> io::Result<()>;
+    fn join_v4(&mut self, _link: Link, _group: Ipv4Addr) -> io::Result<()> {
+        Err(io::Error::other("IPv4 multicast unsupported"))
+    }
+    fn leave_v4(&mut self, _link: Link, _group: Ipv4Addr) -> io::Result<()> {
+        Err(io::Error::other("IPv4 multicast unsupported"))
+    }
     fn link_up(&self, _link: Link) -> io::Result<bool> {
         Ok(true)
     }
@@ -207,6 +229,12 @@ impl PacketIo for Backend {
     fn leave(&mut self, l: Link, g: Ipv6Addr) -> io::Result<()> {
         self.groups[l.index()].leave(g)
     }
+    fn join_v4(&mut self, l: Link, g: Ipv4Addr) -> io::Result<()> {
+        self.groups[l.index()].join_v4(g)
+    }
+    fn leave_v4(&mut self, l: Link, g: Ipv4Addr) -> io::Result<()> {
+        self.groups[l.index()].leave_v4(g)
+    }
     fn link_up(&self, l: Link) -> io::Result<bool> {
         crate::platform::is_up(&self.info(l).name)
     }
@@ -216,6 +244,7 @@ pub struct MemoryIo {
     pub input: VecDeque<Received>,
     pub output: Vec<(Link, Vec<u8>)>,
     pub groups: [BTreeSet<Ipv6Addr>; 2],
+    pub ipv4_groups: [BTreeSet<Ipv4Addr>; 2],
     pub fail_send: bool,
     pub fail_group: bool,
     pub up: [bool; 2],
@@ -227,6 +256,7 @@ impl MemoryIo {
             input: VecDeque::new(),
             output: vec![],
             groups: Default::default(),
+            ipv4_groups: Default::default(),
             fail_send: false,
             fail_group: false,
             up: [true; 2],
@@ -256,6 +286,14 @@ impl PacketIo for MemoryIo {
     }
     fn leave(&mut self, l: Link, g: Ipv6Addr) -> io::Result<()> {
         self.groups[l.index()].remove(&g);
+        Ok(())
+    }
+    fn join_v4(&mut self, l: Link, g: Ipv4Addr) -> io::Result<()> {
+        self.ipv4_groups[l.index()].insert(g);
+        Ok(())
+    }
+    fn leave_v4(&mut self, l: Link, g: Ipv4Addr) -> io::Result<()> {
+        self.ipv4_groups[l.index()].remove(&g);
         Ok(())
     }
     fn link_up(&self, l: Link) -> io::Result<bool> {

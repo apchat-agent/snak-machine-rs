@@ -66,6 +66,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub ail_frames: crate::io::families::AilFrames,
     pub attachment: attachment::Attachment,
     pub retired_ulas: BTreeMap<(Link, Prefix), Lifetime>,
     pub lifecycle: Lifecycle,
@@ -107,6 +108,7 @@ impl Router {
             })
         }
         Ok(Self {
+            ail_frames: Default::default(),
             attachment: attachment::Attachment {
                 discovering: true,
                 ..Default::default()

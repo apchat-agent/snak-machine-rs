@@ -1,4 +1,6 @@
+mod query;
 use crate::io::LinkInfo;
+pub use query::*;
 use std::{
     collections::BTreeMap,
     ffi::{CStr, CString},
@@ -11,9 +13,13 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "linux")]
-pub use linux::{mac_address, open_virtual, validate_pair};
+use linux::{bridge, carrier, descriptor};
+#[cfg(target_os = "linux")]
+pub use linux::{mac_address, open_virtual};
 #[cfg(target_os = "macos")]
-pub use macos::{mac_address, open_virtual, validate_pair};
+use macos::{bridge, carrier, descriptor};
+#[cfg(target_os = "macos")]
+pub use macos::{mac_address, open_virtual};
 pub fn owned_fd(fd: libc::c_int) -> io::Result<OwnedFd> {
     if fd < 0 {
         Err(io::Error::last_os_error())
@@ -43,8 +49,7 @@ pub fn ioctl_request(name: &str, command: libc::c_ulong) -> io::Result<libc::ifr
     Ok(r)
 }
 pub fn is_up(name: &str) -> io::Result<bool> {
-    let r = ioctl_request(name, GET_FLAGS)?; // SAFETY: SIOCGIFFLAGS populated the flags union member.
-    Ok(unsafe { r.ifr_ifru.ifru_flags } as i32 & libc::IFF_UP != 0)
+    Ok(Native.status(name)?.usable())
 }
 pub fn info(name: &str, kind: crate::wire::FrameKind) -> io::Result<LinkInfo> {
     let n = CString::new(name).map_err(io::Error::other)?; // SAFETY: null-terminated name remains alive for the call.
@@ -95,6 +100,7 @@ pub fn nonblocking(fd: &OwnedFd) -> io::Result<()> {
 }
 pub struct Membership {
     socket: OwnedFd,
+    ipv4_socket: Option<OwnedFd>,
     index: u32,
     groups: BTreeMap<Ipv6Addr, usize>,
 }
@@ -105,6 +111,7 @@ impl Membership {
         nonblocking(&socket)?;
         Ok(Self {
             socket,
+            ipv4_socket: None,
             index,
             groups: BTreeMap::new(),
         })
@@ -144,6 +151,9 @@ impl Membership {
         Ok(())
     }
     pub fn join(&mut self, g: Ipv6Addr) -> io::Result<()> {
+        if !g.is_multicast() || (!self.groups.contains_key(&g) && self.groups.len() >= 64) {
+            return Err(io::Error::other("multicast group capacity or scope"));
+        }
         if !self.groups.contains_key(&g) {
             self.change(g, true)?;
         }
@@ -216,3 +226,49 @@ const SET_FLAGS: libc::c_ulong = 0x80206910;
 const GET_MTU: libc::c_ulong = 0xc0206933;
 #[cfg(target_os = "macos")]
 const _: () = assert!(std::mem::size_of::<libc::ifreq>() == 32);
+
+impl Membership {
+    fn multicast_v4(&mut self, group: std::net::Ipv4Addr, join: bool) -> io::Result<()> {
+        // This edge admits only the one AIL mDNS group; it cannot grow a table.
+        if group.octets() != [224, 0, 0, 251] {
+            return Err(io::Error::other("unsupported IPv4 multicast group"));
+        }
+        if self.ipv4_socket.is_none() {
+            // SAFETY: creates one owned membership socket; no privileged bind.
+            let fd = owned_fd(unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) })?;
+            nonblocking(&fd)?;
+            self.ipv4_socket = Some(fd);
+        }
+        let request = libc::ip_mreqn {
+            imr_multiaddr: libc::in_addr {
+                s_addr: u32::from_ne_bytes(group.octets()),
+            },
+            imr_address: libc::in_addr { s_addr: 0 },
+            imr_ifindex: self.index as _,
+        };
+        // SAFETY: both supported platforms accept their native ip_mreqn layout.
+        if unsafe {
+            libc::setsockopt(
+                self.ipv4_socket.as_ref().unwrap().as_raw_fd(),
+                libc::IPPROTO_IP,
+                if join {
+                    libc::IP_ADD_MEMBERSHIP
+                } else {
+                    libc::IP_DROP_MEMBERSHIP
+                },
+                (&request as *const libc::ip_mreqn).cast(),
+                std::mem::size_of_val(&request) as libc::socklen_t,
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    pub fn join_v4(&mut self, g: std::net::Ipv4Addr) -> io::Result<()> {
+        self.multicast_v4(g, true)
+    }
+    pub fn leave_v4(&mut self, g: std::net::Ipv4Addr) -> io::Result<()> {
+        self.multicast_v4(g, false)
+    }
+}

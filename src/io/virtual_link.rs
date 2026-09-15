@@ -79,9 +79,15 @@ pub fn open_fds(
     sf: i32,
     framing: NativeFraming,
 ) -> io::Result<Backend> {
-    fn duplicate(fd: i32) -> io::Result<VirtualPort> {
+    fn duplicate(fd: i32, name: &str, framing: NativeFraming) -> io::Result<VirtualPort> {
         // SAFETY: fcntl validates the caller-supplied integer descriptor and returns a newly owned duplicate.
         let fd = crate::platform::owned_fd(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) })?;
+        crate::platform::validate_descriptor_with(
+            fd.as_raw_fd(),
+            name,
+            framing,
+            &crate::platform::Native,
+        )?;
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } < 0 {
             return Err(io::Error::last_os_error());
@@ -106,8 +112,8 @@ pub fn open_fds(
     si.mac = None;
     Backend::new(
         [
-            Box::new(Device::new(duplicate(af)?, framing, None)),
-            Box::new(Device::new(duplicate(sf)?, framing, None)),
+            Box::new(Device::new(duplicate(af, ail, framing)?, framing, None)),
+            Box::new(Device::new(duplicate(sf, stub, framing)?, framing, None)),
         ],
         [ai, si],
     )

@@ -8,6 +8,26 @@ impl Router {
         now: Time,
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Tx>> {
+        if kind == FrameKind::Ethernet
+            && frame.len() >= 14
+            && matches!(
+                crate::io::families::ethernet_family(frame),
+                Some(crate::io::families::Family::Ipv4 | crate::io::families::Family::Arp)
+            )
+        {
+            let own = self.links[link.index()]
+                .mac
+                .unwrap_or(self.identity.macs[link.index()]);
+            if link == Link::Ail
+                && self.links[0].up
+                && !matches!(self.lifecycle, Lifecycle::Stopping | Lifecycle::Stopped)
+                && frame[6..12] != own
+                && (frame[0] & 1 != 0 || frame[..6] == own)
+            {
+                self.ail_frames.push(frame);
+            }
+            return Ok(vec![]);
+        }
         let Ok(e) = envelope(kind, frame) else {
             return Ok(vec![]);
         };
