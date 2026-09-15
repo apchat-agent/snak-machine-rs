@@ -578,3 +578,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - EDNS version mismatch returns BADVERS with version zero, and extended RCODE
   is considered when applying the sole NXDOMAIN exception. No new dependency
   or field outside PLAN2's explicit rate/EDNS/cache state.
+- S09 discovery RED `cfa09a7`: `cargo test` confirms the missing discovery
+  and Information-request APIs. GREEN passes **160 tests** and all-feature
+  clippy. AIL-only validated RDNSS/DNSSL retain advertiser lifetimes; zero
+  withdraws exact evidence, and link loss clears learned state. Explicit
+  configured resolvers take precedence. Eight resolver observations and 64
+  domain observations reject a ninth/65th atomically.
+- DHCPv6 DNS/search/refresh parsing checks xid, DUID, selected server where
+  supplied, duplicate fields, lengths, source addresses and uncompressed
+  binary names. Information-request emits actual UDP/IPv6 with ORO 23/24/32/83,
+  elapsed time, jittered exponential retransmission and refresh scheduling.
+  Invalid/truncated inputs leave configuration unchanged. Existing DHCPv4
+  binary search labels map directly into DNS names. State is within PLAN2's
+  evidence/exchange ownership; no dependency. Driver wiring follows.
