@@ -332,3 +332,55 @@ fn stale_pio_cannot_be_kept_alive_by_other_options() {
             .live(600000)
     );
 }
+
+fn providing(seed: u64) -> Router {
+    let mut r = router(seed);
+    let mut rng = ScriptedRandom::new([]);
+    for tx in r.tick(9000, &mut rng).unwrap() {
+        r.transmitted(&tx, 9000, true, &mut rng).unwrap();
+    }
+    r
+}
+#[test]
+fn ail_prefix_arbitration_follows_draft() {
+    for (prefix, snac, deprecate) in [
+        ("equal", true, false),
+        ("fdff::", true, false),
+        ("fd00::", true, true),
+        ("2001:db8::", true, true),
+        ("fdff::", false, true),
+        ("equal", false, false),
+    ] {
+        let mut r = providing(0x123456);
+        let own = r.identity.prefix(Link::Ail);
+        let remote = if prefix == "equal" {
+            own.address.to_string()
+        } else {
+            prefix.to_owned()
+        };
+        r.receive(
+            Link::Ail,
+            &nd_packet(
+                "fe80::9",
+                "ff02::1",
+                ra(
+                    if snac { 2 } else { 0 },
+                    0,
+                    &pio(&remote, 64, 0xc0, 1800, 1800),
+                ),
+            ),
+            10000,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+        assert_eq!(
+            r.state(Link::Ail),
+            if deprecate {
+                AilState::Deprecating
+            } else {
+                AilState::Advertising
+            },
+            "{remote} {snac}"
+        );
+    }
+}
