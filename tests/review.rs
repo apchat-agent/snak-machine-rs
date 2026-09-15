@@ -400,3 +400,39 @@ fn review_05_delegation_excludes_ail_subnets_in_offer_and_reply() {
             .any(|p| p.prefix == r.identity.prefix(Link::Stub) && p.preferred > 0));
     }
 }
+
+#[test]
+fn review_06_same_subnet_replacement_owns_lifetimes() {
+    for iaid in [1, 2] {
+        let mut r = router();
+        r.links[1].state = AilState::BeginAdvertising;
+        r.pd.start(0, &mut ScriptedRandom::new([])).unwrap();
+        let old = ia(1, 1000, 1500, &[("2001:db8:aa::", 56, 1800, 1801)]);
+        let mut offer = old.clone();
+        offer.extend(option(7, &[255]));
+        dhcp_receive(&mut r, 2, &offer, 1);
+        dhcp_receive(&mut r, 7, &old, 2);
+        r.pd.refresh(6, 2000, &mut ScriptedRandom::new([])).unwrap();
+        dhcp_receive(
+            &mut r,
+            7,
+            &ia(iaid, 3000, 4000, &[("2001:db8:aa::", 64, 5000, 6000)]),
+            2001,
+        );
+        let subnet = Prefix::new(ip("2001:db8:aa::"), 64).unwrap();
+        assert_eq!(r.pd_prefixes[&subnet].lease, (iaid, subnet));
+        for now in [2001, 1801003] {
+            r.tick(now, &mut ScriptedRandom::new([])).unwrap();
+            assert!(r
+                .snapshot(Link::Stub, now)
+                .pios
+                .iter()
+                .any(|p| p.prefix == subnet && p.preferred > 0));
+            assert!(r
+                .snapshot(Link::Ail, now)
+                .rios
+                .iter()
+                .any(|p| p.prefix == subnet && p.lifetime > 0));
+        }
+    }
+}
