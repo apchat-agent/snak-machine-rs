@@ -204,8 +204,13 @@ impl Router {
                     && !t.fragmented
                     && t.bytes.len() >= 8
                     && t.bytes[..2] == [128, 0]
+                    && !e.source.is_unspecified()
+                    && !e.source.is_multicast()
+                    && !e.source.is_loopback()
+                    && self.error_after.is_none_or(|t| now >= t)
                     && checksum(e.source, e.destination, 58, t.bytes) == 0
                 {
+                    self.error_after = Some(now.saturating_add(100));
                     let mut b = t.bytes.to_vec();
                     b[0] = 129;
                     return Ok(vec![Tx {

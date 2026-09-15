@@ -23,7 +23,7 @@ cargo run -- --help
 The default build needs no additional system library. The optional `pcap`
 feature uses dynamic loading: it needs no libpcap headers or link-time library,
 but running that backend requires libpcap 1.5+.
-All 42 tests use memory peers, scripted randomness and explicit times; they
+Automated tests use memory peers, scripted randomness and explicit times; they
 open no real interfaces and require no root privileges.
 
 ## Run on Linux
@@ -91,10 +91,30 @@ cooked, loopback and monitor-mode formats are rejected.
 - Keep the state file to retain identity and used-lease validity. An exclusive
   lock and atomic, synced replacement protect it. Corrupt state fails explicitly;
   attachment changes create a new identity. Restart subtracts downtime and
-  revalidates PD rather than restoring observed neighbors.
-- Limits: 32 RA headers, 128 prefix/route evidence entries and 256 neighbors per
-  link; 16 acquired PD prefixes; one pending packet per neighbor, 64 total.
-  Unsupported capacity/topology degrades forwarding and withdraws egress claims.
+  revalidates PD rather than restoring observed neighbors. The reserved siblings
+  `<state>.lock` and `<state>.tmp` support locking and crash recovery. Checkpoints
+  follow persisted-state changes, with a five-minute idle heartbeat.
+- RA admission limits: 32 headers per link, 128 on-link prefixes/suppliers per
+  link, 128 AIL routes and 128 PD hints; 256 neighbors per link. Locally owned
+  prefixes additionally have a fixed maximum of one AIL ULA and 17 stub prefixes
+  (one ULA plus 16 acquired/retiring delegations). Pending resolution holds one
+  packet per neighbor, 64 total, at most 4,196,800 packet bytes. DHCP identifiers
+  are capped at 128 bytes, with 16 offers, leases and Release exchanges each.
+- Every RA fits 1280 IPv6 bytes. AIL exports preserve the exact length of learned
+  routable L=1 stub PIOs, including non-/64 prefixes (§5.3); local OSNRs remain
+  /64. The budget uses actual RIO sizes and logs omissions. Stub route capacity
+  reserves space for all 17 possible owned PIOs, leaving 664 bytes for RIOs.
+  Previously sent routes remain tracked until expiry or three zero-lifetime
+  advertisements, so degradation and link loss can withdraw the complete set.
+- Unsupported capacity or a SNAC-flagged stub RA disables forwarding across the
+  whole router and withdraws egress claims. The latter is the §9.7 topology
+  diagnostic, applied before §5.2 arbitration. Correct the topology/capacity
+  cause and restart the process to resume. Three DAD identity conflicts halt
+  only the affected link until restart. Ordinary link reconnection is automatic.
+- utun IPv4/invalid family headers and truncated pcap records are counted and
+  discarded. Backend receive failures initiate paced shutdown withdrawals.
+  Tests exercise framing and Driver behavior; they do not establish native
+  multicast reception, carrier detection, macOS bridge detection or FD provenance.
 - Not implemented: DNS/DNS-SD, SRP, DoT, NAT64, IPv4, multicast relay, generic
   ND proxy, local fragment reassembly, jumbograms, host SLAAC on the AIL, or
   arbitrary multi-AIL topologies. `--nat64 disabled` is the only accepted

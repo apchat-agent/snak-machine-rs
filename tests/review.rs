@@ -962,3 +962,33 @@ fn review_12_exhausted_service_dad_remains_halted_after_prefix_expiry() {
     }
     assert!(!d.router.links[1].up);
 }
+
+#[test]
+fn review_nits_duplicate_iaids_are_rejected() {
+    let mut extra = ia(1, 100, 200, &[("2001:db8:1::", 64, 1800, 3600)]);
+    extra.extend(ia(1, 100, 200, &[("2001:db8:2::", 64, 1800, 3600)]));
+    let packet = dhcp_packet("fe80::1", 7, [1, 2, 3], &[1, 2, 3], &[4, 5, 6], &extra);
+    let e = envelope(FrameKind::RawIpv6, &packet).unwrap();
+    assert!(snac_rs::wire::dhcpv6::decode(&e.payload[8..]).is_err());
+}
+#[test]
+fn review_nits_echo_replies_have_valid_sources_and_bounded_rate() {
+    let mut r = router();
+    let dest = r.identity.link_local(Link::Ail).to_string();
+    for source in ["::", "::1", "ff02::1"] {
+        let p = nd_packet(source, &dest, vec![128, 0, 0, 0, 1, 2, 3, 4]);
+        assert!(r
+            .receive(Link::Ail, &p, 0, &mut ScriptedRandom::new([]))
+            .unwrap()
+            .is_empty());
+    }
+    let echo = nd_packet("fe80::99", &dest, vec![128, 0, 0, 0, 1, 2, 3, 4]);
+    for (now, count) in [(1, 1), (2, 0), (101, 1)] {
+        assert_eq!(
+            r.receive(Link::Ail, &echo, now, &mut ScriptedRandom::new([]))
+                .unwrap()
+                .len(),
+            count
+        );
+    }
+}

@@ -102,11 +102,15 @@ pub fn decode(b: &[u8]) -> Result<Message, WireError> {
         .filter(|b| b.len() >= 2)
         .map_or(0, |b| u16::from_be_bytes([b[0], b[1]]));
     let mut delegations = vec![];
+    let mut iaids = std::collections::BTreeSet::new();
     for (_, ia) in opts.iter().filter(|(c, _)| *c == 25) {
         if ia.len() < 12 {
             return Err(WireError::Truncated);
         }
         let iaid = u32_at(ia, 0);
+        if !iaids.insert(iaid) {
+            return Err(WireError::Invalid);
+        }
         let t1 = u32_at(ia, 4);
         let t2 = u32_at(ia, 8);
         let nested = options(&ia[12..])?;
