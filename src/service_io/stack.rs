@@ -21,6 +21,10 @@ fn invalid() -> io::Error {
 fn capacity() -> io::Error {
     io::Error::new(io::ErrorKind::WouldBlock, "service socket capacity")
 }
+struct Listener {
+    handle: SocketHandle,
+    buffer: usize,
+}
 struct Connection {
     handle: SocketHandle,
     last_io: u64,
@@ -38,7 +42,7 @@ pub struct Stack {
     iface: Interface,
     sockets: SocketSet<'static>,
     addresses: Vec<IpAddr>,
-    listeners: BTreeMap<u16, SocketHandle>,
+    listeners: BTreeMap<u16, Listener>,
     udp: BTreeMap<u16, SocketHandle>,
     connections: BTreeMap<usize, Connection>,
     next_id: usize,
@@ -114,10 +118,10 @@ impl Stack {
     pub fn addresses(&self) -> &[IpAddr] {
         &self.addresses
     }
-    fn tcp_socket(&mut self) -> SocketHandle {
+    fn tcp_socket(&mut self, buffer: usize) -> SocketHandle {
         let mut s = tcp::Socket::new(
-            tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
-            tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
+            tcp::SocketBuffer::new(vec![0; buffer]),
+            tcp::SocketBuffer::new(vec![0; buffer]),
         );
         s.set_timeout(Some(Duration::from_secs(120)));
         self.sockets.add(s)
@@ -126,12 +130,18 @@ impl Stack {
         if port == 0 || self.port_owned(6, port) || self.listeners.len() >= LISTENERS {
             return Err(capacity());
         }
-        let h = self.tcp_socket();
+        let h = self.tcp_socket(TCP_BUFFER);
         self.sockets
             .get_mut::<tcp::Socket>(h)
             .listen(port)
             .map_err(io::Error::other)?;
-        self.listeners.insert(port, h);
+        self.listeners.insert(
+            port,
+            Listener {
+                handle: h,
+                buffer: TCP_BUFFER,
+            },
+        );
         Ok(())
     }
     pub fn listen_udp(&mut self, port: u16) -> io::Result<()> {
@@ -179,7 +189,7 @@ impl Stack {
         {
             return Err(capacity());
         }
-        let h = self.tcp_socket();
+        let h = self.tcp_socket(TCP_BUFFER);
         if let Err(e) = self.sockets.get_mut::<tcp::Socket>(h).connect(
             self.iface.context(),
             (IpAddress::from(destination), dest_port),
@@ -522,10 +532,12 @@ impl Stack {
         let accepted: Vec<_> = self
             .listeners
             .iter()
-            .filter(|(_, h)| self.sockets.get::<tcp::Socket>(**h).state() != tcp::State::Listen)
-            .map(|(p, h)| (*p, *h))
+            .filter(|(_, h)| {
+                self.sockets.get::<tcp::Socket>(h.handle).state() != tcp::State::Listen
+            })
+            .map(|(p, h)| (*p, h.handle, h.buffer))
             .collect();
-        for (port, h) in accepted {
+        for (port, h, buffer) in accepted {
             let remote = self.sockets.get::<tcp::Socket>(h).remote_endpoint();
             if remote.is_some_and(|r| {
                 self.connections.len() < self.connection_limit && self.peer_count(r.addr.into()) < 4
@@ -534,12 +546,18 @@ impl Stack {
             } else {
                 self.sockets.remove(h);
             }
-            let fresh = self.tcp_socket();
+            let fresh = self.tcp_socket(buffer);
             self.sockets
                 .get_mut::<tcp::Socket>(fresh)
                 .listen(port)
                 .map_err(io::Error::other)?;
-            self.listeners.insert(port, fresh);
+            self.listeners.insert(
+                port,
+                Listener {
+                    handle: fresh,
+                    buffer,
+                },
+            );
         }
         let expired: Vec<_> = self
             .connections

@@ -696,3 +696,8 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   at the TLS boundary fail closed. Real ephemeral loopback TCP exchanges the
   same encrypted bytes; another fixture drains a 40 KiB response 19 bytes at
   a time. State is planned TLS lifecycle/I/O state; no dependency.
+- S10 listener refactor: **183 tests** and all-feature clippy remain green.
+  Each bounded listener entry now retains its TCP ring size when replenishing
+  the listening socket after acceptance. Current listeners retain the same
+  8 KiB per direction; the TLS listener will reserve smaller rings so its
+  record/framing buffers can share the required total connection budget.
