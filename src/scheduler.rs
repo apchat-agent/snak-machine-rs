@@ -16,6 +16,12 @@ impl RaScheduler {
             response: None,
         })
     }
+    pub fn enable(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        self.burst = 3;
+        self.response = None;
+        self.next = self.spaced(now.saturating_add(rng.sample(16000)?));
+        Ok(())
+    }
     pub fn deadline(&self) -> Time {
         self.response.map_or(self.next, |t| t.min(self.next))
     }

@@ -98,7 +98,7 @@ impl Router {
                 scheduler: RaScheduler::new(now, rng)?,
                 rs_count: 0,
                 rs_next: first,
-                discovery_end: first + 9000,
+                discovery_end: u64::MAX,
                 last_valid: Lifetime::Until(now),
                 deprecate_at: None,
             })
@@ -159,6 +159,7 @@ impl Router {
         }
         if link == Link::Ail
             && e.destination == self.identity.link_local(link)
+            && self.address_ready(link, e.destination)
             && transport(&e).is_ok_and(|t| t.protocol == 17)
         {
             let excluded: Vec<_> = self
@@ -236,7 +237,11 @@ impl Router {
         if nd.kind == 134 {
             self.admit_ra(link, &e, &nd, now, rng)?;
             if u16::from_be_bytes([nd.body[6], nd.body[7]]) > 0 {
-                self.links[link.index()].rs_count = 3;
+                let s = &mut self.links[link.index()];
+                s.rs_count = 3;
+                if s.discovery_end == u64::MAX {
+                    s.discovery_end = now.saturating_add(9000);
+                }
             }
             let key = RouterKey {
                 link,
@@ -329,6 +334,7 @@ impl Router {
                         );
                         if self.state(link) == AilState::Unknown {
                             self.links[link.index()].state = AilState::Suitable;
+                            self.links[link.index()].scheduler.enable(now, rng)?;
                         }
                     } else if p.on_link() {
                         self.suppliers.remove(&(key, p.prefix));
@@ -553,6 +559,7 @@ impl Router {
             if s.state == AilState::Unknown {
                 if now >= s.discovery_end {
                     s.state = AilState::BeginAdvertising;
+                    s.scheduler.enable(now, rng)?;
                 } else if now >= s.rs_next && s.rs_count < 3 {
                     let mut body = vec![133, 0, 0, 0, 0, 0, 0, 0];
                     if s.kind == FrameKind::Ethernet {
@@ -569,8 +576,6 @@ impl Router {
                         )
                         .map_err(|_| io::Error::other("RS encoding"))?,
                     });
-                    s.rs_count += 1;
-                    s.rs_next = now + 4000;
                 }
             }
             if s.state == AilState::BeginAdvertising {
@@ -640,6 +645,14 @@ impl Router {
             return Ok(());
         };
         let Ok(nd) = decode_nd(&e) else { return Ok(()) };
+        if nd.kind == 133 {
+            let s = &mut self.links[tx.link.index()];
+            if s.state == AilState::Unknown && s.rs_count < 3 {
+                s.rs_count += 1;
+                s.rs_next = now.saturating_add(4000);
+                s.discovery_end = now.saturating_add((3 - s.rs_count as u64) * 4000 + 1000);
+            }
+        }
         if nd.kind != 134 {
             return Ok(());
         }

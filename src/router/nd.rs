@@ -93,7 +93,10 @@ impl Router {
             }
             if n.state == NeighborState::Stale || n.state == NeighborState::Failed {
                 n.probes_sent = 0;
-                return Ok(vec![self.probe(key, now)?]);
+                if self.address_ready(link, self.identity.link_local(link)) {
+                    return Ok(vec![self.probe(key, now)?]);
+                }
+                self.neighbors.get_mut(&key).unwrap().deadline = Some(now);
             }
         }
         if nd.kind == 136 {
@@ -156,6 +159,7 @@ impl Router {
             .iter()
             .filter(|(key, n)| {
                 self.links[key.link.index()].up
+                    && self.address_ready(key.link, self.identity.link_local(key.link))
                     && n.deadline.is_some_and(|t| now >= t)
                     && n.state != NeighborState::Failed
             })

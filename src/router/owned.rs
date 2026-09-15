@@ -15,6 +15,12 @@ pub struct OwnedAddress {
 }
 impl Router {
     pub fn begin_dad(&mut self, link: Link, address: Ipv6Addr, now: Time) -> Tx {
+        if link_local(address) {
+            let s = &mut self.links[link.index()];
+            s.rs_count = 0;
+            s.rs_next = now.saturating_add(1000);
+            s.discovery_end = u64::MAX;
+        }
         self.owned.insert(
             (link, address),
             OwnedAddress {

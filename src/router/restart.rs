@@ -35,7 +35,7 @@ impl Router {
             s.state = AilState::Unknown;
             s.rs_count = 0;
             s.rs_next = now + rng.sample(1000)?;
-            s.discovery_end = s.rs_next + 9000;
+            s.discovery_end = u64::MAX;
         }
         if link == Link::Stub {
             for ((l, p), v) in &self.on_link {
