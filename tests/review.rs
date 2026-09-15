@@ -905,3 +905,14 @@ fn review_16_checkpoint_writes_follow_semantic_changes_and_bounded_heartbeat() {
     assert_eq!(restored.identity, r.identity);
     assert_eq!(restored.on_link[&(Link::Stub, p)].valid.remaining(0), 1400);
 }
+
+#[test]
+fn review_01_zero_lifetime_pios_do_not_create_retained_entries() {
+    let mut r = router();
+    let mut options = vec![];
+    for i in 1..=200 {
+        options.extend(pio(&format!("2001:db8:{i:x}::"), 64, 0x80, 0, 0));
+    }
+    receive_ra(&mut r, Link::Ail, "fe80::99", &options, 0).unwrap();
+    assert!(r.on_link.is_empty());
+}
