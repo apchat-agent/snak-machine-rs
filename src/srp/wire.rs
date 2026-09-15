@@ -345,6 +345,11 @@ impl Validator {
                 s.discovery.push((*r).clone());
             }
         }
+        for name in std::iter::once(host).chain(services.iter().map(|s| &s.name)) {
+            if lookup(name).is_some_and(|old| !old.same_public_key(&key)) {
+                return Err(Error::YxDomain);
+            }
+        }
         if *algorithm != key.algorithm || *key_tag != key.tag() {
             return Err(Error::Refused);
         }

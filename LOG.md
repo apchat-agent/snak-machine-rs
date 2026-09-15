@@ -791,3 +791,24 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   that planned time conversion, validator policy and per-poll crypto budget;
   no dependency. S11 is complete. Retained-key lookup and transactional success
   are wired with the registry in S12, before service publication can begin.
+
+### S12 — durable registrar and leases (in progress)
+
+- RED `2d0e09b`: `cargo test` confirms the missing registry. GREEN passes
+  **201 tests** and all-feature clippy. FCFS checks precede cryptography, and
+  transactions stage a complete candidate, validate bounds, durably save it,
+  then install it. A simulated full disk preserves every old registration.
+  Default grants cap record leases at two hours and key leases at fourteen days.
+- Host and service record/key deadlines are independent. Host-only refresh
+  does not renew omitted services; host expiry/deletion clears dependent service
+  and subtype data. Nonzero key leases retain claims, and zero key lease releases
+  the hostname and its services. Shared PTR RRsets get a consistent TTL that
+  does not count down with the remaining lease. Implicit service keys are stored.
+- A versioned bounded binary journal preserves remaining milliseconds and
+  reception age. Forward wall time reduces remaining life; backward wall time
+  cannot increase it beyond the saved remainder. Every truncation and single-byte
+  corruption fails, and acknowledged keys survive restart. Journal integrity
+  uses the existing SHA-1 checksum convention solely for accidental corruption,
+  never for signature verification. No new dependency. Registry state fields
+  are the planned records, key claims, independent deadlines and reception time.
+  Capacity/retry and live durable service wiring follow.
