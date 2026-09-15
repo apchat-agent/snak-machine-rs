@@ -836,3 +836,144 @@ fn s14_local_tsr_owner_metadata_has_a_tested_per_dataset_bound() {
     );
     assert_eq!(e.publisher.counts(), before);
 }
+
+#[test]
+fn s14_newer_local_owner_supersedes_older_registrant_and_never_sends_its_goodbye() {
+    use snac_rs::{mdns::Engine, time::ScriptedRandom};
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![record("host.local.", 1)];
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    for at in [0, 250, 500, 750, 1750] {
+        let b = e
+            .publisher
+            .poll(&|_, _| records.clone(), at)
+            .unwrap()
+            .unwrap();
+        e.publisher.sent(b.token, true, at);
+    }
+    e.register_tsr(
+        2,
+        (&[], &records),
+        &stamps(&records, 10000),
+        10000,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(e.take_stale(), Some((1, records[0].name.clone())));
+    assert!(
+        !e.publisher.ready(2),
+        "newer registration probes even with identical RDATA"
+    );
+    e.register_tsr(1, (&records, &[]), &stamps(&[], 0), 10001, &mut rng)
+        .unwrap();
+    assert_eq!(
+        e.publisher.goodbye_count(),
+        0,
+        "TSR 3.7 prohibits stale-owner goodbye"
+    );
+}
+#[test]
+fn s14_query_additional_data_is_cached_and_partial_same_key_data_never_conflicts() {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![record("host.local.", 1)];
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    for at in [0, 250, 500, 750, 1750] {
+        let b = e
+            .publisher
+            .poll(&|_, _| records.clone(), at)
+            .unwrap()
+            .unwrap();
+        e.publisher.sent(b.token, true, at);
+    }
+    let mut m = Message::new(0, 0);
+    let mut v6 = record("host.local.", 28);
+    v6.data = Rdata::Aaaa([0x20; 16]);
+    m.authority.push(v6);
+    m.additional.push(record("extra.local.", 1));
+    attach(&mut m, OPTION_CODE, 2000, &|_| {
+        Some(snac_rs::mdns::tsr::Stamp {
+            key_checksum: 7,
+            received_at: 0,
+        })
+    })
+    .unwrap();
+    e.receive(
+        &Datagram {
+            source: "[fe80::2]:5353".parse().unwrap(),
+            destination: "[ff02::fb]:5353".parse().unwrap(),
+            message: m,
+        },
+        true,
+        &|_, _| records.clone(),
+        2000,
+        &mut rng,
+    )
+    .unwrap();
+    assert!(e.publisher.ready(1));
+    assert!(e.publisher.take_conflict().is_none());
+    assert!(e
+        .querier
+        .cache
+        .owner_stamp(&"extra.local.".parse().unwrap(), 2000)
+        .is_some());
+    assert!(e
+        .querier
+        .cache
+        .owner_stamp(&records[0].name, 2000)
+        .is_none());
+}
+#[test]
+fn s14_tsr_options_are_included_in_packet_budget_without_losing_records() {
+    use snac_rs::{
+        mdns::{
+            tsr::{extract, OPTION_CODE},
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records: Vec<_> = (0..100)
+        .map(|i| record(&format!("host-{i}.local."), 1))
+        .collect();
+    e.register_tsr(1, (&[], &records), &stamps(&records, 0), 0, &mut rng)
+        .unwrap();
+    let batch = e
+        .publisher
+        .poll(&|_, _| records.clone(), 0)
+        .unwrap()
+        .unwrap();
+    let count: usize = batch.messages.iter().map(|m| m.authority.len()).sum();
+    let output = e.prepare_outgoing(batch.messages, 2000).unwrap();
+    assert_eq!(
+        output.iter().map(|m| m.authority.len()).sum::<usize>(),
+        count
+    );
+    for m in output {
+        assert!(
+            m.encode_context(Context::Mdns).unwrap().len() <= 1200,
+            "TSR growth must repacketize multi-RR output"
+        );
+        let values = extract(&m, OPTION_CODE, 2000).unwrap();
+        assert!(m
+            .authority
+            .iter()
+            .all(|r| values.get(&r.name).is_some_and(|s| s.received_at == 0)));
+        assert!(m
+            .questions
+            .iter()
+            .all(|q| m.authority.iter().any(|r| r.name == q.name)));
+    }
+}

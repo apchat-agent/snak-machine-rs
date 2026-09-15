@@ -401,3 +401,75 @@ fn s13_fragmented_transmit_resumes_at_failed_frame_and_respects_interface_mtu() 
     assert_eq!(packet.message.authority[0].data, data[0].data);
     assert!(!d.mdns.publisher.ready(1));
 }
+
+#[test]
+fn s14_driver_sends_tsr_and_accepts_a_fragmented_record_with_its_opt() {
+    use snac_rs::mdns::tsr::{attach, extract, Stamp, OPTION_CODE};
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let records = response().answers;
+    let stamps = records
+        .iter()
+        .map(|r| {
+            (
+                r.name.clone(),
+                Stamp {
+                    key_checksum: 7,
+                    received_at: 0,
+                },
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let projection = records.clone();
+    d.set_mdns_source(move |_, _, _, _| projection.clone());
+    d.mdns
+        .register_tsr(1, (&[], &records), &stamps, 1000, &mut rng)
+        .unwrap();
+    d.io.output.clear();
+    d.step(1001, &mut rng).unwrap();
+    let sent =
+        d.io.output
+            .iter()
+            .filter_map(|(l, f)| Datagram::parse(*l, &f[14..]).ok())
+            .next()
+            .unwrap();
+    assert_eq!(
+        extract(&sent.message, OPTION_CODE, 1001).unwrap()[&records[0].name].key_checksum,
+        7
+    );
+    let mut m = Message::new(0, 0x8400);
+    m.answers.push(Record {
+        name: "remote.local.".parse().unwrap(),
+        kind: 16,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Txt(vec![vec![b'x'; 240]; 10]),
+    });
+    attach(&mut m, OPTION_CODE, 2000, &|_| {
+        Some(Stamp {
+            key_checksum: 8,
+            received_at: 0,
+        })
+    })
+    .unwrap();
+    let ip = packet(
+        true,
+        &m.encode_context(snac_rs::dns::wire::Context::Mdns).unwrap(),
+    );
+    d.accept(frame(fragment6(&ip, 0, 1024, true)), 2000, &mut rng)
+        .unwrap();
+    d.accept(
+        frame(fragment6(&ip, 1024, ip.len() - 40, false)),
+        2001,
+        &mut rng,
+    )
+    .unwrap();
+    assert!(d
+        .mdns
+        .querier
+        .cache
+        .owner_stamp(&m.answers[0].name, 2001)
+        .is_some());
+}
