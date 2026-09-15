@@ -122,3 +122,39 @@ fn pio_suitability_is_not_onlink_status() {
     }
     assert!(Prefix::new(ip("::"), 129).is_none());
 }
+
+use snac_rs::wire::{Pref64, Rio};
+#[test]
+fn rio_and_pref64_decode_wire_variants() {
+    for len in [0, 1, 64, 65, 128] {
+        for units in 1..=3 {
+            for pref in [0, 8, 16, 24] {
+                let b = rio("2001:db8:1234:5678::", len, pref, 3000, units);
+                let legal = pref != 16 && (len == 0 || (len <= 64 && units >= 2) || units == 3);
+                assert_eq!(Rio::decode(&b).is_some(), legal, "{len} {units} {pref}");
+                if let Some(r) = Rio::decode(&b) {
+                    assert_eq!(r.lifetime, 3000);
+                    assert_eq!(Rio::decode(&r.encode()), Some(r));
+                }
+            }
+        }
+    }
+    for plc in 0..8 {
+        let mut b = vec![38, 2];
+        b.extend((80u16 | plc).to_be_bytes());
+        b.extend([0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let p = Pref64::decode(&b);
+        assert_eq!(p.is_some(), plc < 6);
+        if let Some(p) = p {
+            assert_eq!(p.lifetime, 80);
+            assert_eq!(p.prefix.length, [96, 64, 56, 48, 40, 32][plc as usize]);
+        }
+    }
+    let mut opts = rio("::", 0, 16, 900, 1);
+    opts.extend(pio("fd00:1::", 64, 0xc0, 1800, 1800));
+    let bytes = nd_packet("fe80::1", "ff02::1", ra(0, 0, &opts));
+    let env = envelope(FrameKind::RawIpv6, &bytes).unwrap();
+    let nd = decode_nd(&env).unwrap();
+    assert!(Rio::decode(nd.options[0].bytes).is_none());
+    assert!(Pio::decode(nd.options[1].bytes).unwrap().suitable());
+}
