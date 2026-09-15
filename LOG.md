@@ -421,3 +421,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   let the stack emit off-link packets for Driver's authoritative route/ND/ARP
   decision; they do not install kernel or advertised routes. No dependency.
   Hostile/capacity, reassembly, native-loopback and Driver fixtures follow.
+- S07 reassembly RED `e9326f4`: executable fixtures fail on fragmented local
+  UDP and on the IP device's MTU assertion when a 4096-byte UDP datagram is
+  queued. Initial shared-reassembly API fixtures then confirm the absent seam.
+  GREEN passes **122 tests** and all-feature clippy. Shared IPv4/IPv6
+  reassembly has 64 contexts, 4 MiB charged buffers/indexes, checked offsets,
+  overlap invalidation and 60-second expiry; IPv6 atomic fragments remain
+  independent. Local UDP is reassembled before the listener and outgoing
+  datagrams are fragmented within the bounded IP queue. Endpoint ND is rejected.
+- The exact 64-connection/four-per-peer/eight-listener/32-address and UDP
+  payload limits are exercised. Surprise: expired half-open sockets queued
+  retransmissions before application deadlines were reaped. Reaping before
+  polling fixes that ordering; no test expectation was weakened. Fragment
+  IDs, reassembly contexts and bounded fragment buffers are planned state.
+  No dependency. Driver integration and remaining transport fixtures follow.

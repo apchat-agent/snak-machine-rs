@@ -43,6 +43,8 @@ pub struct Stack {
     connections: BTreeMap<usize, Connection>,
     next_id: usize,
     now: u64,
+    reassembly: crate::ip_reassembly::Reassembler,
+    fragment_id: u32,
 }
 impl Stack {
     pub fn new(now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -62,6 +64,8 @@ impl Stack {
             connections: BTreeMap::new(),
             next_id: 0,
             now,
+            reassembly: Default::default(),
+            fragment_id: u32::from_le_bytes(seed[..4].try_into().unwrap()),
         })
     }
     pub fn set_addresses(&mut self, addresses: &[IpAddr]) -> io::Result<()> {
@@ -297,12 +301,29 @@ impl Stack {
         }
         None
     }
-    pub fn input(&mut self, b: &[u8], _now: u64) -> io::Result<()> {
+    pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<()> {
+        // Check ownership before retaining even the first fragment.
+        let destination = match b.first().map(|v| v >> 4) {
+            Some(6) => IpAddr::V6(
+                envelope(FrameKind::RawIpv6, b)
+                    .map_err(|_| invalid())?
+                    .destination,
+            ),
+            Some(4) => IpAddr::V4(crate::ipv4::wire::Packet::parse(b)?.destination),
+            _ => return Err(invalid()),
+        };
+        if !self.addresses.contains(&destination) {
+            return Err(invalid());
+        }
+        let Some(packet) = self.reassembly.input(b, now)? else {
+            return Ok(());
+        };
+        let b = packet.as_slice();
         let (source, dest, proto, len) = match b.first().map(|v| v >> 4) {
             Some(6) => {
                 let e = envelope(FrameKind::RawIpv6, b).map_err(|_| invalid())?;
                 let t = transport(&e).map_err(|_| invalid())?;
-                if t.fragmented {
+                if t.fragmented || (t.protocol == 58 && t.bytes.first().is_none_or(|t| *t >= 128)) {
                     return Err(invalid());
                 }
                 (
@@ -343,6 +364,27 @@ impl Stack {
     }
     pub fn poll(&mut self, now: u64) -> io::Result<()> {
         self.now = now;
+        self.reassembly.expire(now);
+        // Reap elapsed application/handshake deadlines before the stack can retransmit.
+        let timed_out: Vec<_> = self
+            .connections
+            .iter()
+            .filter(|(_, c)| {
+                let state = self.sockets.get::<tcp::Socket>(c.handle).state();
+                now >= c.last_io.saturating_add(
+                    if matches!(state, tcp::State::SynSent | tcp::State::SynReceived) {
+                        10000
+                    } else {
+                        120000
+                    },
+                )
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in timed_out {
+            let c = self.connections.remove(&id).unwrap();
+            self.sockets.remove(c.handle);
+        }
         self.iface
             .poll(instant(now), &mut self.device, &mut self.sockets);
         let accepted: Vec<_> = self
@@ -391,6 +433,21 @@ impl Stack {
         Ok(())
     }
     pub fn output(&mut self) -> Option<Vec<u8>> {
+        let packet = self.device.tx.pop_front()?;
+        if packet.len() <= super::MTU {
+            return Some(packet);
+        }
+        let fragments =
+            crate::ip_reassembly::fragment(&packet, super::MTU, self.fragment_id).ok()?;
+        self.fragment_id = self.fragment_id.wrapping_add(1);
+        if self.device.rx.len() + self.device.tx.len() + fragments.len() > super::IP_QUEUE_PACKETS
+            || self.device.bytes() + fragments.iter().map(Vec::len).sum::<usize>() > IP_QUEUE_BYTES
+        {
+            return None;
+        }
+        for f in fragments.into_iter().rev() {
+            self.device.tx.push_front(f);
+        }
         self.device.tx.pop_front()
     }
     pub fn queued_bytes(&self) -> usize {

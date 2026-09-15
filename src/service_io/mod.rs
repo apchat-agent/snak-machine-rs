@@ -38,14 +38,16 @@ impl RxToken for Receive {
         f(&self.0)
     }
 }
-struct Transmit<'a>(&'a mut VecDeque<Vec<u8>>);
+struct Transmit<'a>(&'a mut VecDeque<Vec<u8>>, usize);
 impl TxToken for Transmit<'_> {
     fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
-        // smoltcp's configured device MTU is the allocation bound.
-        assert!(len <= MTU);
+        // UDP may exceed the device MTU; Stack fragments it before Driver output.
+        assert!(len <= 65575);
         let mut bytes = vec![0; len];
         let result = f(&mut bytes);
-        self.0.push_back(bytes);
+        if len <= self.1 {
+            self.0.push_back(bytes);
+        }
         result
     }
 }
@@ -58,10 +60,12 @@ impl Device for IpDevice {
             return None;
         }
         let packet = self.rx.pop_front()?;
-        Some((Receive(packet), Transmit(&mut self.tx)))
+        let remaining = IP_QUEUE_BYTES - self.bytes();
+        Some((Receive(packet), Transmit(&mut self.tx, remaining)))
     }
     fn transmit(&mut self, _: Instant) -> Option<Transmit<'_>> {
-        self.space(MTU).then_some(Transmit(&mut self.tx))
+        let remaining = IP_QUEUE_BYTES - self.bytes();
+        self.space(MTU).then_some(Transmit(&mut self.tx, remaining))
     }
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
