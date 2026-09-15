@@ -751,3 +751,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   TLS, DNS dispatch, malformed input, framing, short writes, close behavior,
   connection exhaustion and deadlines have rootless coverage. Native acceptance
   remains as listed above; signed registrar success follows in S11/S12.
+
+### S11 — signed SRP validation (in progress)
+
+- RED `5432e43`: `cargo test` confirms the absent SRP validator. GREEN passes
+  **194 tests** and all-feature clippy. Literal independently encoded/signed
+  fixtures verify algorithms 13/14/15/16, compressed SRV targets, subtype PTRs,
+  implicit service keys, all KEY flags, four/eight-byte leases, zero-time
+  constrained clients, and deletion with an explicit or retained host key.
+  Each original signed byte and every truncation is tested; signatures cover
+  the unmodified compressed message with only ARCOUNT decremented.
+- The offline fixture generator documents Python cryptography 41.0.7 provenance;
+  it is not executed by tests/builds. Runtime crypto uses only S01's pinned
+  pure-Rust crates. No dependency was added. Planned parsed instructions and
+  an eight-job scheduler budget are explicit; configured zones are capped at
+  eight and per-update host/service groups at nine, matching registry capacity.
+  TTL consistency, signed semantic mutations and live transport integration
+  follow before S11 is declared complete.
