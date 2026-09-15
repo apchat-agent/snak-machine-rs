@@ -328,7 +328,7 @@ impl Stream {
     fn available(&self) -> usize {
         (128 * 1024usize).saturating_sub(
             (if self.tls.is_some() { 62 } else { 18 }) * 1024
-                + self.frames.buffered()
+                + self.frames.allocated()
                 + self.tx.capacity(),
         )
     }
@@ -337,27 +337,29 @@ impl Stream {
             self.failed = true;
             return;
         }
-        match TcpFrames::frame(b) {
-            Ok(b) => {
-                self.tx.reserve_exact(b.len());
-                self.tx.extend(b);
-            }
-            Err(_) => self.failed = true,
+        if !(12..=65535).contains(&b.len()) {
+            self.failed = true;
+            return;
         }
+        self.tx.reserve_exact(b.len() + 2);
+        self.tx.extend((b.len() as u16).to_be_bytes());
+        self.tx.extend(b);
     }
     fn read(&mut self, s: &mut Stack, id: usize, now: u64) {
+        let limit = self.available() + self.frames.allocated();
+        let readable = limit.saturating_sub(self.frames.buffered());
         if self.tls.is_none() {
-            let b = s.receive_tcp_limit(id, self.available().min(8192));
-            if self.frames.input(&b).is_err() {
+            let b = s.receive_tcp_limit(id, readable.min(8192));
+            if self.frames.input_with_limit(&b, limit).is_err() {
                 self.failed = true;
             }
             return;
         }
-        let available = self.available().min(2048);
+        let available = readable.min(2048);
         let tls = self.tls.as_mut().unwrap();
         match tls.plaintext(available) {
             Ok(b) => {
-                if self.frames.input(&b).is_err() {
+                if self.frames.input_with_limit(&b, limit).is_err() {
                     self.failed = true;
                 }
             }

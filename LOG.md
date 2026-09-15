@@ -734,3 +734,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   reserves each frame once, and transfers its buffer to the completed queue.
   Invalid later headers still reject the entire input atomically. The measured
   allocation is now linear in message length. No new field or dependency.
+- S10 storage RED `0ebe775` confirms absent allocation-credit enforcement.
+  GREEN passes **189 tests** and all-feature clippy. Declared frame bodies
+  reserve credit before allocation; completed and partial capacities count
+  against the connection budget. Reads may fill already reserved storage even
+  with no additional credit. Response queuing writes the prefix directly,
+  removing a temporary full response copy. No new field or dependency.

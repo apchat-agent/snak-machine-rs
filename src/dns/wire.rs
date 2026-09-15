@@ -785,7 +785,12 @@ impl TcpFrames {
         out.extend(b);
         Ok(out)
     }
-    pub fn input(&mut self, mut b: &[u8]) -> io::Result<()> {
+    pub fn input(&mut self, b: &[u8]) -> io::Result<()> {
+        self.input_with_limit(b, MAX_WIRE + 2)
+    }
+    /// Charge reserved frame bodies as well as received bytes before allocating.
+    pub fn input_with_limit(&mut self, mut b: &[u8], limit: usize) -> io::Result<()> {
+        let limit = limit.min(MAX_WIRE + 2);
         if b.len() > (MAX_WIRE + 2).saturating_sub(self.bytes) {
             return Err(invalid());
         }
@@ -801,12 +806,15 @@ impl TcpFrames {
         };
         let mut at = 0;
         let mut count = self.ready.len();
+        let mut allocated: usize = self.ready.iter().map(Vec::capacity).sum();
         while total - at >= 2 {
             let n = usize::from(u16::from_be_bytes([byte(at), byte(at + 1)]));
             if n < 12 || n > self.max {
                 return Err(invalid());
             }
+            allocated += n + 2;
             if total - at < n + 2 {
+                at = total;
                 break;
             }
             count += 1;
@@ -814,6 +822,12 @@ impl TcpFrames {
                 return Err(invalid());
             }
             at += n + 2;
+        }
+        if at < total {
+            allocated += 2;
+        }
+        if allocated > limit {
+            return Err(invalid());
         }
         self.bytes += b.len();
         while !b.is_empty() {
@@ -846,6 +860,9 @@ impl TcpFrames {
         let b = self.ready.pop_front()?;
         self.bytes -= b.len() + 2;
         Some(b)
+    }
+    pub fn allocated(&self) -> usize {
+        self.partial.capacity() + self.ready.iter().map(Vec::capacity).sum::<usize>()
     }
     pub fn buffered(&self) -> usize {
         self.bytes
