@@ -38,3 +38,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 17 stub-arbitration GREEN — 17 passed; Same ND machinery on both links preserves all valid old OSNRs; no extra neighbor state. Two-router fixture now has distinct IIDs; an accidental self-address collision was fixed in RED before implementation.
 - 18 owned-nd RED — 18 tests specified; cargo test failed for the new contract (see paired test commit).
 - 18 owned-nd GREEN — 18 passed; Owned address fields follow the plan. Core constructor accepts already-ready identities for reducer tests; native startup must call begin_dad before sending. DAD retries are bounded; memberships derive from owned /128s.
+- 19 osnr-budget RED — 19 tests specified; cargo test failed for the new contract (see paired test commit).
+- 19 osnr-budget GREEN — 19 passed; AIL capacity drops deprecated then earliest-invalid OSNR entries per draft permission; no pagination. Export lifetime caps remain independent of preferred lifetime.

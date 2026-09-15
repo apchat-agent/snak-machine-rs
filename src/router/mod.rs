@@ -162,6 +162,13 @@ impl Router {
             for o in &nd.options {
                 if let Some(p) = Pio::decode(o.bytes) {
                     if p.on_link() && p.prefix.routable() {
+                        if link == Link::Stub
+                            && !self.on_link.contains_key(&(link, p.prefix))
+                            && p.valid > 0
+                        {
+                            self.links[0].scheduler.changed(now, rng)?;
+                        }
+
                         self.on_link.insert(
                             (link, p.prefix),
                             OnLink {
@@ -232,7 +239,7 @@ impl Router {
                 }
             }
         }
-        let rios = if link == Link::Ail {
+        let mut rios: Vec<Rio> = if link == Link::Ail {
             self.on_link
                 .iter()
                 .filter(|((l, _), v)| *l == Link::Stub && v.valid.live(now))
@@ -245,6 +252,18 @@ impl Router {
         } else {
             vec![]
         };
+        if link == Link::Ail {
+            rios.sort_by_key(|r| {
+                let p = &self.on_link[&(Link::Stub, r.prefix)];
+                (
+                    std::cmp::Reverse(p.preferred.live(now)),
+                    std::cmp::Reverse(p.valid),
+                    r.prefix,
+                )
+            });
+            rios.truncate((1280usize.saturating_sub(40 + 16 + 8 + pios.len() * 32)) / 16);
+            rios.sort_by_key(|r| r.prefix);
+        }
         Advertisement {
             link,
             source: self.identity.link_local(link),
