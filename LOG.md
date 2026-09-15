@@ -30,3 +30,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 13 pio-staleness GREEN — 13 passed; Router header updates cannot refresh omitted PIOs; valid on-link coverage survives suitability expiry. Discovery fixture now explicitly confirms its supplier before the periodic opportunity.
 - 14 ail-arbitration RED — 14 tests specified; cargo test failed for the new contract (see paired test commit).
 - 14 ail-arbitration GREEN — 14 passed; Equal prefixes remain co-advertised; comparison uses canonical network-order prefixes, with no MAC election field.
+- 15 deprecation RED — 15 tests specified; cargo test failed for the new contract (see paired test commit).
+- 15 deprecation GREEN — 15 passed; Frozen deprecation origin, saturating lifetime, PIO inclusion at 206 but omission at 205; direct route survives until its advertised valid deadline. Failed attempts no longer refresh on-link deadlines.

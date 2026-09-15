@@ -195,6 +195,19 @@ impl Router {
                 valid: 1800,
             });
         }
+        if state.state == AilState::Deprecating {
+            if let Some(at) = state.deprecate_at {
+                let valid = Lifetime::from_secs(at, 1800).remaining(now);
+                if valid >= 206 {
+                    pios.push(Pio {
+                        prefix: self.identity.prefix(link),
+                        flags: 0xc0,
+                        preferred: 0,
+                        valid,
+                    });
+                }
+            }
+        }
         let rios = if link == Link::Ail {
             self.on_link
                 .iter()
@@ -273,13 +286,12 @@ impl Router {
                 }
             }
             if s.state == AilState::BeginAdvertising {
-                self.on_link.insert(
-                    (link, self.identity.prefix(link)),
-                    OnLink {
+                self.on_link
+                    .entry((link, self.identity.prefix(link)))
+                    .or_insert(OnLink {
                         valid: Lifetime::from_secs(now, 1800),
                         preferred: Lifetime::from_secs(now, 1800),
-                    },
-                );
+                    });
             }
             if self.state(link) != AilState::Unknown && self.links[link.index()].scheduler.due(now)
             {
@@ -315,6 +327,11 @@ impl Router {
         state.scheduler.sent(now, rng)?;
         if state.state == AilState::BeginAdvertising {
             state.state = AilState::Advertising;
+        }
+        if state.state == AilState::Deprecating
+            && !nd.options.iter().any(|o| Pio::decode(o.bytes).is_some())
+        {
+            state.state = AilState::Suitable;
         }
         for o in nd.options {
             if let Some(p) = Pio::decode(o.bytes) {
