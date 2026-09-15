@@ -53,6 +53,22 @@ impl Router {
         self.links[0].scheduler.changed(now, rng)?;
         self.links[1].scheduler.changed(now, rng)
     }
+    pub(super) fn reap_headers(&mut self, now: Time) {
+        self.headers.retain(|k, h| {
+            (k.link == Link::Ail && !h.snac && h.header_lifetime.is_none_or(|l| l.live(now)))
+                || self.suppliers.iter().any(|((key, _), s)| {
+                    *key == *k
+                        && s.valid.live(now)
+                        && s.preferred.live(now)
+                        && now < s.pio_at.saturating_add(600000)
+                })
+                || (k.link == Link::Ail
+                    && self
+                        .routes
+                        .iter()
+                        .any(|((a, _), r)| *a == k.address && r.valid.live(now)))
+        });
+    }
     pub(super) fn admit_ra(
         &mut self,
         link: Link,
@@ -72,6 +88,7 @@ impl Router {
             address: e.source,
         };
         self.reap_failed_neighbors(now);
+        self.reap_headers(now);
         // Reclaim expired evidence before considering the entire prospective RA.
         self.pd_hints.retain(|_, l| l.live(now));
         self.on_link.retain(|_, p| p.valid.live(now));

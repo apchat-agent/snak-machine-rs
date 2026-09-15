@@ -523,6 +523,7 @@ impl Router {
         });
         self.on_link.retain(|_, p| p.valid.live(now));
         self.routes.retain(|_, r| r.valid.live(now));
+        self.reap_headers(now);
         self.owned.retain(|(link, _), a| {
             a.prefix.is_none_or(|p| {
                 self.on_link
