@@ -19,8 +19,14 @@ pub struct Config {
     pub no_additional_a: bool,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nRouting prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. SRP, discovery proxies and NAT64 are not yet implemented.\nReal backends require root; --help opens no interfaces.";
 impl Config {
+    pub fn tls_identity_path(&self) -> PathBuf {
+        let mut name = self.state.as_os_str().to_owned();
+        name.push(".tls");
+        name.into()
+    }
+
     pub fn parse<S: Into<String>>(args: impl IntoIterator<Item = S>) -> io::Result<Option<Self>> {
         let args: Vec<String> = args
             .into_iter()

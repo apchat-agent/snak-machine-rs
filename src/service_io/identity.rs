@@ -41,6 +41,15 @@ impl std::fmt::Debug for TlsIdentity {
     }
 }
 impl TlsIdentity {
+    pub fn expires_at(&self) -> io::Result<u64> {
+        Ok(Certificate::from_der(&self.certificate)
+            .map_err(|_| invalid())?
+            .tbs_certificate
+            .validity
+            .not_after
+            .to_unix_duration()
+            .as_secs())
+    }
     pub fn certificate(&self) -> &[u8] {
         &self.certificate
     }

@@ -80,7 +80,7 @@ fn run() -> io::Result<()> {
             }
         }
     };
-    eprintln!("Routing prototype: DNS/DNS-SD/SRP/DoT and NAT64 are not implemented.");
+    eprintln!("DNS UDP/TCP port 53; DoT port 853");
     for link in [Link::Ail, Link::Stub] {
         eprintln!(
             "{link:?}: {} {:?}, MTU {}, ULA {:?}, router {}",
@@ -99,7 +99,13 @@ fn run() -> io::Result<()> {
             signal_stop as *const () as libc::sighandler_t,
         );
     }
+    let tls_path = config.tls_identity_path();
+    let identity =
+        snac_rs::service_io::identity::TlsIdentity::load_file(&tls_path, wall()?, &mut random)?;
+    let mut tls_renew_at = identity.expires_at()?;
     let mut driver = Driver::new(router, backend)?;
+    driver.enable_dot(identity.server_config()?.into())?;
+
     driver.dns.set_additional_a(!config.no_additional_a);
     driver.dns_discovery.set_configured(&config.dns_upstreams)?;
     let clock = Instant::now();
@@ -108,6 +114,16 @@ fn run() -> io::Result<()> {
     let mut last_status = String::new();
     loop {
         let now = clock.elapsed().as_millis() as u64;
+        let wall_now = wall()?;
+        if wall_now >= tls_renew_at {
+            let identity = snac_rs::service_io::identity::TlsIdentity::load_file(
+                &tls_path,
+                wall_now,
+                &mut random,
+            )?;
+            driver.enable_dot(identity.server_config()?.into())?;
+            tls_renew_at = identity.expires_at()?;
+        }
         if STOP.load(Ordering::Relaxed) {
             driver.router.shutdown(now, &mut random)?;
         }

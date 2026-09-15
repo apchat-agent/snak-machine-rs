@@ -52,6 +52,9 @@ impl<I: PacketIo> Driver<I> {
     }
     pub fn enable_dot(&mut self, config: std::sync::Arc<rustls::ServerConfig>) -> io::Result<()> {
         if let Some(stacks) = &mut self.stacks {
+            if stacks[1].port_owned(6, 853) && !self.dns_service.tls_enabled() {
+                return Err(io::Error::other("TCP port 853 is already owned"));
+            }
             if !stacks[1].port_owned(6, 853) {
                 stacks[1].listen_tcp_buffered(853, 4096)?;
             }

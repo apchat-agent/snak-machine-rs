@@ -717,3 +717,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   plaintext count (rustls exposes that count after processing); these are
   planned transport state. No dependency. Native startup wiring and remaining
   exhaustion/renewal fixtures follow.
+- S10 startup RED `72b0655`: `cargo test` confirms missing renewal deadline
+  and exclusive listener admission. GREEN passes **187 tests**. Startup loads
+  or creates the private identity beside the configured state file, enables
+  DoT, and renews expired certificates for subsequent connections. The native
+  loop retains a deadline derived from certificate expiry; no configuration
+  field or dependency was added. An occupied port 853 cannot be taken from
+  another owner. Tests fill all 64 TLS handshake slots, refuse the next client,
+  expire stalled handshakes, and enforce the transport ring size range.
+- Needs privileged acceptance: native port 853 service startup, persistence
+  and renewal on a real interface, and interoperability with external DoT
+  clients. Rootless identity, TLS and userspace TCP paths are exercised.
