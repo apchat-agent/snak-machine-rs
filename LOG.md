@@ -495,7 +495,7 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   This can reduce segment sizes on other connections in that stack; it does
   not increase path MTU or change routing. No dependency. IPv6 retains its
   1280-byte minimum at the output boundary.
-- S07 hostile/transport RED `detailed in git log` executes a failure on
+- S07 hostile/transport RED `1b29c24` executes a failure on
   accepting an unspecified-source fragment before reassembly. GREEN passes
   **134 tests** and all-feature clippy. Endpoint admission rejects invalid
   IPv4/IPv6 sources and expired hop limits before fragment retention.
@@ -504,3 +504,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   reset. Loopback tests exercise four connections per client, short accepted
   writes, TCP buffer refusal, UDP entry/byte floods and idle expiry. No new
   fields or dependency. Remaining S07 scheduler/PMTU negative fixtures follow.
+- S07 scheduling RED `62db710`: service output waits for the old router-only
+  deadline. GREEN integrates TCP/UDP, reassembly and DHCP exchange/probe/lease
+  deadlines into Driver and its native event loop, while a saturated service
+  queue still permits the scheduled RA. PMTU negative RED `8f4830d` additionally
+  fails when an impossible quoted packet length lowers the MTU. That RED run
+  included the pending scheduler implementation; its commit contains tests
+  only, but this was a departure from isolated red/green pairs.
+- GREEN passes **137 tests**. Unmatched tuples, impossible lengths and corrupt
+  ICMP checksums cannot lower the MTU. The conservative size expires after
+  ten minutes (RFC 1191 section 6.3), allowing recovery. `mtu_until` is one
+  optional bounded deadline beyond PLAN2's literal field layout, necessary
+  to prevent a transient error from permanently reducing all endpoint traffic.
+  No dependency. All retained baseline assertions pass.

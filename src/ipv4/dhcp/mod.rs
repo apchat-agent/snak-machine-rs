@@ -105,6 +105,32 @@ impl Client {
     pub fn lease(&self) -> Option<&Lease> {
         self.active.as_ref()
     }
+    pub fn next_deadline(&self) -> Option<u64> {
+        if self.state == State::Stopped {
+            return None;
+        }
+        let mut next = if self.state == State::Bound {
+            u64::MAX
+        } else {
+            self.next
+        };
+        if let Some(p) = &self.probe {
+            next = next.min(p.next);
+        }
+        if let Some(l) = &self.active {
+            next = next.min(l.expires);
+            if self.state == State::Bound {
+                next = next.min(l.t1);
+            }
+            if self.state != State::Rebinding {
+                next = next.min(l.t2);
+            }
+        }
+        if self.configuration().is_none() && self.probe.is_none() {
+            next = next.min(self.fallback_at);
+        }
+        Some(next)
+    }
     pub fn restore(
         &mut self,
         lease: Lease,

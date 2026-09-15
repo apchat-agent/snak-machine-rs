@@ -145,13 +145,7 @@ fn run() -> io::Result<()> {
         if driver.router.lifecycle == Lifecycle::Stopped {
             break;
         }
-        let timeout = Duration::from_millis(
-            driver
-                .router
-                .next_deadline(now)
-                .saturating_sub(now)
-                .min(100),
-        );
+        let timeout = Duration::from_millis(driver.next_deadline(now).saturating_sub(now).min(100));
         if let Some(rx) = driver.receive(timeout, now, &mut random)? {
             driver.accept(rx, clock.elapsed().as_millis() as u64, &mut random)?;
         }

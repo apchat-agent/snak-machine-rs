@@ -47,6 +47,7 @@ pub struct Stack {
     fragment_id: u32,
     connection_limit: usize,
     interface_seed: u64,
+    mtu_until: Option<u64>,
 }
 impl Stack {
     pub fn new(now: u64, rng: &mut impl RandomSource) -> io::Result<Self> {
@@ -70,6 +71,7 @@ impl Stack {
             fragment_id: u32::from_le_bytes(seed[..4].try_into().unwrap()),
             connection_limit: CONNECTIONS,
             interface_seed: u64::from_le_bytes(seed),
+            mtu_until: None,
         })
     }
     pub fn set_addresses(&mut self, addresses: &[IpAddr]) -> io::Result<()> {
@@ -423,9 +425,14 @@ impl Stack {
             .find(|m| *m < old)
             .unwrap_or(68);
         }
-        if mtu < 68 || mtu >= self.device.mtu() {
+        let quoted_length = usize::from(u16::from_be_bytes([q.bytes[2], q.bytes[3]]));
+        if mtu < 68 || mtu >= self.device.mtu() || mtu >= quoted_length {
             return Ok(());
         }
+        self.mtu_until = Some(now.saturating_add(600000));
+        self.set_mtu(mtu, now)
+    }
+    fn set_mtu(&mut self, mtu: usize, now: u64) -> io::Result<()> {
         self.device.mtu = mtu;
         // smoltcp snapshots capabilities in Interface; sockets retain their TCP state.
         self.interface_seed = self.interface_seed.wrapping_add(1);
@@ -436,6 +443,10 @@ impl Stack {
     }
     pub fn poll(&mut self, now: u64) -> io::Result<()> {
         self.now = now;
+        if self.mtu_until.is_some_and(|until| now >= until) {
+            self.mtu_until = None;
+            self.set_mtu(1280, now)?;
+        }
         self.reassembly.expire(now);
         // Reap elapsed application/handshake deadlines before the stack can retransmit.
         let timed_out: Vec<_> = self
@@ -531,5 +542,44 @@ impl Stack {
     }
     pub fn buffer_limit(&self) -> usize {
         IP_QUEUE_BYTES
+    }
+    pub fn next_deadline(&mut self, now: u64) -> u64 {
+        if !self.device.rx.is_empty()
+            || !self.device.tx.is_empty()
+            || self
+                .udp
+                .values()
+                .any(|h| self.sockets.get::<udp::Socket>(*h).can_recv())
+            || self
+                .connections
+                .values()
+                .any(|c| self.sockets.get::<tcp::Socket>(c.handle).recv_queue() > 0)
+        {
+            return now;
+        }
+        let tcp = self
+            .connections
+            .values()
+            .map(|c| {
+                let state = self.sockets.get::<tcp::Socket>(c.handle).state();
+                c.last_io.saturating_add(
+                    if matches!(state, tcp::State::SynSent | tcp::State::SynReceived) {
+                        10000
+                    } else {
+                        120000
+                    },
+                )
+            })
+            .min();
+        self.iface
+            .poll_at(instant(now), &self.sockets)
+            .map(|t| t.total_millis().max(0) as u64)
+            .into_iter()
+            .chain(tcp)
+            .chain(self.reassembly.next_deadline())
+            .chain(self.mtu_until)
+            .min()
+            .unwrap_or(u64::MAX)
+            .max(now)
     }
 }

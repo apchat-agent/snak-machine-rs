@@ -38,6 +38,9 @@ impl Reassembler {
     pub fn retained_bytes(&self) -> usize {
         self.contexts.values().map(Context::bytes).sum()
     }
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.contexts.values().map(|c| c.deadline).min()
+    }
     pub fn expire(&mut self, now: u64) {
         self.contexts.retain(|_, c| now < c.deadline);
     }

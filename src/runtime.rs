@@ -283,6 +283,18 @@ impl<I: PacketIo> Driver<I> {
         stacks[link.index()].set_connection_limit(remaining);
         Some(&mut stacks[link.index()])
     }
+    pub fn next_deadline(&mut self, now: Time) -> Time {
+        let mut next = self.router.next_deadline(now);
+        if let Some(deadline) = self.dhcp.as_ref().and_then(|c| c.next_deadline()) {
+            next = next.min(deadline);
+        }
+        if let Some(stacks) = &mut self.stacks {
+            for stack in stacks {
+                next = next.min(stack.next_deadline(now));
+            }
+        }
+        next.max(now)
+    }
     fn receive_service(&mut self, rx: &crate::io::Received, now: Time) -> io::Result<bool> {
         use crate::wire::{envelope, hop_options, transport, FrameKind};
         if self.stacks.is_none()
