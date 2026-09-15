@@ -1398,3 +1398,26 @@ if removed without replacing that parent functionality.
 | `zeroize` | `1.9.0` | Clear private keys and crypto buffers; selected secret types lose their required clearing support without it. |
 | `zeroize_derive` | `1.5.0` | Secret-type zeroization derives; selected private-key types fail to build without it. |
 | `zmij` | `1.0.23` | Float formatting under selected serde_json support; that upstream serialization dependency fails to build without it. |
+
+## ADDENDUM 1 — S02 regression-policy conflict found in task 6
+
+S02's protocol design remains required by draft §5.2: received stub SNAC flags
+are disregarded for arbitration. Draft §9.7 permits warning about a set flag;
+it does not require the existing unconditional router-wide degradation.
+
+The baseline test `lifecycle_loss_and_shutdown_do_not_leave_false_routes`
+(`tests/scenarios.rs:1189–1190`) explicitly requires an error and Degraded
+state after an otherwise valid, flagged stub RA. S02 says to accept such an RA
+and treat the bit as an observation/warning. Both behaviors cannot hold for
+the same input. Task 6 additionally requires the existing 72 tests to keep
+passing at every commit, and §6.1 requires preserved equivalent assertions
+when tests are renamed or refactored.
+
+Executing S02 therefore requires a test-policy clarification: replace those
+obsolete expectations with the warning/acceptance behavior while preserving
+the test's other lifecycle assertions, or retain them and stop before S02.
+The clarification was requested during S01 and no answer was received before
+the stop. No baseline assertion or S02 production behavior was changed. S01
+is complete; task 6 stops green at this boundary under its explicit stop rule.
+This addendum records the conflict; it does not narrow draft conformance or
+mark any outstanding service requirement N/A.

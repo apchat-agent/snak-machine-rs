@@ -125,3 +125,41 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   with the lockfile. Evidence is in `.lane/step6-validation/s01-*.log`;
   committed tests and paired commits are the durable evidence. No interfaces
   opened, no privileged execution and no push.
+
+### S02 — stopped before implementation
+
+- Cannot apply S02's unconditional warning/acceptance of otherwise valid
+  flagged stub RAs while retaining the baseline assertions requiring rejection
+  and Degraded state (`tests/scenarios.rs:1189–1190`, inside
+  `lifecycle_loss_and_shutdown_do_not_leave_false_routes`). The input is the
+  valid checksum/hop-limit/link-local `self_ra` constructed at line 1125.
+  PLAN2 §6.1 also requires preserved equivalent assertions for test refactors.
+  PLAN2 S02 says to accept it; draft §5.2 disregards the received bit for
+  arbitration, and §9.7 allows a warning. This conflicts with task 6's command
+  that the existing 72 tests keep passing. PLAN2 ADDENDUM 1 records the issue.
+- Requested clarification about updating that obsolete assertion while
+  preserving all other baseline checks; no answer received. Applied the
+  user's explicit "leave everything green, stop" rule before committing any
+  S02 red or changing its implementation. S02–S24 are **not done**. This is
+  an instruction/test-contract blocker, not an unavailable platform privilege
+  or an implementation of the remaining services.
+- Final documentation updates README and STATUS to describe only implemented
+  behavior, runnable harness commands and the still-missing mandatory services.
+  No assertion in the original five integration-test files was changed.
+
+### needs privileged acceptance
+
+- No new native edge was added in S01. Existing Linux TAP/pcap and macOS
+  utun/pcap runtime paths still need provisioned, distinct peer links and
+  actual multicast reception/injection, ND/DAD, PD, bidirectional forwarding,
+  link loss/reconnect and shutdown acceptance. None was run in task 6.
+- Carrier-aware status, macOS bridge membership and external-FD provenance
+  are still implementation work in S04. DNS/SRP/proxies/IPv4/NAT64 are still
+  implementation work in later steps, not completed services awaiting root.
+
+- Task 6 final matrix at the stop boundary: both full Cargo test variants
+  pass **77 tests**, default/pcap builds pass, formatting and warnings-denied
+  clippy pass, and the requested aarch64 macOS all-target pcap check passes.
+  Both provisional audits pass. Transcripts: `.lane/step6-validation/final-*.log`.
+  README/STATUS are the final documentation commit; the completion marker
+  records the stopped run, not completion of S02–S24 or full conformance.

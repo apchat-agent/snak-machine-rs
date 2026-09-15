@@ -3,8 +3,14 @@
 A userspace IPv6 stub-router prototype for
 [draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt).
 It connects one adjacent infrastructure link (AIL) and one stub link.
-[PLAN.md](PLAN.md) defines the scope; [LOG.md](LOG.md) records the 30 ordered
-red/green steps and validation. This is not a complete SNAC implementation.
+[PLAN.md](PLAN.md) records the original routing scope; [PLAN2.md](PLAN2.md)
+plans conformance completion. [LOG.md](LOG.md) records the paired commits and
+validation. This is not a complete SNAC implementation.
+
+**Task 6 stopped after S01.** S02 requires accepting valid SNAC-flagged stub
+RAs, while an existing baseline test requires rejecting them. Preserving that
+assertion conflicts with S02; the requested clarification is unresolved.
+S02–S24 remain unimplemented. See PLAN2's ADDENDUM 1 and LOG.md.
 
 ## Build and test
 
@@ -24,7 +30,37 @@ The default build needs no additional system library. The optional `pcap`
 feature uses dynamic loading: it needs no libpcap headers or link-time library,
 but running that backend requires libpcap 1.5+.
 Automated tests use memory peers, scripted randomness and explicit times; they
-open no real interfaces and require no root privileges.
+open no real interfaces and require no root privileges. The current suite
+passes **77 Rust tests**, including the unchanged original 72. One Rust test
+also runs six Python audit cases; Python 3.11+ is needed for its standard-library
+TOML reader.
+
+### Conformance harness (S01)
+
+```sh
+cargo test --locked --test service_io
+python3 scripts/conformance_audit.py
+python3 scripts/dependency_audit.py --locked --all-features
+cargo +1.85.0 build --locked --all-features
+```
+
+The harness exchanges real TCP packets between two in-memory userspace IP
+endpoints and completes TLS 1.2/1.3 handshakes with split records. It checks
+malformed input and bounded queues. The endpoint currently has one TCP socket
+with 64 KiB buffers in each direction and combined IP queues capped at 64
+packets/64 KiB. It is a library prerequisite for the later service steps.
+It is not connected to the production Driver and opens no service listeners.
+
+The provisional auditor covers all 103 requirement rows, 112 physical keyword
+lines and ten supplemental commitments, and checks executable evidence.
+`python3 scripts/conformance_audit.py --require-complete` **currently fails**:
+45 rows remain unfinished. The current provisional inventory is
+[tests/requirements.tsv](tests/requirements.tsv); REVIEW.md is historical.
+
+Dependencies use the exact PLAN2 pins, including the pure Rust TLS provider.
+The dependency auditor distinguishes active build dependencies from inactive
+Cargo.lock entries such as ring/cc. The RustCrypto TLS provider is experimental;
+passing these fixtures is not an external security audit.
 
 ## Run on Linux
 
@@ -124,6 +160,35 @@ For a privileged acceptance test, provision peers on both links, capture
 RS/RA/NS/NA, check bidirectional ULA ping, then exercise PD renumbering,
 router loss/reconnect and shutdown withdrawals. Inspect multicast reception
 and duplicate suppression on pcap. These tests were **not run here**.
+
+## Service availability
+
+| Service | Current implementation / how to run |
+| --- | --- |
+| IPv6 routing, ND, RA and AIL DHCPv6-PD client | Run `snac-router` with one of the Linux/macOS commands above. |
+| TCP/TLS endpoint prerequisite | Run `cargo test --locked --test service_io`; library harness only. |
+| DNS resolver, RDNSS, DNS-SD zones and enumeration | Not implemented; no listener or launch option. |
+| SRP registrar and DNS-over-TLS queries/updates | Not implemented; the TLS handshake fixture does not implement DNS or SRP. |
+| Advertising Proxy, Discovery Proxy, AIL mDNS and TSR | Not implemented. |
+| IPv4 DHCP/IPv4LL/ARP and NAT64 | Not implemented; only `--nat64 disabled` is accepted. |
+
+The missing DNS, SRP, proxy, DoT and NAT64 capabilities are mandatory
+conformance gaps under draft §§5.5–7. They are not optional services or merely
+awaiting privileged acceptance.
+
+## Needs privileged acceptance
+
+No native network backend was executed during task 6. After provisioning two
+separate links, the existing runtime still needs Linux TAP/pcap and macOS
+utun/pcap acceptance: actual packet reception/injection, scoped multicast
+membership, ND/DAD, RA/PD interoperability, forwarding, link loss/reconnect and
+paced shutdown withdrawals. utun is an L3 IPv6 backend and cannot supply the
+planned Ethernet/ARP/DHCPv4 profile.
+
+Carrier-aware status, macOS bridge membership and external-FD provenance are
+still incomplete implementation work (S04), not completed features awaiting
+a physical test. DNS/SRP/NAT64 integration and recovery need S02–S24 before
+service-level native acceptance can be attempted.
 
 ## Native APIs and validation
 
