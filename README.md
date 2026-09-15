@@ -1,4 +1,4 @@
-# snac-rs
+# snak-machine-rs
 
 A userspace IPv6 stub-router prototype for
 [draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt).

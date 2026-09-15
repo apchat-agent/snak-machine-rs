@@ -1,4 +1,4 @@
-# STATUS — where snac-rs stands (2026-09-15)
+# STATUS — where snak-machine-rs stands (2026-09-15)
 
 This file is the pick-up point for whoever continues the work. The design is in
 PLAN.md, the build history in LOG.md, the review in REVIEW.md and
