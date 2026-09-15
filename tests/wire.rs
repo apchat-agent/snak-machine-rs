@@ -158,3 +158,51 @@ fn rio_and_pref64_decode_wire_variants() {
     assert!(Rio::decode(nd.options[0].bytes).is_none());
     assert!(Pio::decode(nd.options[1].bytes).unwrap().suitable());
 }
+
+use snac_rs::{
+    wire::{Advertisement, Preference},
+    Link,
+};
+#[test]
+fn initial_advertisements_match_golden_bytes() {
+    let p = Pio::decode(&pio("fd12:3456:789a:1::", 64, 0xc0, 1800, 1800)).unwrap();
+    let r = Rio {
+        prefix: Prefix::new(ip("fd12:3456:789a:2::"), 64).unwrap(),
+        preference: Preference::Low,
+        lifetime: 1800,
+    };
+    for link in [Link::Ail, Link::Stub] {
+        let snapshot = Advertisement {
+            link,
+            source: ip("fe80::1234"),
+            destination: ip("ff02::1"),
+            mac: Some([2, 0, 0, 0, 0, 1]),
+            mtu: 1500,
+            mo: 0xc0,
+            default_lifetime: 600,
+            pios: vec![p],
+            rios: vec![r],
+        };
+        let actual = snapshot.encode().unwrap();
+        let mut options = vec![1, 1, 2, 0, 0, 0, 0, 1];
+        if link == Link::Stub {
+            options.extend([5, 1, 0, 0, 0, 0, 5, 220]);
+        }
+        options.extend(pio("fd12:3456:789a:1::", 64, 0xc0, 1800, 1800));
+        options.extend(rio("fd12:3456:789a:2::", 64, 24, 1800, 2));
+        let expected = nd_packet(
+            "fe80::1234",
+            "ff02::1",
+            ra(
+                if link == Link::Ail { 0xc2 } else { 0 },
+                if link == Link::Ail { 0 } else { 600 },
+                &options,
+            ),
+        );
+        assert_eq!(actual, expected);
+        assert_eq!(sum(ip("fe80::1234"), ip("ff02::1"), 58, &actual[40..]), 0);
+        let env = envelope(FrameKind::RawIpv6, &actual).unwrap();
+        let nd = decode_nd(&env).unwrap();
+        assert!(nd.options.iter().all(|o| o.kind != 25 && o.kind != 38));
+    }
+}
