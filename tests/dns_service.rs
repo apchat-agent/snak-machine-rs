@@ -565,3 +565,118 @@ fn s09_driver_rejects_bad_tcp_framing_and_answers_after_client_half_close() {
         }
     }
 }
+
+#[test]
+fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
+    use snac_rs::{
+        dns::wire::TcpFrames,
+        service_io::{identity::TlsIdentity, tls::opportunistic_client},
+    };
+    use std::io::{Read, Write};
+    struct Sender<'a>(&'a mut Stack, usize);
+    impl Write for Sender<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.send_tcp(self.1, b)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(1..10000);
+    let identity =
+        TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
+    d.enable_dot(identity.server_config().unwrap().into())
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    learn(&mut d, Link::Stub, &mut rng);
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    let id = hosts[1]
+        .connect(
+            peer(Link::Stub),
+            40001,
+            d.router.identity.link_local(Link::Stub).into(),
+            853,
+            1001,
+        )
+        .unwrap();
+    for now in (1010..1500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    assert!(hosts[1].established(id));
+    let mut tls = rustls::ClientConnection::new(
+        opportunistic_client().unwrap().into(),
+        "self-signed.test".try_into().unwrap(),
+    )
+    .unwrap();
+    for now in (1500..3000).step_by(10) {
+        tls.write_tls(&mut Sender(&mut hosts[1], id)).unwrap();
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        let b = hosts[1].receive_tcp(id);
+        let mut p = b.as_slice();
+        while !p.is_empty() {
+            let n = tls.read_tls(&mut p).unwrap();
+            assert!(n > 0);
+            tls.process_new_packets().unwrap();
+        }
+    }
+    assert!(!tls.is_handshaking());
+    let mut bytes = TcpFrames::frame(&query("offline.test.", 1, 77)).unwrap();
+    let mut update = Message::new(78, 0x2800);
+    update.questions.push(Question {
+        name: "default.service.arpa.".parse().unwrap(),
+        kind: 6,
+        class: 1,
+    });
+    bytes.extend(TcpFrames::frame(&update.encode().unwrap()).unwrap());
+    let mut large = Message::parse(&query("large.test.", 16, 79), Context::Unicast).unwrap();
+    large.additional.push(Record {
+        name: ".".parse().unwrap(),
+        kind: 41,
+        class: 4096,
+        ttl: 0,
+        data: Rdata::Opt(vec![(65000, vec![9; 60000])]),
+    });
+    bytes.extend(TcpFrames::frame(&large.encode().unwrap()).unwrap());
+    tls.writer().write_all(&bytes).unwrap();
+    let mut frames = TcpFrames::new(65535).unwrap();
+    let mut replies = std::collections::BTreeMap::new();
+    for now in (3000..15000).step_by(10) {
+        tls.write_tls(&mut Sender(&mut hosts[1], id)).unwrap();
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        let b = hosts[1].receive_tcp(id);
+        let mut p = b.as_slice();
+        while !p.is_empty() {
+            let n = tls.read_tls(&mut p).unwrap();
+            assert!(n > 0);
+            tls.process_new_packets().unwrap();
+        }
+        let mut b = [0; 8192];
+        while let Ok(n) = tls.reader().read(&mut b) {
+            if n == 0 {
+                break;
+            }
+            frames.input(&b[..n]).unwrap();
+        }
+        while let Some(b) = frames.pop() {
+            let m = Message::parse(&b, Context::Unicast).unwrap();
+            replies.insert(m.id, m);
+        }
+        if replies.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(replies.len(), 3);
+    assert_eq!(replies[&77].flags & 15, 2);
+    assert_eq!(replies[&79].flags & 15, 2);
+    assert_eq!((replies[&78].flags >> 11) & 15, 5);
+    assert_ne!(replies[&78].flags & 15, 0, "unsigned update never succeeds");
+    assert_eq!(d.dns.pending_count(), 0);
+    let own = d.stack_mut(Link::Stub).unwrap().connections();
+    assert_eq!(own.len(), 1);
+    assert_eq!(
+        d.stack_mut(Link::Stub).unwrap().tcp_buffer_bytes(own[0]),
+        8192
+    );
+}
