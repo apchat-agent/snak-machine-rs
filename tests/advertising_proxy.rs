@@ -1692,3 +1692,68 @@ fn s14_publication_pressure_defers_changes_preserves_old_view_and_recovers_witho
         .any(|r| r.data == Rdata::Txt(vec![vec![b'N'; 250]; 24])));
     assert_eq!(registrar.advertising_counts().1, 0);
 }
+
+#[test]
+fn s14_ready_owner_refresh_is_quiet_with_cached_peer_data_and_equal_local_tsr() {
+    use snac_rs::{
+        mdns::{
+            tsr::{attach, OPTION_CODE},
+            wire::Datagram,
+            Engine,
+        },
+        time::ScriptedRandom,
+    };
+    for same_timestamp in [false, true] {
+        let mut e = Engine::default();
+        let mut rng = ScriptedRandom::new([]);
+        let old = vec![record("host.local.", 1)];
+        e.register_tsr(1, (&[], &old), &stamps(&old, 0), 0, &mut rng)
+            .unwrap();
+        for at in [0, 250, 500, 750, 1750] {
+            let b = e.publisher.poll(&|_, _| old.clone(), at).unwrap().unwrap();
+            e.publisher.sent(b.token, true, at);
+        }
+        if !same_timestamp {
+            let mut m = Message::new(0, 0x8400);
+            m.answers = old.clone();
+            attach(&mut m, OPTION_CODE, 2000, &|n| {
+                stamps(&old, 0).get(n).copied()
+            })
+            .unwrap();
+            e.receive(
+                &Datagram {
+                    source: "[fe80::2]:5353".parse().unwrap(),
+                    destination: "[ff02::fb]:5353".parse().unwrap(),
+                    message: m,
+                },
+                true,
+                &|_, _| old.clone(),
+                2000,
+                &mut rng,
+            )
+            .unwrap();
+            assert!(e.querier.cache.owner_stamp(&old[0].name, 2000).is_some());
+        }
+        let mut new = old.clone();
+        if same_timestamp {
+            new[0].data = Rdata::A([192, 0, 2, 10]);
+        }
+        e.register_tsr(
+            1,
+            (&old, &new),
+            &stamps(&new, if same_timestamp { 0 } else { 10000 }),
+            10000,
+            &mut rng,
+        )
+        .unwrap();
+        assert!(
+            e.publisher.ready(1),
+            "TSR 3.1 equal adoption and 3.2.1 timestamp-only updates stay ready"
+        );
+        assert!(e
+            .publisher
+            .poll(&|_, _| new.clone(), 10000)
+            .unwrap()
+            .is_none());
+    }
+}
