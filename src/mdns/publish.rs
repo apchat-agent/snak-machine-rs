@@ -218,6 +218,9 @@ fn record_charge(r: &Record) -> io::Result<usize> {
     Ok(256 + n * 8)
 }
 impl Publisher {
+    pub fn goodbye_count(&self) -> usize {
+        self.goodbyes.len()
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (
             self.publications.len(),
@@ -236,6 +239,16 @@ impl Publisher {
         new: &[Record],
         now: Time,
         rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        self.replace_bounded(id, (old, new), now, rng, BYTES)
+    }
+    pub(crate) fn replace_bounded(
+        &mut self,
+        id: u64,
+        (old, new): (&[Record], &[Record]),
+        now: Time,
+        rng: &mut impl RandomSource,
+        budget: usize,
     ) -> io::Result<()> {
         let old = Prepared::new(old)?;
         let new = Prepared::new(new)?;
@@ -272,7 +285,7 @@ impl Publisher {
             .sum::<usize>();
         if count + usize::from(!new.records.is_empty()) > 128
             || records + new.records.len() > 4096
-            || bytes + new.charge + goodbye_charge > BYTES
+            || bytes + new.charge + goodbye_charge > budget
             || (!goodbyes.is_empty() && self.goodbyes.len() >= 128)
         {
             return Err(capacity());
@@ -343,6 +356,7 @@ impl Publisher {
             self.up = up;
             self.offered = None;
             self.goodbyes.clear();
+            self.goodbyes.shrink_to_fit();
             for p in self.publications.values_mut() {
                 p.history.clear();
                 p.last_probe = None;
@@ -422,6 +436,7 @@ impl Publisher {
             Offered::Goodbye => {
                 if success {
                     self.goodbyes.pop_front();
+                    self.goodbyes.shrink_to_fit();
                 } else if let Some(g) = self.goodbyes.front_mut() {
                     g.next = now.saturating_add(100);
                 }

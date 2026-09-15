@@ -999,3 +999,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   owners, allowing the later AP to derive records without copying registry
   state. These fields implement planned owner projections and sent provenance;
   no dependency. Aggregate-budget and final hostile/failure fixtures follow.
+- S13 aggregate/failure RED `1e8af00`: full `cargo test` confirms the missing
+  shared admission API. GREEN passes **242 tests** and all-feature clippy.
+  Engine publication admission reserves active-question/rate and delayed-reply
+  credit atomically, then makes the learned LRU yield space. Runtime receive
+  and polling synchronize those reservations; a publication overflow cannot
+  evict live authoritative state. Tests independently fill the publication byte
+  limit, 4096 pending record references and delayed legacy-question byte limit.
+- Goodbye work fills all 128 dataset slots, drains completely and releases its
+  queue allocation. A rootless PacketIo fixture interrupts a large TXT probe
+  after the first fragment: retry emits only remaining frames, all within the
+  interface MTU, and the independent peer receives one complete single-RR probe.
+  Added byte-reservation fields enforce PLAN2's aggregate budget; no dependency.

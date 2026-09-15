@@ -35,6 +35,7 @@ pub struct Querier {
     global: (Time, u16),
     next_id: u64,
     up: bool,
+    external: usize,
 }
 impl Default for Querier {
     fn default() -> Self {
@@ -45,6 +46,7 @@ impl Default for Querier {
             global: (0, 0),
             next_id: 0,
             up: true,
+            external: 0,
         }
     }
 }
@@ -54,7 +56,24 @@ impl Querier {
     }
     fn reserve(&mut self) {
         self.cache
-            .reserve(self.questions.len() * 8192 + self.rates.len() * 256);
+            .reserve(self.questions.len() * 8192 + self.rates.len() * 256 + self.external);
+    }
+    pub(crate) fn reservation(&self) -> usize {
+        self.questions.len() * 8192 + 32 * 256
+    }
+    pub(crate) fn set_external(&mut self, bytes: usize) -> io::Result<()> {
+        if bytes + self.reservation() > 4 * 1024 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "mDNS aggregate capacity",
+            ));
+        }
+        self.external = bytes;
+        self.reserve();
+        Ok(())
+    }
+    pub(crate) fn owned_bytes(&self) -> usize {
+        self.cache.counts().2 - self.external
     }
     pub fn start(
         &mut self,
@@ -64,7 +83,8 @@ impl Querier {
         rng: &mut impl RandomSource,
     ) -> io::Result<u64> {
         self.expire(now);
-        if self.questions.len() >= 128
+        if self.reservation() + self.external + 8192 > 4 * 1024 * 1024
+            || self.questions.len() >= 128
             || until <= now
             || question.class & 0x7fff == 0
             || question.kind == 0

@@ -179,6 +179,7 @@ impl<I: PacketIo> Driver<I> {
         {
             return Ok(true);
         }
+        self.mdns.sync_budget()?;
         let probe = self.mdns.publisher.expects_unicast(&d, now);
         if self
             .mdns
@@ -207,6 +208,7 @@ impl<I: PacketIo> Driver<I> {
                 }
             }
         }
+        self.mdns.sync_budget()?;
         Ok(true)
     }
     fn mdns_complete(&mut self, owner: Owner, success: bool, now: Time) {
@@ -271,6 +273,7 @@ impl<I: PacketIo> Driver<I> {
         Ok(None)
     }
     pub(super) fn poll_mdns(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        self.mdns.sync_budget()?;
         let sources = self.mdns_sources();
         self.mdns.querier.available(!sources.is_empty(), now, rng)?;
         self.mdns

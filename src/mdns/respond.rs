@@ -34,11 +34,21 @@ pub struct Reply {
     pub destination: SocketAddr,
     pub messages: Vec<Message>,
 }
-#[derive(Default)]
 pub struct Responder {
     pending: BTreeMap<u64, Pending>,
     next: u64,
     offered: Option<u64>,
+    budget: usize,
+}
+impl Default for Responder {
+    fn default() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+            next: 0,
+            offered: None,
+            budget: 4 * 1024 * 1024,
+        }
+    }
 }
 fn capacity() -> io::Error {
     io::Error::new(io::ErrorKind::WouldBlock, "mDNS response capacity")
@@ -50,6 +60,9 @@ fn references(records: Vec<(u64, Record)>) -> io::Result<Vec<(Ref, Record)>> {
         .collect()
 }
 impl Responder {
+    pub(crate) fn set_budget(&mut self, bytes: usize) {
+        self.budget = bytes;
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (
             self.pending.len(),
@@ -184,7 +197,7 @@ impl Responder {
         if n + work.len() > 128
             || refs + work.values().map(|p| p.records.len()).sum::<usize>() > 4096
             || bytes + publisher.counts().2 + work.values().map(Pending::charge).sum::<usize>()
-                > 4 * 1024 * 1024
+                > self.budget
         {
             return Err(capacity());
         }
