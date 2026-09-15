@@ -285,3 +285,9 @@ pub(crate) fn packetize(
     }
     Ok(output)
 }
+
+// RFC 6762 6.7: legacy unicast replies echo questions and retain ordinary DNS
+// rules. A request without EDNS must not gain an unsolicited OPT (RFC 6891 6.2.1).
+pub(crate) fn legacy(m: &Message) -> bool {
+    m.flags & 0x8000 != 0 && !m.questions.is_empty()
+}

@@ -1135,3 +1135,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   before projecting records; its scheduled deadline permits withdrawal before
   any positive one-second TTL would outlive the lease. This closes an ordering
   gap exposed by the native integration. No dependency or design change.
+- S14 edge RED `15fd1d6` fails on non-probe suppression, missing option/probe
+  admission space, expired-slot turnover and legacy reply encoding. GREEN
+  passes **273 tests** and all-feature clippy. Only live announcements or actual
+  ANY probes suppress redundant probing. Prospective SRP records must fit a
+  complete stamped probe before acknowledgement. Expired slots retire before
+  replacements enter a full table; the rootless outage/reconnect fixture emits
+  probes for only the surviving registration.
+- Legacy unicast DNS replies retain echoed questions, clear cache-flush and
+  TTL/512-byte limits without introducing unnegotiated OPT records (RFC 6762
+  6.7; RFC 6891 6.2.1). Ordinary mDNS responses retain TSR. These are protocol
+  edge corrections; no dependency or new persistent field.

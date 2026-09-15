@@ -298,9 +298,11 @@ impl<I: PacketIo> Driver<I> {
                     self.mdns_complete(owner, true, now);
                     continue;
                 };
-                crate::mdns::tsr::attach(&mut message, self.mdns.tsr_code(), now, &|n| {
-                    self.mdns.publisher.output_stamp(n)
-                })?;
+                if !crate::mdns::tsr::legacy(&message) {
+                    crate::mdns::tsr::attach(&mut message, self.mdns.tsr_code(), now, &|n| {
+                        self.mdns.publisher.output_stamp(n)
+                    })?;
+                }
                 for source in &output.sources {
                     if output
                         .destination

@@ -180,6 +180,24 @@ pub(crate) fn estimate(records: &[Record]) -> io::Result<(usize, usize)> {
     let prepared = Prepared::new(records)?;
     Ok((prepared.records.len(), prepared.charge))
 }
+pub(crate) fn estimate_stamped(records: &[Record]) -> io::Result<(usize, usize)> {
+    let prepared = Prepared::new(records)?;
+    for r in &prepared.records {
+        let unique = r.class & 0x8000 != 0;
+        let mut one = Message::new(0, if unique { 0 } else { 0x8400 });
+        append(&mut one, r.clone(), unique);
+        super::tsr::attach(&mut one, super::tsr::OPTION_CODE, 0, &|_| {
+            unique.then_some(Stamp {
+                key_checksum: 0,
+                received_at: 0,
+            })
+        })?;
+        if one.encode_context(Context::Mdns)?.len() > 8952 {
+            return Err(invalid());
+        }
+    }
+    Ok((prepared.records.len(), prepared.charge))
+}
 pub(crate) fn identity(r: &Record) -> io::Result<Digest> {
     let mut r = r.clone();
     r.ttl = 0;

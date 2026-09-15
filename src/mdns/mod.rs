@@ -153,6 +153,10 @@ impl Engine {
     ) -> std::io::Result<Vec<crate::dns::wire::Message>> {
         let mut output = vec![];
         for m in messages.drain(..) {
+            if tsr::legacy(&m) {
+                output.push(m);
+                continue;
+            }
             output.extend(tsr::packetize(m, self.tsr_code, now, &|n| {
                 self.publisher.output_stamp(n)
             })?);
@@ -200,7 +204,18 @@ impl Engine {
             let peer = stamps.get(&r.name).copied();
             match tsr::compare(local, peer) {
                 R::Unstamped => continue,
-                R::Equal => self.publisher.observe_equal(&r.name, response, now),
+                R::Equal => {
+                    let live = r.ttl > 0;
+                    let probe = !response
+                        && d.message.authority.iter().any(|a| a.name == r.name)
+                        && d.message
+                            .questions
+                            .iter()
+                            .any(|q| q.kind == 255 && q.name == r.name);
+                    if live && (response || probe) {
+                        self.publisher.observe_equal(&r.name, response, now);
+                    }
+                }
                 R::Older => {
                     stale.insert(r.name.clone());
                 }

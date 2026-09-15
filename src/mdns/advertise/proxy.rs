@@ -59,7 +59,7 @@ impl Proxy {
                 continue;
             }
             let (n, size) =
-                crate::mdns::publish::estimate(&records).map_err(|_| Error::ServFail)?;
+                crate::mdns::publish::estimate_stamped(&records).map_err(|_| Error::ServFail)?;
             hosts += 1;
             count += n;
             bytes += size;
@@ -111,7 +111,25 @@ impl Proxy {
             .map(|(n, _)| n.clone())
             .chain(self.slots.keys().cloned())
             .collect();
-        for name in names {
+        let mut ordered = names
+            .into_iter()
+            .map(|name| {
+                let map = self
+                    .slots
+                    .get(&name)
+                    .map(|s| s.mapping.clone())
+                    .unwrap_or_else(mapping);
+                let live = !map.project(registry, &name, now)?.is_empty();
+                Ok((live, name))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        ordered.sort();
+        // Retire expired slots before admitting a replacement into a full table.
+        for (live, name) in ordered {
+            if !live && !self.slots.contains_key(&name) {
+                continue;
+            }
+
             let prior = self.slots.get(&name);
             let old = if let Some(r) = self.pending.get(&name) {
                 r.clone()
