@@ -932,3 +932,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   source flood. Question/rate allocations reserve cache-budget credit before
   admitting records. Added retry/QU/refresh/interest fields implement the
   planned timers and sent-history distinction. No dependency. Responder follows.
+- S13 semantic RED `71f2b65` fails on rejecting a future NSEC next name;
+  GREEN passes **227 tests** and all-feature clippy. RFC 6762 section 6.1
+  explicitly requires accepting that record and ignoring the next-name field.
+  Duplicate-query suppression compares known-record membership (section 7.3),
+  so harmless TTL aging does not defeat suppression. These are corrections
+  within S13's specified RFC behavior, without design changes or dependencies.

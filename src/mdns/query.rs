@@ -272,10 +272,7 @@ impl Querier {
                     continue;
                 }
                 let own = self.cache.known(question, now);
-                if m.answers
-                    .iter()
-                    .all(|r| own.iter().any(|o| same(r, o) && o.ttl >= r.ttl))
-                {
+                if m.answers.iter().all(|r| own.iter().any(|o| same(r, o))) {
                     for q in self
                         .questions
                         .values_mut()

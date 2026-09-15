@@ -221,10 +221,10 @@ impl Cache {
             {
                 return false;
             }
-            let Rdata::Nsec { next, bitmap } = &e.record.data else {
+            let Rdata::Nsec { bitmap, .. } = &e.record.data else {
                 return false;
             };
-            *next == q.name && !bitmap_has(bitmap, q.kind) && !bitmap_has(bitmap, 5)
+            !bitmap_has(bitmap, q.kind) && !bitmap_has(bitmap, 5)
         })
     }
     pub(crate) fn reserve(&mut self, bytes: usize) {
