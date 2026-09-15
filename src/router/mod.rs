@@ -326,6 +326,8 @@ impl Router {
         }
     }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
+        self.pd.advance(now, rng)?;
+        self.sync_pd(now, rng)?;
         self.tick_dad(now);
         let mut out = self.tick_neighbors(now)?;
         self.suppliers.retain(|_, s| {
@@ -397,10 +399,11 @@ impl Router {
             }
         }
         if self.address_ready(Link::Ail, self.identity.link_local(Link::Ail))
-            && matches!(
-                self.state(Link::Stub),
-                AilState::BeginAdvertising | AilState::Advertising | AilState::Deprecating
-            )
+            && (self.pd.state != pd::PdState::Dormant
+                || matches!(
+                    self.state(Link::Stub),
+                    AilState::BeginAdvertising | AilState::Advertising | AilState::Deprecating
+                ))
         {
             if self.pd.state == pd::PdState::Dormant {
                 self.pd.start(now, rng)?;

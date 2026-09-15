@@ -50,3 +50,5 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - 23 pd-offers GREEN — 23 passed; DHCP nested lengths, DUID/xid, IAIDs, T1/T2 and prefix lifetimes checked; preference 255 selects immediately; valid SOL_MAX_RT learned even from unusable offers; no lease Release for rejected offers.
 - 24 pd-binding RED — 24 tests specified; cargo test failed for the new contract (see paired test commit).
 - 24 pd-binding GREEN — 24 passed; Original delegated prefixes retained for ownership/Renew/Release; derived /64s drive stub PIOs, selected GUA and ULA replace self ULA, independent Release retries do not block binding state. Added only planned lease and owned-prefix state.
+- 25 pd-lifetimes RED — 25 tests specified; cargo test failed for the new contract (see paired test commit).
+- 25 pd-lifetimes GREEN — 25 passed; T1 Renew and T2 Rebind use original delegation ownership; fallback_at is the planned derived first unanswered Rebind deadline (retained so later retries cannot postpone it), never before T2; remaining lease validity caps PIO/RIO exports.

@@ -21,6 +21,7 @@ pub struct Exchange {
 }
 #[derive(Debug)]
 pub struct PdClient {
+    pub fallback_at: Option<Time>,
     pub leases: BTreeMap<LeaseKey, Lease>,
     pub releases: Vec<Release>,
     pub offers: Vec<Message>,
@@ -32,6 +33,7 @@ pub struct PdClient {
 impl Default for PdClient {
     fn default() -> Self {
         Self {
+            fallback_at: None,
             leases: BTreeMap::new(),
             releases: vec![],
             offers: vec![],
@@ -129,18 +131,35 @@ impl PdClient {
         e.interval = if e.count == 0 {
             if e.kind == 1 {
                 1001 + rng.sample(199)?
+            } else if e.kind == 5 || e.kind == 6 {
+                9000 + rng.sample(2000)?
             } else {
                 900 + rng.sample(200)?
             }
         } else {
-            let base =
-                e.interval
-                    .saturating_mul(2)
-                    .min(if e.kind == 1 { self.sol_max_rt } else { 30000 });
+            let base = e.interval.saturating_mul(2).min(if e.kind == 1 {
+                self.sol_max_rt
+            } else if e.kind == 5 || e.kind == 6 {
+                600000
+            } else {
+                30000
+            });
             base * 9 / 10 + rng.sample(base / 5)?
         };
         e.next = now + e.interval;
         e.count = e.count.saturating_add(1);
+        if e.kind == 6 && e.count == 1 {
+            let t2 = self
+                .leases
+                .values()
+                .map(|l| match l.t2 {
+                    Lifetime::Until(t) => t,
+                    Lifetime::Infinite => u64::MAX,
+                })
+                .min()
+                .unwrap_or(now);
+            self.fallback_at = Some(e.next.max(t2));
+        }
         out.push(packet);
         Ok(out)
     }
@@ -184,7 +203,13 @@ impl PdClient {
         if m.xid != exchange.xid || m.client != duid {
             return Ok(());
         }
-        if m.kind == 7 && self.state == PdState::Requesting && m.server == exchange.server {
+        if m.kind == 7
+            && matches!(
+                self.state,
+                PdState::Requesting | PdState::Renewing | PdState::Rebinding
+            )
+            && (self.state == PdState::Rebinding || m.server == exchange.server)
+        {
             return self.install(m, now, rng);
         }
         if self.state == PdState::Soliciting && m.kind == 2 {
@@ -235,6 +260,9 @@ pub struct OwnedPrefix {
 }
 impl PdClient {
     pub fn selected(&self, now: Time) -> Vec<LeaseKey> {
+        if self.fallback_at.is_some_and(|t| now >= t) {
+            return vec![];
+        }
         let mut result = vec![];
         for ula in [false, true] {
             if let Some((key, _)) = self
@@ -325,6 +353,7 @@ impl PdClient {
                 prefixes,
             });
         }
+        self.fallback_at = None;
         self.state = PdState::Bound;
         self.exchange = None;
         self.requested.clear();
@@ -424,6 +453,17 @@ impl Router {
             self.withdrawals.insert((Link::Ail, p), 3);
             changed = true;
         }
+        if selected.is_empty()
+            && !self.pd_prefixes.is_empty()
+            && !matches!(
+                self.state(Link::Stub),
+                AilState::Advertising | AilState::BeginAdvertising
+            )
+        {
+            self.links[1].state = AilState::BeginAdvertising;
+            self.links[1].deprecate_at = None;
+            changed = true;
+        }
         if !selected.is_empty()
             && matches!(
                 self.state(Link::Stub),
@@ -464,5 +504,56 @@ impl Router {
                 }
             })
             .collect()
+    }
+}
+
+impl PdClient {
+    pub fn advance(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        self.leases.retain(|_, l| l.valid.live(now));
+        if self.leases.is_empty()
+            && matches!(
+                self.state,
+                PdState::Bound | PdState::Renewing | PdState::Rebinding
+            )
+        {
+            self.start(now, rng)?;
+        }
+        if matches!(self.state, PdState::Bound | PdState::Renewing)
+            && self.leases.values().any(|l| !l.t2.live(now))
+        {
+            self.refresh(6, now, rng)?;
+        } else if self.state == PdState::Bound && self.leases.values().any(|l| !l.t1.live(now)) {
+            self.refresh(5, now, rng)?;
+        }
+        Ok(())
+    }
+    pub fn refresh(&mut self, kind: u8, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
+        if self.leases.is_empty() {
+            return Ok(());
+        }
+        let server = if kind == 5 {
+            self.leases.values().next().unwrap().server.clone()
+        } else {
+            vec![]
+        };
+        self.requested = self
+            .leases
+            .iter()
+            .filter(|(_, l)| kind == 6 || l.server == server)
+            .map(|((iaid, prefix), l)| Delegation {
+                iaid: *iaid,
+                prefix: *prefix,
+                t1: 0,
+                t2: 0,
+                preferred: l.preferred.remaining(now),
+                valid: l.valid.remaining(now),
+            })
+            .collect();
+        self.state = if kind == 5 {
+            PdState::Renewing
+        } else {
+            PdState::Rebinding
+        };
+        self.begin(kind, server, now, now, rng)
     }
 }
