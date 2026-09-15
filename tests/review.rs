@@ -102,3 +102,101 @@ fn review_01_expired_hints_reclaimed_before_admission() {
     .unwrap();
     assert_eq!(r.pd_hints.len(), 1);
 }
+
+use snac_rs::{
+    io::{Direction, LinkInfo, MemoryIo, Received},
+    runtime::Driver,
+    wire::{envelope, FrameKind},
+};
+fn driver() -> Driver<MemoryIo> {
+    let r = router();
+    let info = [Link::Ail, Link::Stub].map(|l| LinkInfo {
+        name: format!("review-{l:?}"),
+        index: l.index() as u32 + 1,
+        kind: FrameKind::Ethernet,
+        mtu: 1500,
+        mac: Some(r.identity.macs[l.index()]),
+    });
+    Driver::new(r, MemoryIo::new(info)).unwrap()
+}
+fn incoming(d: &Driver<MemoryIo>, link: Link, packet: Vec<u8>) -> Received {
+    let mut bytes = d.router.identity.macs[link.index()].to_vec();
+    bytes.extend([2, 0, 0, 0, 0, 99]);
+    bytes.extend([0x86, 0xdd]);
+    bytes.extend(packet);
+    Received {
+        link,
+        kind: FrameKind::Ethernet,
+        direction: Direction::Ingress,
+        bytes,
+    }
+}
+fn na(source: &str, dest: std::net::Ipv6Addr, mac: [u8; 6]) -> Vec<u8> {
+    let mut b = vec![136, 0, 0, 0, 0x60, 0, 0, 0];
+    b.extend(ip(source).octets());
+    b.extend([2, 1]);
+    b.extend(mac);
+    nd_packet(source, &dest.to_string(), b)
+}
+#[test]
+fn review_02_local_replies_resolve_without_link_failure() {
+    for kind in [129, 136, 1] {
+        let mut d = driver();
+        let own = d.router.identity.link_local(Link::Ail);
+        let source = if kind == 1 {
+            "2001:db8:1::99"
+        } else {
+            "fe80::99"
+        };
+        let packet = match kind {
+            129 => nd_packet(source, &own.to_string(), vec![128, 0, 0, 0, 1, 2, 3, 4]),
+            136 => ns(source, own, None),
+            _ => {
+                let prefix = snac_rs::wire::Prefix::new(ip("2001:db8:1::"), 64).unwrap();
+                d.router.on_link.insert(
+                    (Link::Ail, prefix),
+                    snac_rs::router::OnLink {
+                        valid: snac_rs::time::Lifetime::Infinite,
+                        preferred: snac_rs::time::Lifetime::Infinite,
+                    },
+                );
+                d.router.owned.insert(
+                    (Link::Ail, ip("2001:db8:1::1")),
+                    snac_rs::router::OwnedAddress {
+                        prefix: Some(prefix),
+                        state: snac_rs::router::DadState::Ready,
+                        deadline: None,
+                        attempts: 1,
+                    },
+                );
+                common::packet(source, "2001:db8:ffff::1", 17, 64, &[0; 8])
+            }
+        };
+        d.accept(
+            incoming(&d, Link::Ail, packet),
+            0,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+        assert!(d.router.links.iter().all(|l| l.up), "reply type {kind}");
+        assert!(d
+            .io
+            .output
+            .iter()
+            .any(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == 135));
+        d.accept(
+            incoming(&d, Link::Ail, na(source, own, [2, 0, 0, 0, 0, 99])),
+            1,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+        let replies: Vec<_> =
+            d.io.output
+                .iter()
+                .filter(|(_, b)| envelope(FrameKind::Ethernet, b).unwrap().payload[0] == kind)
+                .collect();
+        assert_eq!(replies.len(), 1, "reply type {kind}");
+        assert_eq!(&replies[0].1[..6], &[2, 0, 0, 0, 0, 99]);
+        assert!(d.router.links.iter().all(|l| l.up));
+    }
+}
