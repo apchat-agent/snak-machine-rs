@@ -1,0 +1,9 @@
+[package]
+name = "snac-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[[test]]
+name = "wire"
+path = "tests/wire.rs"
