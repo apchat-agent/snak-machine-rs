@@ -293,3 +293,211 @@ fn s21_mtu_translation_uses_both_interfaces_ipv6_minimum_and_legacy_plateaus() {
     assert_eq!(v6_to_v4(2, 1, 1500, 9000, 9000), None);
     assert_eq!(v6_to_v4(4, 0, u32::MAX, 9000, 9000), None);
 }
+
+fn error4(source: Ipv4Addr, kind: u8, code: u8, value: u32, quote: &[u8]) -> Vec<u8> {
+    let mut body = vec![kind, code, 0, 0];
+    body.extend(value.to_be_bytes());
+    body.extend(quote);
+    packets::icmp4(source, [192, 0, 2, 10].into(), &body)
+}
+fn error6(
+    source: Ipv6Addr,
+    dest: Ipv6Addr,
+    kind: u8,
+    code: u8,
+    value: u32,
+    quote: &[u8],
+) -> Vec<u8> {
+    let mut body = vec![kind, code, 0, 0];
+    body.extend(value.to_be_bytes());
+    body.extend(quote);
+    packets::icmp6(source, dest, &body)
+}
+#[test]
+fn s21_error_quotes_restore_transport_tuples_checksums_and_preserve_inner_hop() {
+    let pool = [192, 0, 2, 10].into();
+    for protocol in [1, 6, 17] {
+        let mut t = translator();
+        let (query, _reply) = match protocol {
+            1 => (packets::hex(ECHO6), packets::hex(REPLY4)),
+            6 => (
+                packets::tcp6(host(1), synthetic(7), 0x1234, 80, 2, b""),
+                packets::tcp4(ip(7), pool, 80, 0x1234, 18, b""),
+            ),
+            _ => (
+                packets::udp6(host(1), synthetic(7), 0x1234, 80, b"data"),
+                packets::udp4(ip(7), pool, 80, 0x1234, b"data"),
+            ),
+        };
+        // Reserve the desired port so every quote must undo a port/ID translation.
+        let mut collision = query.clone();
+        collision[8..24].copy_from_slice(&host(2).octets());
+        if protocol == 6 {
+            packets::tcp_fix(&mut collision);
+        } else if protocol == 17 {
+            collision = packets::udp6(host(2), synthetic(7), 0x1234, 80, b"data");
+        } else {
+            collision = packets::icmp6(host(2), synthetic(7), &query[40..]);
+        }
+        send(&mut t, &collision, 0).unwrap();
+        let translated = send(&mut t, &query, 0).unwrap().remove(0).packet;
+        let deadline = t.bindings.next_deadline();
+        for quote_len in [28, translated.len()] {
+            let err = error4(ip(1), 3, 3, 0, &translated[..quote_len]);
+            let out = t.inbound(&err, 1).unwrap();
+            assert_eq!(out.len(), 1, "protocol {protocol}");
+            let b = &out[0].packet;
+            assert_eq!(&b[8..24], &synthetic(1).octets());
+            assert_eq!(&b[24..40], &host(1).octets());
+            assert_eq!(&b[40..42], &[1, 4]);
+            assert!(packets::icmp6_valid(b));
+            let mut expected = query[..40 + quote_len - 20].to_vec();
+            expected[7] = 63; // the inner packet already crossed the translator
+            assert_eq!(&b[48..], expected);
+            assert_eq!(
+                t.bindings.next_deadline(),
+                deadline,
+                "errors never refresh sessions"
+            );
+        }
+        let assigned = if protocol == 1 {
+            &translated[24..26]
+        } else {
+            &translated[20..22]
+        };
+        let assigned = u16::from_be_bytes(assigned.try_into().unwrap());
+        let reply = match protocol {
+            1 => packets::icmp4(
+                ip(7),
+                pool,
+                &[
+                    0,
+                    0,
+                    0,
+                    0,
+                    (assigned >> 8) as u8,
+                    assigned as u8,
+                    0,
+                    9,
+                    101,
+                    99,
+                    104,
+                    111,
+                ],
+            ),
+            6 => packets::tcp4(ip(7), pool, 80, assigned, 18, b""),
+            _ => packets::udp4(ip(7), pool, 80, assigned, b"data"),
+        };
+        let received = t.inbound(&reply, 2).unwrap().remove(0).packet;
+        let deadline = t.bindings.next_deadline();
+        let err = error6(host(1), synthetic(7), 1, 4, 0, &received);
+        let out = send(&mut t, &err, 3).unwrap();
+        assert_eq!(out.len(), 1);
+        let b = &out[0].packet;
+        assert_eq!(&b[12..20], &[192, 0, 2, 10, 198, 51, 100, 7]);
+        assert_eq!(&b[20..22], &[3, 3]);
+        assert_eq!(packets::sum(&b[20..]), 0);
+        let mut expected = reply;
+        expected[8] = 63;
+        expected[10..12].fill(0);
+        let sum = packets::sum(&expected[..20]);
+        expected[10..12].copy_from_slice(&sum.to_be_bytes());
+        // IPv4 zero UDP checksum is legitimately replaced by the v6 checksum.
+        if protocol == 17 {
+            expected[26..28].copy_from_slice(&b[54..56]);
+        }
+        assert_eq!(&b[28..], expected);
+        assert_eq!(t.bindings.next_deadline(), deadline);
+    }
+}
+#[test]
+fn s21_error_quotes_reject_hostile_or_unrelated_input_without_state_and_rate_limit() {
+    let mut t = translator();
+    let translated = send(&mut t, &packets::hex(ECHO6), 0)
+        .unwrap()
+        .remove(0)
+        .packet;
+    let good = error4(ip(1), 11, 0, 0, &translated);
+    let before = t.bindings.next_deadline();
+    for n in 0..good.len() {
+        assert!(t.inbound(&good[..n], 1).is_err());
+    }
+    for n in 0..28 {
+        assert!(t
+            .inbound(&error4(ip(1), 3, 3, 0, &translated[..n]), 1)
+            .is_err());
+    }
+    let foreign = packets::udp4([192, 0, 2, 10].into(), ip(8), 0x1234, 80, b"x");
+    assert!(t
+        .inbound(&error4(ip(1), 3, 3, 0, &foreign), 1)
+        .unwrap()
+        .is_empty());
+    let mut wrong = translated.clone();
+    wrong[24] ^= 1; // unknown ICMP identifier
+    assert!(t
+        .inbound(&error4(ip(1), 3, 3, 0, &wrong), 1)
+        .unwrap()
+        .is_empty());
+    let recursive = error4(ip(7), 3, 3, 0, &translated);
+    assert!(t
+        .inbound(&error4(ip(1), 3, 3, 0, &recursive), 1)
+        .unwrap()
+        .is_empty());
+    for _ in 0..32 {
+        assert_eq!(t.inbound(&good, 1).unwrap().len(), 1);
+    }
+    assert!(t.inbound(&good, 1).unwrap().is_empty());
+    assert_eq!(t.inbound(&good, 1001).unwrap().len(), 1);
+    assert_eq!(t.bindings.next_deadline(), before);
+    assert_eq!(t.bindings.counts(), (1, 1, 1));
+    assert!(translator().inbound(&good, 1).unwrap().is_empty());
+}
+#[test]
+fn s21_hairpin_error_quote_returns_to_original_stub_origin() {
+    let mut t = translator();
+    let local: Ipv6Addr = "fd11:2233:4455:ffff::c000:20a".parse().unwrap();
+    send(
+        &mut t,
+        &packets::udp6(host(2), local, 9000, 8000, b"prime"),
+        0,
+    )
+    .unwrap();
+    let input = packets::udp6(host(1), local, 8000, 9000, b"hairpin");
+    let received = send(&mut t, &input, 1).unwrap().remove(0).packet;
+    let before = t.bindings.next_deadline();
+    let out = send(&mut t, &error6(host(2), local, 1, 4, 0, &received), 2).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].link, Link::Stub);
+    let b = &out[0].packet;
+    assert_eq!(&b[24..40], &host(1).octets());
+    assert_eq!(&b[8..24], &local.octets());
+    assert!(packets::icmp6_valid(b));
+    let mut expected = input;
+    expected[7] = 63;
+    assert_eq!(&b[48..], expected);
+    assert_eq!(t.bindings.next_deadline(), before);
+}
+#[test]
+fn s21_native_icmp_errors_dispatch_by_quoted_binding() {
+    let mut d = native::driver(32, [192, 0, 2, 10].into());
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, ip(7));
+    native::learn(&mut d, h, 20001);
+    d.io.output.clear();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(h, target, 4567, 80, b"quote"),
+        20002,
+    );
+    native::arp(&mut d, [192, 0, 2, 1].into(), 20003);
+    let quote = native::translated(&mut d, Link::Ail, 17).remove(0);
+    native::packet(&mut d, Link::Ail, &error4(ip(1), 3, 4, 1400, &quote), 20004);
+    d.step(20004, &mut ScriptedRandom::new([])).unwrap();
+    let out = native::translated(&mut d, Link::Stub, 58);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][40..42], &[2, 0]);
+    assert_eq!(&out[0][44..48], &1420u32.to_be_bytes());
+    assert_eq!(&out[0][24..40], &h.octets());
+    assert!(packets::icmp6_valid(&out[0]));
+}
