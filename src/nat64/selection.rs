@@ -163,7 +163,15 @@ impl Selector {
         until: u64,
         withdrawn: bool,
     ) -> io::Result<()> {
-        if !usable(prefix) || self.promised.len() == 8 || self.promised.contains_key(&prefix) {
+        if !usable(prefix)
+            || source == Source::Local
+                && (prefix.length != 96
+                    || !prefix.ula()
+                    || prefix.address.segments()[3] != 0xffff
+                    || prefix.address.segments()[4..6] != [0, 0])
+            || self.promised.len() == 8
+            || self.promised.contains_key(&prefix)
+        {
             return Err(invalid());
         }
         self.promised.insert(prefix, (source, until, withdrawn));

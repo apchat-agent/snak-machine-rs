@@ -1833,3 +1833,18 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   rootless suite uses actual signatures/TLS/wire packets through Driver, not
   signature or translation bypasses. No dependency added; mode/reason is the
   bounded diagnostic state planned in §4.2.
+
+### S24 — hostile-input sweep, bounded soak and audit (in progress)
+
+- RED `6cf4f19` executes deterministic in-tree mutation/truncation corpora and
+  exposes a checksum overflow on oversized ICMP input plus semantically invalid
+  local-NAT/resolver journal histories. GREEN passes **427 tests** and all-feature
+  clippy. ICMP rejects lengths beyond the IPv4 payload bound before checksum
+  work; journal recovery checks local /96 allocation shape and rejects mapped
+  IPv4 resolver addresses, in addition to existing entry/count bounds.
+- Seeds `0x5eed2401`–`0x5eed2404` cover DNS/TCP/EDNS/SVCB, SRP KEY/SIG/lease,
+  TSR, IPv4/ARP/ICMP/TCP/options/fragments, DHCPv4/search names, DHCPv6 DNS,
+  RDNSS/DNSSL/PREF64, router/registration/TLS persistence and configuration.
+  Atomic discovery failures preserve prior evidence; rejected signature input
+  creates no claims. No field or dependency added. Aggregate soak and current
+  requirement-evidence matrix follow before S24 closure.

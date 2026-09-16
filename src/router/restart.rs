@@ -386,7 +386,8 @@ impl Router {
                     let address: Ipv6Addr = address.parse().map_err(|_| invalid())?;
                     let valid = lifetime(valid)?;
                     let count = u8::try_from(parse(count)?).map_err(|_| invalid())?;
-                    if address.is_unspecified()
+                    if address.to_ipv4_mapped().is_some()
+                        || address.is_unspecified()
                         || address.is_multicast()
                         || address.is_loopback()
                         || valid == Lifetime::Infinite

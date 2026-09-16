@@ -168,7 +168,7 @@ pub struct Icmp<'a> {
 }
 impl<'a> Icmp<'a> {
     pub fn parse(b: &'a [u8]) -> io::Result<Self> {
-        if b.len() < 8 || checksum(b) != 0 {
+        if !(8..=65515).contains(&b.len()) || checksum(b) != 0 {
             return Err(invalid());
         }
         match b[0] {
