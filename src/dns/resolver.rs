@@ -73,6 +73,7 @@ struct Pending {
     attempt: u8,
     base: Option<Vec<u8>>,
     forward_cache: bool,
+    aliases: BTreeSet<Name>,
 }
 impl Pending {
     fn charge(&self) -> usize {
@@ -80,6 +81,7 @@ impl Pending {
             + 16 * self.original.original().len()
             + 16 * self.query.bytes.len()
             + 16 * self.base.as_ref().map_or(0, Vec::len)
+            + alias_charge(&self.aliases)
             + 1024 * self.waiters.len()
     }
 }
@@ -515,6 +517,7 @@ impl Resolver {
             attempt: 0,
             base: None,
             forward_cache: true,
+            aliases: BTreeSet::new(),
         };
         if self.pending_bytes() + p.charge() > BYTES {
             return Err(capacity());
@@ -589,6 +592,9 @@ impl Resolver {
         }
         let mut p = self.pending.remove(&exchange).unwrap();
         if let Some(base) = p.base.take() {
+            if let Some(next) = additional_alias(&m, &p.question, &mut p.aliases) {
+                return self.continue_additional(Discovered::from_pending(p), next, base, now, rng);
+            }
             let b = augment(&base, &m, &p.question.name).unwrap_or(base);
             return self.finish(p, b, now);
         }
@@ -906,4 +912,45 @@ pub fn registration_reply(
         client,
         bytes: m.encode()?,
     })
+}
+
+fn alias_charge(names: &BTreeSet<Name>) -> usize {
+    names
+        .iter()
+        .map(|n| 512 + n.canonical().len() + 128 * n.labels().len())
+        .sum()
+}
+// Seventeen names permit sixteen CNAME edges over all A-lookup responses.
+fn additional_alias(m: &Message, q: &Question, seen: &mut BTreeSet<Name>) -> Option<Question> {
+    if rcode(m) != 0 || q.kind != 1 {
+        return None;
+    }
+    let mut name = q.name.clone();
+    loop {
+        let mut targets = m
+            .answers
+            .iter()
+            .filter(|r| r.name == name && r.kind == 5)
+            .filter_map(|r| {
+                if let Rdata::Name(n) = &r.data {
+                    Some(n)
+                } else {
+                    None
+                }
+            });
+        let Some(target) = targets.next() else {
+            break;
+        };
+        if targets.any(|n| n != target) || seen.len() >= 17 || !seen.insert(target.clone()) {
+            return None;
+        }
+        name = target.clone();
+    }
+    (name != q.name && !m.answers.iter().any(|r| r.name == name && r.kind == 1)).then_some(
+        Question {
+            name,
+            kind: 1,
+            class: q.class,
+        },
+    )
 }

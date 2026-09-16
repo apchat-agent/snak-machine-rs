@@ -7,6 +7,7 @@ pub(super) struct Discovered {
     pub(super) waiters: Vec<Waiter>,
     base: Option<Vec<u8>>,
     forward_cache: bool,
+    aliases: BTreeSet<Name>,
 }
 impl Discovered {
     pub(super) fn from_pending(p: Pending) -> Self {
@@ -18,12 +19,14 @@ impl Discovered {
             waiters: p.waiters,
             base: p.base,
             forward_cache: p.forward_cache,
+            aliases: p.aliases,
         }
     }
     pub(super) fn charge(&self) -> usize {
         4096 + self.key.len()
             + 16 * self.original.original().len()
             + 16 * self.base.as_ref().map_or(0, Vec::len)
+            + alias_charge(&self.aliases)
             + 1024 * self.waiters.len()
     }
 }
@@ -79,6 +82,7 @@ impl Resolver {
             waiters: vec![waiter],
             base: None,
             forward_cache: false,
+            aliases: BTreeSet::new(),
         };
         // Credit covers the proxy's translated names and job before mutating it.
         if self.pending_bytes() + p.charge() + 8192 > BYTES {
@@ -143,6 +147,10 @@ impl Resolver {
                 answer.id = p.original.id;
                 answer.flags |= p.original.flags & 0x110;
                 let bytes = if let Some(base) = p.base.take() {
+                    if let Some(next) = additional_alias(&answer, &p.question, &mut p.aliases) {
+                        out.extend(self.continue_additional(p, next, base, now, rng)?);
+                        continue;
+                    }
                     augment(&base, &answer, &p.question.name).unwrap_or(base)
                 } else {
                     let bytes = answer.encode()?;
@@ -176,6 +184,9 @@ impl Resolver {
         now: u64,
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Action>> {
+        if p.aliases.is_empty() {
+            p.aliases.insert(question.name.clone());
+        }
         if let Some(registry) = self
             .registry()
             .filter(|r| !r.records(&question.name, 255, now).is_empty())
@@ -223,6 +234,7 @@ impl Resolver {
             attempt: 0,
             base: Some(base),
             forward_cache: p.forward_cache,
+            aliases: p.aliases,
         };
         self.pending.insert(query.exchange, pending);
         Ok(vec![Action::Upstream(query)])

@@ -1262,3 +1262,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   DS-with-DO exception, and terminate a self-referential multicast alias.
   No dependency; the flag records answer provenance for the planned common
   augmentation pipeline.
+- S15 alias-chain RED `3b7aeae` stops at the first A-lookup alias. GREEN
+  passes **300 tests**, all-feature clippy, both builds, formatting and the
+  aarch64-apple-darwin all-target/pcap check. Canonical A lookup follows at most
+  sixteen alias edges across responses and terminates cycles; the visited-name
+  set has a tested seventeen-name bound and explicit byte charging. A signed
+  IPv4-only SRP registration confirms the same empty-AAAA augmentation behavior.
+  No dependency; this bounded path implements the planned cyclic-query handling.
+- S15 is complete. Its native UDP/DoT paths, reducer/wire translation, metadata,
+  denial proofs, response timing, cancellation, shared capacity, local
+  publication lookup, rate limiting, SRP augmentation and cross-view aliases
+  are exercised rootlessly. **needs privileged acceptance:** external discovery
+  clients and real-interface multicast/DNS/DoT interoperability. Complete
+  inventory/readiness and system-wide hostile-load audits follow S16/S22–S24.
