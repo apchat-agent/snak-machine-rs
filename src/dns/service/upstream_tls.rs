@@ -18,10 +18,10 @@ impl Pool {
     pub fn count(&self) -> usize {
         self.connections.len()
     }
-    pub fn next_deadline(&self) -> Option<u64> {
+    pub fn next_deadline(&self, now: u64) -> Option<u64> {
         self.connections
             .values()
-            .filter_map(|c| c.stream.tls.as_ref().map(|s| s.deadline()))
+            .filter_map(|c| c.stream.next_deadline(now))
             .min()
     }
     fn open(
@@ -100,6 +100,10 @@ impl Pool {
         let keys: Vec<_> = self.connections.keys().cloned().collect();
         let mut out = vec![];
         for key in keys {
+            if !r.live_tls(key.0, key.1, &key.2, now) {
+                out.extend(self.drop_connection(&key, r, stack, now, rng)?);
+                continue;
+            }
             let c = self.connections.get_mut(&key).unwrap();
             c.inflight.retain(|_, exchange| {
                 r.queries()
@@ -139,7 +143,8 @@ impl Pool {
             }
             // Never reuse a DNS ID on this TLS connection; drain before reconnecting.
             if c.next_id > u32::from(u16::MAX) && c.inflight.is_empty() {
-                out.extend(self.drop_connection(&key, r, stack, now, rng)?);
+                let c = self.connections.remove(&key).unwrap();
+                stack.abort(c.id);
             }
         }
         Ok(out)

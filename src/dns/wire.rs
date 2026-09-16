@@ -936,6 +936,9 @@ impl TcpFrames {
     pub fn allocated(&self) -> usize {
         self.partial.capacity() + self.ready.iter().map(Vec::capacity).sum::<usize>()
     }
+    pub fn ready(&self) -> bool {
+        !self.ready.is_empty()
+    }
     pub fn buffered(&self) -> usize {
         self.bytes
     }

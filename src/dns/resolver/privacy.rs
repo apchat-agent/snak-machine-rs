@@ -8,6 +8,9 @@ impl Resolver {
         now: u64,
     ) -> io::Result<()> {
         self.set_upstreams(origins)?;
+        self.pending.retain(|_, p| {
+            matches!(p.purpose, Purpose::Client) || (!explicit && origins.contains(&p.query.origin))
+        });
         self.privacy
             .get_or_insert_with(Policy::default)
             .sync(origins, explicit, now)
@@ -61,6 +64,17 @@ impl Resolver {
             }
         }
         Ok(tls)
+    }
+    pub(crate) fn live_tls(
+        &self,
+        origin: SocketAddr,
+        endpoint: SocketAddr,
+        name: &str,
+        now: u64,
+    ) -> bool {
+        self.privacy
+            .as_ref()
+            .is_some_and(|p| p.live_tls(origin, endpoint, name, now))
     }
     pub(crate) fn tls_failed(&mut self, origin: SocketAddr, endpoint: SocketAddr, now: u64) {
         if let Some(p) = &mut self.privacy {

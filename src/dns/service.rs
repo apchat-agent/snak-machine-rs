@@ -73,12 +73,8 @@ impl Service {
         (!self.replies.is_empty())
             .then_some(now)
             .into_iter()
-            .chain(self.upstream_tls.next_deadline())
-            .chain(
-                self.incoming
-                    .values()
-                    .filter_map(|s| s.tls.as_ref().map(|t| t.deadline())),
-            )
+            .chain(self.upstream_tls.next_deadline(now))
+            .chain(self.incoming.values().filter_map(|s| s.next_deadline(now)))
             .min()
     }
     pub fn poll(
@@ -90,11 +86,12 @@ impl Service {
     ) -> io::Result<()> {
         r.reset_crypto_budget();
         self.queue(r.tick(now, rng)?);
-        for probe in r.poll_privacy(now, rng)? {
-            self.upstream_tls.probe(probe, r, &mut stacks[0], now, rng);
-        }
+        let probes = r.poll_privacy(now, rng)?;
         let actions = self.upstream_tls.poll(r, &mut stacks[0], now, rng)?;
         self.queue(actions);
+        for probe in probes {
+            self.upstream_tls.probe(probe, r, &mut stacks[0], now, rng);
+        }
         self.poll_tcp(r, stacks, now, rng)?;
         let old: Vec<_> = self
             .udp
@@ -348,6 +345,17 @@ impl Stream {
             tx: VecDeque::new(),
             failed: false,
             tls: None,
+        }
+    }
+    fn next_deadline(&self, now: u64) -> Option<u64> {
+        if self.failed
+            || self.frames.ready()
+            || self.tls.as_ref().is_some_and(|t| t.readable())
+                && self.available() + self.frames.allocated() > self.frames.buffered()
+        {
+            Some(now)
+        } else {
+            self.tls.as_ref().map(|t| t.deadline())
         }
     }
     fn encrypted(config: std::sync::Arc<rustls::ServerConfig>, now: u64) -> io::Result<Self> {

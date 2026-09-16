@@ -117,6 +117,9 @@ impl Session {
             handshake_bytes: 0,
         })
     }
+    pub fn readable(&self) -> bool {
+        self.plaintext_pending > 0
+    }
     pub fn handshaking(&self) -> bool {
         self.connection.is_handshaking()
     }

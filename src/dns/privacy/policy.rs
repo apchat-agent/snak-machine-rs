@@ -94,6 +94,21 @@ impl Policy {
         }
         Ok(())
     }
+    pub(crate) fn live_tls(
+        &self,
+        origin: SocketAddr,
+        endpoint: SocketAddr,
+        name: &str,
+        now: u64,
+    ) -> bool {
+        if self.explicit {
+            return false;
+        }
+        self.endpoints.get(&origin).is_some_and(|e| {
+            e.working.as_ref().is_some_and(|d| d.endpoint == endpoint && d.server_name == name && d.expires > now)
+            || matches!(&e.tls, TlsState::Waiting { probe, until } if probe.endpoint == endpoint && probe.server_name == name && *until > now && probe.expires > now)
+        })
+    }
     pub fn route(&self, origin: SocketAddr, now: u64) -> Route {
         if self.explicit {
             return Route::Plain {

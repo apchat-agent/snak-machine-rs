@@ -1398,3 +1398,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Pool keys, pending probe, monotonic stream IDs and inflight exchange indexes
   implement the planned connection owner; inflight bookkeeping counts against
   each stream's byte budget. No dependency. Lifecycle/bounds checks follow.
+- S17 lifecycle RED `a76d468` confirms missing buffered-work signals and
+  resolver cleanup. GREEN passes **327 tests** and all-feature clippy. Removing
+  resolver origins cancels control transactions; switching to explicit DNS
+  discards automatic TLS streams. The pool admits eight origins, rejects a
+  ninth atomically and releases/reuses all slots through removal/re-addition.
+  Completed DNS frames and unread TLS plaintext now schedule immediate work;
+  an incomplete frame alone does not. A drained TLS stream can retire its ID
+  space without reporting a false transport failure. No field or dependency.
