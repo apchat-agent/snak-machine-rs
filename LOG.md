@@ -1707,3 +1707,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   sessions without refresh. MTU pair and IPv6 fragmentation threshold implement
   PLAN2's PMTU state; no new table or dependency. Cross-link aggregate capacity
   and additional hostile fragment/header cases follow before S21 closure.
+- Aggregate-bound RED `d91f3e1` demonstrates 64 retained endpoint contexts
+  split between links still admitting a new NAT fragment context. GREEN passes
+  **397 tests** and all-feature clippy. Both endpoint stacks, mDNS and NAT now
+  share one 64-context/4 MiB owner with ingress-link keys; unrelated links cannot
+  combine fragments. The shared handle and link discriminator enforce PLAN2's
+  original aggregate bound, replacing the earlier per-link allocation.
+- Impossible IPv4 datagrams now include their header in the 65535-byte bound.
+  Reserved fragment bits, repeated/post-fragment extension headers and
+  inconsistent final lengths are rejected before translation. No dependency.

@@ -210,6 +210,12 @@ impl<I: PacketIo> Driver<I> {
             crate::service_io::stack::Stack::new(now, rng)?,
             crate::service_io::stack::Stack::new(now, rng)?,
         ]);
+        let pool = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::ip_reassembly::Reassembler::default(),
+        ));
+        for (scope, stack) in self.stacks.as_mut().unwrap().iter_mut().enumerate() {
+            stack.set_reassembly(pool.clone(), scope as u8);
+        }
         let ports = self.stacks.as_ref().unwrap()[0].ports();
         use crate::service_io::ports::Owner;
         self.control_ports = Some([

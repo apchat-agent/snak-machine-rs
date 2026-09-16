@@ -9,7 +9,7 @@ pub(crate) struct Datagram {
     pub packet: Vec<u8>,
     pub fragment_id: Option<u32>,
 }
-type Key = (IpAddr, IpAddr, u8, u32);
+type Key = (u8, IpAddr, IpAddr, u8, u32);
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid IP fragment")
 }
@@ -49,17 +49,23 @@ impl Reassembler {
         self.contexts.retain(|_, c| now < c.deadline);
     }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<Option<Vec<u8>>> {
-        Ok(self.input_datagram(b, now)?.map(|d| d.packet))
+        Ok(self.input_scoped(b, now, 0)?.map(|d| d.packet))
     }
-    pub(crate) fn input_datagram(&mut self, b: &[u8], now: u64) -> io::Result<Option<Datagram>> {
+    pub(crate) fn input_scoped(
+        &mut self,
+        b: &[u8],
+        now: u64,
+        scope: u8,
+    ) -> io::Result<Option<Datagram>> {
         self.expire(now);
-        let Some(f) = parse(b)? else {
+        let Some(mut f) = parse(b)? else {
             return Ok(Some(Datagram {
                 packet: b.to_vec(),
                 fragment_id: None,
             }));
         };
-        let id = f.key.3;
+        f.key.0 = scope;
+        let id = f.key.4;
         if f.offset == 0 && !f.more {
             return complete(f.header, f.payload).map(|packet| {
                 Some(Datagram {
@@ -69,7 +75,12 @@ impl Reassembler {
             });
         }
         let end = f.offset.checked_add(f.payload.len()).ok_or_else(invalid)?;
-        if f.payload.is_empty() || end > 65535 || (f.more && f.payload.len() % 8 != 0) {
+        let overhead = if f.header[0] >> 4 == 6 {
+            f.header.len() - 40
+        } else {
+            f.header.len()
+        };
+        if f.payload.is_empty() || end + overhead > 65535 || (f.more && f.payload.len() % 8 != 0) {
             return Err(invalid());
         }
         if let Some(c) = self.contexts.get(&f.key) {
@@ -154,6 +165,7 @@ fn parse(b: &[u8]) -> io::Result<Option<Fragment<'_>>> {
             header[10..12].fill(0);
             Ok(Some(Fragment {
                 key: (
+                    0,
                     p.source.into(),
                     p.destination.into(),
                     p.protocol,
@@ -179,7 +191,7 @@ fn parse(b: &[u8]) -> io::Result<Option<Fragment<'_>>> {
                         return Err(invalid());
                     }
                     let flags = u16::from_be_bytes([b[at + 2], b[at + 3]]);
-                    if flags & 6 != 0 || b[at] == 44 {
+                    if flags & 6 != 0 || [0, 43, 44, 51, 60].contains(&b[at]) {
                         return Err(invalid());
                     }
                     let mut header = b[..at].to_vec();
@@ -187,6 +199,7 @@ fn parse(b: &[u8]) -> io::Result<Option<Fragment<'_>>> {
                     header[4..6].fill(0);
                     return Ok(Some(Fragment {
                         key: (
+                            0,
                             e.source.into(),
                             e.destination.into(),
                             0,

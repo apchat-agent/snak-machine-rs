@@ -58,7 +58,8 @@ pub struct Stack {
     connections: BTreeMap<usize, Connection>,
     next_id: usize,
     now: u64,
-    reassembly: crate::ip_reassembly::Reassembler,
+    reassembly: std::rc::Rc<std::cell::RefCell<crate::ip_reassembly::Reassembler>>,
+    reassembly_scope: u8,
     fragment_id: u32,
     connection_limit: usize,
     interface_seed: u64,
@@ -84,11 +85,20 @@ impl Stack {
             next_id: 0,
             now,
             reassembly: Default::default(),
+            reassembly_scope: 0,
             fragment_id: u32::from_le_bytes(seed[..4].try_into().unwrap()),
             connection_limit: CONNECTIONS,
             interface_seed: u64::from_le_bytes(seed),
             mtu_until: None,
         })
+    }
+    pub(crate) fn set_reassembly(
+        &mut self,
+        pool: std::rc::Rc<std::cell::RefCell<crate::ip_reassembly::Reassembler>>,
+        scope: u8,
+    ) {
+        self.reassembly = pool;
+        self.reassembly_scope = scope;
     }
     pub fn set_addresses(&mut self, addresses: &[IpAddr]) -> io::Result<()> {
         if addresses.len() > 32
@@ -418,14 +428,19 @@ impl Stack {
     // The runtime validates AIL mDNS ownership/hop/source before using the
     // same reassembly pool as other local AIL service traffic.
     pub(crate) fn reassemble_mdns(&mut self, b: &[u8], now: u64) -> io::Result<Option<Vec<u8>>> {
-        self.reassembly.input(b, now)
+        self.reassembly
+            .borrow_mut()
+            .input_scoped(b, now, self.reassembly_scope)
+            .map(|v| v.map(|d| d.packet))
     }
     pub(crate) fn reassemble_nat(
         &mut self,
         b: &[u8],
         now: u64,
     ) -> io::Result<Option<crate::ip_reassembly::Datagram>> {
-        self.reassembly.input_datagram(b, now)
+        self.reassembly
+            .borrow_mut()
+            .input_scoped(b, now, self.reassembly_scope)
     }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<()> {
         // Check ownership before retaining even the first fragment.
@@ -453,7 +468,12 @@ impl Stack {
         if !self.addresses.contains(&destination) {
             return Err(invalid());
         }
-        let Some(packet) = self.reassembly.input(b, now)? else {
+        let Some(packet) = self
+            .reassembly
+            .borrow_mut()
+            .input_scoped(b, now, self.reassembly_scope)
+            .map(|v| v.map(|d| d.packet))?
+        else {
             return Ok(());
         };
         let b = packet.as_slice();
@@ -564,7 +584,7 @@ impl Stack {
             self.mtu_until = None;
             self.set_mtu(1280, now)?;
         }
-        self.reassembly.expire(now);
+        self.reassembly.borrow_mut().expire(now);
         // Reap elapsed application/handshake deadlines before the stack can retransmit.
         let timed_out: Vec<_> = self
             .connections
@@ -702,7 +722,7 @@ impl Stack {
             .map(|t| t.total_millis().max(0) as u64)
             .into_iter()
             .chain(tcp)
-            .chain(self.reassembly.next_deadline())
+            .chain(self.reassembly.borrow().next_deadline())
             .chain(self.mtu_until)
             .min()
             .unwrap_or(u64::MAX)
