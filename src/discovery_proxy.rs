@@ -1,8 +1,10 @@
 //! RFC 8766 authoritative view of a single AIL multicast namespace.
+mod query;
 use crate::{
     dns::wire::{Message, Name, Question, Rdata, Record},
     mdns::advertise::{replace_suffix, rewrite_data, within},
 };
+pub use query::{Completion, Proxy};
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr},

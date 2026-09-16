@@ -1200,3 +1200,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   RFC 6762 6.1 forbids it, so generated mDNS NSEC now clears that bit while
   unicast NSEC includes it. Every prior assertion remains unchanged and passes.
   No new dependency; proof work/type state implements the planned conversion.
+- S15 query RED `912ce5a` confirms the missing on-demand reducer. GREEN passes
+  **287 tests** and all-feature clippy. Queries share the existing mDNS cache,
+  return cached answers immediately without multicast, finish on the first
+  positive/NSEC packet, or cancel after six seconds with NOERROR/SOA negative
+  data. DNS-SD additions are derived from that cache; services with only known
+  unusable addresses stay hidden until reachability changes.
+- Duplicate questions share one job, and cancellation stops the underlying
+  multicast question. The tested 128-job bound and per-job byte credit prevent
+  unbounded remote work. Output expansion is capped at 512 records, 4 MiB of
+  charged work and sixteen completions per poll; a continuation flag schedules
+  remaining work. These query ID/deadline/cancellation/credit fields implement
+  the planned scheduler; no dependency. Native/shared-resolver admission and
+  additional output/rate-bound fixtures follow.
