@@ -134,7 +134,14 @@ impl Proxy {
                 continue;
             }
             let mut answer =
-                self.answer(&job.query, &mut querier.cache, local, now, now >= job.until)?;
+                match self.answer(&job.query, &mut querier.cache, local, now, now >= job.until) {
+                    Ok(answer) => answer,
+                    Err(_) => {
+                        let mut answer = Message::new(0, 0x8402);
+                        answer.questions.push(job.query.original.clone());
+                        Some(answer)
+                    }
+                };
             if answer.is_none() && job.multicast.is_none() {
                 match querier.start(job.query.multicast.clone(), job.until, now, rng) {
                     Ok(id) => job.multicast = Some(id),

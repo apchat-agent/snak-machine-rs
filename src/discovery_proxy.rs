@@ -309,6 +309,21 @@ impl Zone {
         }
         let mut m = Message::new(0, 0x8400);
         m.questions.push(q.clone());
+        if apex && matches!(q.kind, 47 | 50) {
+            let mut types = self
+                .metadata(&Question {
+                    kind: 255,
+                    ..q.clone()
+                })?
+                .unwrap()
+                .answers;
+            for record in &mut types {
+                record.name = mapped.multicast.name.clone();
+            }
+            m.answers
+                .push(self.denial(&mapped, &types, &Reachability::default())?);
+            return Ok(Some(m));
+        }
         if apex && matches!(q.kind, 2 | 255) {
             m.answers.extend(self.nameservers.iter().map(|n| Record {
                 name: domain.clone(),

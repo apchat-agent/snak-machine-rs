@@ -1232,3 +1232,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   full configurable zone/inventory composition follows in S16. No dependency.
   **needs privileged acceptance:** external DNS/DoT clients and AIL multicast
   reception on actual interfaces; these tests use the real stacks with MemoryIo.
+- S15 bounds RED `c6e5eb2` exposes missing apex proofs and a peer-induced
+  translation error escaping the query reducer. GREEN passes **294 tests**
+  and all-feature clippy. Apex NSEC/NSEC3 derives NS/SOA types locally; a
+  legal multicast name that cannot fit the longer proxy suffix returns SERVFAIL
+  and stops its multicast job. Tests also exercise the 512-record output bound
+  and sixteen-completion poll continuation. No new field or dependency.
