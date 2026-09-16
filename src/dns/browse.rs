@@ -39,6 +39,9 @@ fn owner(context: &Name, legacy: bool) -> io::Result<Name> {
     Name::from_labels(labels)
 }
 impl Browser {
+    pub(crate) fn set_origins(&mut self, origins: &[SocketAddr], now: u64) -> io::Result<()> {
+        self.sync(origins, &self.contexts.clone(), now)
+    }
     pub fn counts(&self) -> (usize, usize) {
         (self.active.len(), self.evidence.len())
     }

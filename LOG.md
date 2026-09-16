@@ -1435,3 +1435,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   removal/re-addition. Sweep cursor/deadline, monotonically numbered probes and
   source/context/target evidence implement the planned enumeration owner;
   contexts never become advertised domains without PTR evidence. No dependency.
+- S17 enumeration integration RED `454771c` confirms missing control dispatch
+  and merged responses. GREEN passes **336 tests** and all-feature clippy.
+  Browsing queries share the resolver's 128 pending/4 MiB admission, retain
+  source/transport/question validation and survive unrelated client departure.
+  Learned PTRs merge into local inventory with remaining TTL, never ordinary
+  forwarding cache; endpoint/context removal cancels pending evidence. The
+  new transaction-purpose variant records the planned internal owner. No
+  dependency. Native scheduling and end-to-end encrypted browsing follow.

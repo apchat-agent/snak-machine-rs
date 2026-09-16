@@ -1,4 +1,5 @@
 //! Bounded forwarding transactions. Packet and stream adapters execute the returned actions.
+mod browse;
 mod discovery;
 mod privacy;
 use super::wire::{Context, Message, Name, Question, Rdata, Record};
@@ -68,6 +69,7 @@ struct Waiter {
 enum Purpose {
     Client,
     Ddr(u64),
+    Browse(u64),
 }
 struct Pending {
     purpose: Purpose,
@@ -101,6 +103,7 @@ struct Cache {
     sets: usize,
 }
 pub struct Resolver {
+    browsing: super::browse::Browser,
     additional_a: bool,
     privacy: Option<super::privacy::Policy>,
     zones: Option<super::inventory::Zones>,
@@ -122,6 +125,7 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(additional_a: bool) -> Self {
         Self {
+            browsing: Default::default(),
             additional_a,
             privacy: None,
             zones: None,
@@ -176,7 +180,11 @@ impl Resolver {
                 Name::from_labels(q.name.labels()[3..].to_vec())
                     .is_ok_and(|n| n == super::inventory::reverse_network(*p))
             });
-        inventory.answer_in_context(q, now, reverse)
+        let mut answer = inventory.answer_in_context(q, now, reverse)?;
+        if let Some(m) = &mut answer {
+            self.merge_browsing(m, now);
+        }
+        Ok(answer)
     }
     pub fn set_service_ready(
         &mut self,
@@ -396,6 +404,7 @@ impl Resolver {
             .map(|p| p.retry.min(p.deadline))
             .chain(self.cache.values().map(|c| c.expires))
             .chain(self.privacy.as_ref().and_then(|p| p.next_deadline()))
+            .chain(self.browsing.next_deadline())
             .chain(self.discovery.as_ref().and_then(|d| d.next_deadline(0)))
             .chain(self.registry().and_then(|r| r.next_deadline()))
             .chain(
@@ -749,6 +758,12 @@ impl Resolver {
                 if let Ok(m) = Message::parse(&b, Context::Unicast) {
                     let _ = policy.complete_ddr(token, &m, now, rng);
                 }
+            }
+            return Ok(vec![]);
+        }
+        if let Purpose::Browse(token) = p.purpose {
+            if let Ok(m) = Message::parse(&b, Context::Unicast) {
+                let _ = self.browsing.complete(token, p.query.origin, &m, now);
             }
             return Ok(vec![]);
         }

@@ -8,8 +8,11 @@ impl Resolver {
         now: u64,
     ) -> io::Result<()> {
         self.set_upstreams(origins)?;
-        self.pending.retain(|_, p| {
-            matches!(p.purpose, Purpose::Client) || (!explicit && origins.contains(&p.query.origin))
+        self.browsing.set_origins(origins, now)?;
+        self.pending.retain(|_, p| match p.purpose {
+            Purpose::Client => true,
+            Purpose::Ddr(_) => !explicit && origins.contains(&p.query.origin),
+            Purpose::Browse(id) => self.browsing.live(id, now),
         });
         self.privacy
             .get_or_insert_with(Policy::default)
