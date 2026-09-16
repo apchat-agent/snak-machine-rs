@@ -46,3 +46,58 @@ fn review2_r2_1_pref64_scaled_lifetime_rounds_up_per_rfc_8781() {
     assert_eq!(&wire[..4], &[38, 2, 0x02, 0x70]);
     assert_eq!(scaled_lifetime(&wire), 624);
 }
+
+/// R2-2: ledger row R096 ("stub DHCPv6 service is NOT RECOMMENDED") is
+/// satisfied by absence, so its evidence must cite the substantive stub
+/// listener setup (DNS 53/853 only) rather than a bare module declaration.
+#[test]
+fn review2_r2_2_r096_evidence_cites_stub_dns_listeners_not_module_declarations() {
+    let tsv = std::fs::read_to_string("tests/requirements.tsv").unwrap();
+    let row = tsv
+        .lines()
+        .find(|l| l.starts_with("R096\t"))
+        .expect("R096 ledger row");
+    let cols: Vec<&str> = row.split('\t').collect();
+    assert_eq!(cols[1], "DONE", "R096 must remain implemented");
+    let citations: Vec<&str> = cols[2].split(';').filter(|c| !c.is_empty()).collect();
+    assert!(
+        !citations.is_empty(),
+        "R096 needs code evidence for the absence claim"
+    );
+    for cite in &citations {
+        let (path, line) = cite.rsplit_once(':').unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let source = text
+            .lines()
+            .nth(line.parse::<usize>().unwrap() - 1)
+            .unwrap();
+        let trimmed = source.trim_start();
+        assert!(
+            !trimmed.starts_with("pub mod ") && !trimmed.starts_with("mod "),
+            "R096 evidence {cite} cites a module declaration, not evidence: {source:?}"
+        );
+    }
+    let listeners: Vec<&str> = citations
+        .iter()
+        .copied()
+        .filter(|c| c.starts_with("src/runtime.rs:"))
+        .collect();
+    assert!(
+        !listeners.is_empty(),
+        "R096 must cite the stub listener setup (DNS 53/853 only) in src/runtime.rs"
+    );
+    for cite in &listeners {
+        let (path, line) = cite.rsplit_once(':').unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let source = text
+            .lines()
+            .nth(line.parse::<usize>().unwrap() - 1)
+            .unwrap();
+        assert!(
+            source.contains("listen_udp(53)")
+                || source.contains("listen_tcp(53)")
+                || source.contains("listen_tcp_buffered(853"),
+            "R096 listener citation {cite} is not a DNS 53/853 listener: {source:?}"
+        );
+    }
+}
