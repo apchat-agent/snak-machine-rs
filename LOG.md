@@ -1291,3 +1291,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   different canonical namespace is rejected explicitly, not silently remapped.
   The namespace setting and AP zone field implement PLAN2's configured views;
   no dependency. Native defaults, inventory, readiness and CLI follow.
+- S16 inventory RED `e990651` confirms missing browsing/service records.
+  GREEN passes **306 tests** and all-feature clippy. The static inventory
+  answers local/search/reverse-context enumeration, both legacy browsing
+  zones, the single recommended default browsing domain and canonical
+  registration domain, plus scoped SOA/NS and router addresses.
+- Registrar PTR/instance SRV/TXT/address records and RFC 9665's direct SRV
+  bootstrap owners use actual ready ports. Address loss, TLS unavailability
+  and renumbering remove stale endpoints. Address/context lists have tested
+  bounds of 32/64, atomic failed admission, and expanded-name validation.
+  Inventory endpoint/context fields hold readiness/configuration inputs;
+  derived records are not a second authoritative zone cache. No dependency.
+- PLAN2 ADDENDUM 6 corrects `_dnssd-srp._udp` to `_dnssd-srp._tcp`, citing
+  draft sections 5.5.2/5.5.3/7 and RFC 9665's registered service transports.
+  UDP UPDATE remains supported. Native resolver/readiness integration follows.

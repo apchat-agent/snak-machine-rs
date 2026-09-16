@@ -1476,3 +1476,14 @@ defines the checksum but no partial-word rule. Keep this convention, like the
 experimental option code 65002, explicit in final interoperability limitations
 until the referenced specification defines it. No external acceptance is
 claimed for Ed448 TSR checksums.
+
+## ADDENDUM 6 — Registrar service transport label (S16)
+
+Section 2.2's `_dnssd-srp._udp` label is incorrect. The registrar publishes
+`_dnssd-srp._tcp` and `_dnssd-srp-tls._tcp`, including the direct SRV bootstrap
+owners specified by RFC 9665 section 2 and the service registrations in
+sections 10.4.1–10.4.2. DNS-SD instance PTR/SRV/TXT records use those same
+registered TCP service types. Plain DNS UPDATE remains accepted over UDP
+as well as TCP. This implements draft-ietf-snac-simple-12 sections 5.5.2,
+5.5.3 and 7, which require the referenced SRP service names and DoT support;
+the spelling correction changes no listener transport support.
