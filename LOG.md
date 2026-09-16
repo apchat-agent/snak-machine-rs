@@ -1915,3 +1915,41 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - No push. The completion marker counts all task-6 commits from `b7e0ff7`
   through the final README commit, including S01 and the superseded earlier
   documentation commit; no committed step was redone or squashed.
+
+## Task 8 — REVIEW2 response
+
+- REVIEW2 (committed as `e80eb96`) raised no blocker or major findings: two
+  MINOR findings and one NIT. Both MINORs are fixed with red/green pairs whose
+  failing tests live in the new `tests/review2.rs`.
+- RED `c0c43bc` fails because `Pref64::encode` stored `floor(lifetime/8)` in
+  the 13-bit Scaled Lifetime field (REVIEW2 R2-1 repro: 618 s encoded 616 s).
+  GREEN `23fa219` rounds up per RFC 8781 §4.2 (`min(65528).div_ceil(8) << 3`),
+  so 618 s encodes 624 s and an advertisement never expires before its backing
+  validity. The s18 wire test is renamed to `..._round_up_backing_lifetime_...`
+  with exact round-up equality; ledger rows R074 in `tests/requirements.tsv`
+  and REVIEW.md cite the updated evidence. The internal announcement
+  derivation (`remaining()` in `src/nat64/selection.rs`) still floors for
+  PREF64/RIO parity, so current wire output is unchanged; the encoder contract
+  is what the SHOULD governs.
+- RED `bac9c46` fails because ledger row R096 cited `src/lib.rs:4`, a module
+  declaration, as its evidence (REVIEW2 R2-2). GREEN `ca2162a` repoints R096 at
+  the substantive absence proof — the stub listener setup `src/runtime.rs:226`
+  (UDP 53), `:227` (TCP 53) and `:229` (DoT 853) plus `src/wire.rs:454` (stub
+  M/O clear) — in both `tests/requirements.tsv` and REVIEW.md; the regression
+  test enforces substantive listener citations.
+- The R2-3 NIT (DNS wire admits identical duplicate records) is DEFERRED with
+  the reviewer's own "No change requested" reason: RFC 1035 permits duplicates,
+  the resolver/cache deduplicates on insertion and the SRP validator applies
+  stricter uniqueness checks.
+- [REVIEW2-RESPONSE.md](REVIEW2-RESPONSE.md) records every finding as
+  FIXED (hash) or DEFERRED (reason) and reproduces the conformance matrix with
+  final statuses: 80 OK (read), 22 OK (spot), 11 N/A, zero PARTIAL/MISSING.
+- Validation after `ca2162a`: `cargo test --all-features` **434 passed, 0
+  failed**; `cargo fmt --check` clean; all-target/all-feature clippy with
+  `-D warnings` clean; `cargo check --target aarch64-apple-darwin --all-targets
+  --features pcap` passes; `python3 scripts/conformance_audit.py` reports
+  `requirements=103, supplemental=10, keyword_lines=112, unfinished=0`
+  (`--require-complete` and the REVIEW.md matrix form also pass); and
+  `python3 scripts/dependency_audit.py` is clean (111 active pairs on
+  aarch64-apple-darwin with default features; 113/113/112 with `--locked
+  --all-features`). README and STATUS updated; no push.

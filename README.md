@@ -7,10 +7,12 @@ discovery and advertising proxies, IPv4 acquisition and stateful NAT64.
 
 [PLAN2.md](PLAN2.md) steps S01–S24 are implemented. [LOG.md](LOG.md) records
 separate red/green commits, design addenda and validation;
-[REVIEW.md](REVIEW.md) and [tests/requirements.tsv](tests/requirements.tsv)
-map all 103 requirements and ten supplemental commitments to current code and
-runnable tests. Independent review and physical interoperability acceptance
-remain outstanding; see [STATUS.md](STATUS.md).
+[REVIEW2.md](REVIEW2.md), [REVIEW2-RESPONSE.md](REVIEW2-RESPONSE.md) and
+[tests/requirements.tsv](tests/requirements.tsv) map all 103 requirements and
+ten supplemental commitments to current code and runnable tests. The
+independent review returned COMPLETE and both of its MINOR findings are fixed;
+physical interoperability acceptance remains outstanding; see
+[STATUS.md](STATUS.md).
 
 ## Build and verify
 
@@ -23,12 +25,12 @@ cargo build --locked --features pcap
 cargo test --locked --all-features
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-python3 scripts/conformance_audit.py --matrix REVIEW.md --require-complete
+python3 scripts/conformance_audit.py --require-complete
 python3 scripts/dependency_audit.py --locked --all-features
 cargo run -- --help
 ```
 
-The suite has **432 Rust tests** plus seven Python auditor cases invoked by
+The suite has **434 Rust tests** plus seven Python auditor cases invoked by
 one Rust test. Tests use memory Ethernet peers, scripted time/randomness and
 loopback sockets on unprivileged ports. No real interface or external DNS
 service is required. Focused integrated scenarios, deterministic parser

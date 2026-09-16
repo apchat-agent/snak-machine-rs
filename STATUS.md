@@ -24,7 +24,7 @@ supersedes the S01-only report in commit `842cba8`.
   ULA rotation retains bounded retiring translation domains; disabling NAT64
   withdraws service and blocks known NAT destinations without stopping DNS/SRP.
   Platform carrier/bridge/descriptor paths exist with rootless logic tests.
-- Both default and all-feature suites pass **432 Rust tests**; one Rust test
+- Both default and all-feature suites pass **434 Rust tests**; one Rust test
   also runs **seven Python auditor cases**. No required test is ignored.
   Production packet paths are exercised through memory Ethernet peers;
   loopback TCP/TLS fixtures use unprivileged ports. Integrated scenarios
@@ -33,8 +33,12 @@ supersedes the S01-only report in commit `842cba8`.
   count/byte-bound soak tests cover admission, rejection and reclamation.
 - The complete conformance auditor passes: **103 requirements**, ten
   supplemental commitments, **112 covered keyword lines**, no unfinished
-  rows. [REVIEW.md](REVIEW.md) and [tests/requirements.tsv](tests/requirements.tsv)
-  contain current evidence; independent semantic review remains task 7.
+  rows. The independent task 7 review ([REVIEW2.md](REVIEW2.md)) returned
+  **COMPLETE**; task 8 applied both of its MINOR findings with red/green
+  commits in [tests/review2.rs](tests/review2.rs) and
+  [REVIEW2-RESPONSE.md](REVIEW2-RESPONSE.md) records every finding with the
+  final conformance matrix (zero PARTIAL/MISSING rows).
+  [tests/requirements.tsv](tests/requirements.tsv) contains current evidence.
 - Default/pcap builds, formatting and all-target/all-feature clippy with
   `-D warnings` pass. The required aarch64 macOS all-target pcap check passes.
   PLAN2 §6.1's Rust **1.85.0** formatting, clippy, default/all-feature tests,
@@ -80,7 +84,10 @@ supersedes the S01-only report in commit `842cba8`.
   remain bounded and expire or withdraw through their ownership rules.
 - Passing the evidence auditor proves inventory coverage and named evidence
   existence, not semantic correctness or external conformance certification.
-  Task 7 review and task 8 fixes remain separate work.
+  The task 7 independent review returned COMPLETE; task 8 fixed its two MINOR
+  findings (PREF64 scaled lifetime now rounds up per RFC 8781 §4.2; the R096
+  ledger row cites the stub DNS listener evidence) and deferred the R2-3 nit
+  with the reviewer's own no-change reason in REVIEW2-RESPONSE.md.
 
 [README.md](README.md) gives service launch/configuration commands and the
 privileged acceptance checklist. No push was performed.
