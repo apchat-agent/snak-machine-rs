@@ -436,3 +436,222 @@ fn s19_udp_ipv4_lease_loss_or_change_removes_reverse_bindings_and_releases_ports
     assert!(t.set_ipv4(Some("127.0.0.1".parse().unwrap())).is_err());
     assert_eq!(t.bindings.counts(), (1, 1, 1));
 }
+
+#[path = "support/nat64_driver.rs"]
+mod native;
+use wire as packets;
+
+#[test]
+fn s19_native_udp_uses_dhcp_arp_and_nd_with_independent_router_bindings() {
+    use snac_rs::Link;
+    let remote: std::net::Ipv4Addr = [198, 51, 100, 7].into();
+    let mut first = native::driver(19, [192, 0, 2, 10].into());
+    let mut second = native::driver(20, [192, 0, 2, 11].into());
+    assert_ne!(
+        first.router.nat64.local_prefix(),
+        second.router.nat64.local_prefix()
+    );
+    for d in [&mut first, &mut second] {
+        let h = native::host(d, 99);
+        let target = native::synth(d, remote);
+        native::learn(d, h, 20001);
+        d.io.output.clear();
+        native::packet(
+            d,
+            Link::Stub,
+            &packets::udp6(h, target, 50000, 9999, b"native forward"),
+            20002,
+        );
+        assert!(
+            d.io.output.iter().any(|(l, b)| *l == Link::Ail
+                && b[12..14] == [8, 6]
+                && b[38..42] == [192, 0, 2, 1]),
+            "translation must resolve the DHCP gateway by ARP"
+        );
+        assert!(
+            native::translated(d, Link::Ail, 17).is_empty(),
+            "no datagram before ARP resolution"
+        );
+        native::arp(d, [192, 0, 2, 1].into(), 20003);
+        let output = native::translated(d, Link::Ail, 17);
+        assert_eq!(output.len(), 1);
+        let p = &output[0];
+        assert_eq!(&p[12..16], &d.ipv4.address.unwrap().0.octets());
+        assert_eq!(&p[16..20], &remote.octets());
+        assert_eq!(&p[20..24], &[0xc3, 0x50, 0x27, 0x0f]);
+        assert_eq!(p[8], 63);
+        assert_eq!(packets::sum(&p[..20]), 0);
+        assert_eq!(&p[28..], b"native forward");
+        native::packet(
+            d,
+            Link::Ail,
+            &packets::udp4(
+                remote,
+                d.ipv4.address.unwrap().0,
+                9999,
+                50000,
+                b"native return",
+            ),
+            20004,
+        );
+        d.step(20004, &mut ScriptedRandom::new([])).unwrap();
+        let replies = native::translated(d, Link::Stub, 17);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(&replies[0][8..24], &target.octets());
+        assert_eq!(&replies[0][24..40], &h.octets());
+        assert_eq!(&replies[0][48..], b"native return");
+        assert_eq!(replies[0][7], 63);
+        assert!(packets::udp6_valid(&replies[0]));
+        assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (1, 1, 1));
+    }
+}
+#[test]
+fn s19_native_control_ports_ingress_scope_and_unrelated_flood_are_isolated() {
+    use snac_rs::{io::Direction, Link};
+    let mut d = native::driver(21, [192, 0, 2, 10].into());
+    for port in [68, 546, 5353] {
+        assert!(d.stack_mut(Link::Ail).unwrap().port_owned(17, port));
+    }
+    let h = native::host(&d, 99);
+    native::learn(&mut d, h, 20001);
+    let dest = native::synth(&d, [198, 51, 100, 7].into());
+    let good = packets::udp6(h, dest, 5353, 9999, b"scope");
+    let mac = d.ipv4.mac;
+    native::packet(&mut d, Link::Ail, &good, 20002);
+    for (source, destination) in [
+        (native::PEER_MAC, [2, 0, 0, 0, 0, 55]),
+        ([0; 6], d.router.links[1].mac.unwrap()),
+        ([1, 0, 0, 0, 0, 1], d.router.links[1].mac.unwrap()),
+    ] {
+        native::receive(
+            &mut d,
+            Link::Stub,
+            native::frame(destination, source, 0x86dd, &good),
+            20002,
+        );
+    }
+    let own_frame = native::frame(
+        d.router.links[1].mac.unwrap(),
+        native::PEER_MAC,
+        0x86dd,
+        &good,
+    );
+    d.accept(
+        snac_rs::io::Received {
+            link: Link::Stub,
+            kind: snac_rs::wire::FrameKind::Ethernet,
+            direction: Direction::OwnEgress,
+            bytes: own_frame,
+        },
+        20002,
+        &mut ScriptedRandom::new([]),
+    )
+    .unwrap();
+    for source in [
+        "2001:db8:bad::1".parse().unwrap(),
+        d.router.identity.link_local(Link::Stub),
+    ] {
+        native::packet(
+            &mut d,
+            Link::Stub,
+            &packets::udp6(source, dest, 5353, 9999, b"spoof"),
+            20002,
+        );
+    }
+    let broadcast = native::synth(&d, [192, 0, 2, 255].into());
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(h, broadcast, 5353, 9999, b"broadcast"),
+        20002,
+    );
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (0, 0, 0));
+    native::packet(&mut d, Link::Stub, &good, 20003);
+    native::arp(&mut d, [192, 0, 2, 1].into(), 20004);
+    let out = native::translated(&mut d, Link::Ail, 17);
+    assert_eq!(out.len(), 1);
+    let assigned = u16::from_be_bytes(out[0][20..22].try_into().unwrap());
+    assert_ne!(assigned, 5353);
+    for n in 1..=100 {
+        native::packet(
+            &mut d,
+            Link::Ail,
+            &packets::udp4(
+                [203, 0, 113, n].into(),
+                [192, 0, 2, 10].into(),
+                9999,
+                assigned,
+                b"unsolicited",
+            ),
+            20005,
+        );
+    }
+    // AIL network/broadcast/self source must not become a valid remote.
+    for source in [[192, 0, 2, 0], [192, 0, 2, 255], [192, 0, 2, 10]] {
+        native::packet(
+            &mut d,
+            Link::Ail,
+            &packets::udp4(
+                source.into(),
+                [192, 0, 2, 10].into(),
+                9999,
+                assigned,
+                b"spoof",
+            ),
+            20005,
+        );
+    }
+    d.step(20005, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 17).is_empty());
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (1, 1, 1));
+    assert_eq!(d.ipv4.mac, mac);
+}
+#[test]
+fn s19_native_hairpin_and_carrier_loss_clear_bindings_and_owned_ports() {
+    use snac_rs::Link;
+    let mut d = native::driver(22, [192, 0, 2, 10].into());
+    let a = native::host(&d, 100);
+    let b = native::host(&d, 101);
+    native::learn(&mut d, a, 20001);
+    native::learn(&mut d, b, 20001);
+    let pool = native::synth(&d, [192, 0, 2, 10].into());
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(a, pool, 40000, 40001, b"first"),
+        20002,
+    );
+    d.io.output.clear();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(b, pool, 40001, 40000, b"hairpin"),
+        20003,
+    );
+    let out = native::translated(&mut d, Link::Stub, 17);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][24..40], &a.octets());
+    assert_eq!(&out[0][48..], b"hairpin");
+    assert_eq!(out[0][7], 63);
+    assert!(packets::udp6_valid(&out[0]));
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (2, 2, 2));
+    d.io.up[0] = false;
+    d.step(20004, &mut ScriptedRandom::new([])).unwrap();
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (0, 0, 0));
+    assert!(!d.stack_mut(Link::Ail).unwrap().port_owned(17, 40000));
+    d.io.up[0] = true;
+    d.step(20005, &mut ScriptedRandom::new([])).unwrap();
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::udp4(
+            [192, 0, 2, 10].into(),
+            [192, 0, 2, 10].into(),
+            40001,
+            40000,
+            b"stale",
+        ),
+        20006,
+    );
+    assert!(native::translated(&mut d, Link::Stub, 17).is_empty());
+}
