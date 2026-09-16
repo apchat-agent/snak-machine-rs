@@ -37,6 +37,9 @@ impl Discovery {
         self.configured = servers.to_vec();
         Ok(())
     }
+    pub fn explicit(&self) -> bool {
+        !self.configured.is_empty()
+    }
     pub fn endpoints(&self, now: u64) -> Vec<SocketAddr> {
         if !self.configured.is_empty() {
             return self.configured.clone();

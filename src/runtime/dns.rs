@@ -49,7 +49,11 @@ impl<I: PacketIo> Driver<I> {
         self.router
             .pd
             .reserve_xid(self.dns_info.as_ref().and_then(|c| c.xid()));
-        self.dns.set_upstreams(&self.dns_discovery.endpoints(now))
+        self.dns.configure_upstream_privacy(
+            &self.dns_discovery.endpoints(now),
+            self.dns_discovery.explicit(),
+            now,
+        )
     }
     pub(super) fn receive_dns_configuration(
         &mut self,

@@ -193,7 +193,10 @@ impl Ipv4 {
                 .get(&next)
                 .is_some_and(|n| n.queue.len() >= 4)
         {
-            return Err(io::Error::other("IPv4 neighbor/queue capacity"));
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "IPv4 neighbor/queue capacity",
+            ));
         }
         let first = !self.neighbors.contains_key(&next);
         let n = self.neighbors.entry(next).or_insert(Neighbor {

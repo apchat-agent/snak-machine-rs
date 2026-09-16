@@ -512,7 +512,13 @@ impl<I: PacketIo> Driver<I> {
             }
             for packet in packets {
                 if packet[0] >> 4 == 4 {
-                    self.send_ipv4(&packet, now, rng)?;
+                    if let Err(e) = self.send_ipv4(&packet, now, rng) {
+                        // A full ARP queue is packet loss, not a router failure.
+                        // TCP retransmission and DNS transaction timers retry it.
+                        if e.kind() != io::ErrorKind::WouldBlock {
+                            return Err(e);
+                        }
+                    }
                 } else {
                     self.dispatch(vec![Tx { link, packet }], now, rng)?;
                 }

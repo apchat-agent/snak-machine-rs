@@ -76,7 +76,10 @@ pub fn ddr_candidates(
         .filter(|r| r.name == question.name && r.kind == 64 && r.class == 1 && r.ttl > 0)
         .collect();
     for r in &records {
-        let Rdata::Svcb { params, .. } = &r.data else {
+        let Rdata::Svcb {
+            priority, params, ..
+        } = &r.data
+        else {
             return Err(invalid());
         };
         if params.len() > 16 || params.iter().map(|(_, b)| b.len()).sum::<usize>() > 4096 {
@@ -85,9 +88,10 @@ pub fn ddr_candidates(
         let mut check = Message::new(0, 0x8000);
         check.answers.push((*r).clone());
         Message::parse(&check.encode()?, Context::Unicast)?;
-        if params
-            .iter()
-            .any(|(k, b)| (*k == 4 && b.len() > 32) || (*k == 6 && b.len() > 128))
+        if *priority != 0
+            && params
+                .iter()
+                .any(|(k, b)| (*k == 4 && b.len() > 32) || (*k == 6 && b.len() > 128))
         {
             return Err(invalid());
         }

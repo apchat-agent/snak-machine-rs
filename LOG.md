@@ -1406,3 +1406,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Completed DNS frames and unread TLS plaintext now schedule immediate work;
   an incomplete frame alone does not. A drained TLS stream can retire its ID
   space without reporting a false transport failure. No field or dependency.
+- S17 native discovery RED `9dc9e33` confirms missing automatic activation and
+  an AliasMode hint-size semantic error. GREEN passes **329 tests** and
+  all-feature clippy. Driver synchronizes privacy policy from live RA/DHCP
+  resolver discovery, clears it on AIL loss, and bypasses automatic probes for
+  explicit alternate servers. DDR parameter bytes and IPv4 hint bounds now have
+  at/over-bound coverage; AliasMode ignores hint semantics within the byte cap.
+- Existing DHCPv4 native tests exposed a full unresolved-neighbor queue once
+  automatic probes began. Queue pressure now returns WouldBlock; service output
+  treats it as packet loss, leaving TCP/DNS retry timers responsible for retry.
+  The router no longer fails because a discovered resolver cannot be reached.
+  No new field or dependency; retained baseline assertions pass unchanged.
