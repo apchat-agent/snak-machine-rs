@@ -1368,3 +1368,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   and ignores parameter-value semantics as required by RFC 9460 2.4.2. The
   generic decoder now follows that rule. Candidate/alias objects are bounded
   transient parser results; no persistent table or new dependency.
+- S17 policy RED `d7a34b3` confirms the missing resolver-scoped state machine.
+  GREEN passes **321 tests** and all-feature clippy. Separate DDR and TLS probes
+  permit ordinary DNS while discovery runs. Successful TLS takes precedence;
+  failed transport falls back with an observable reason and a thirty-second
+  retry. A working TLS route remains selected until a DDR replacement succeeds.
+- Designations expire, late probe tokens are ignored, and removing/re-adding a
+  resolver discards its old evidence. Explicit alternative DNS configuration
+  bypasses automatic upgrade. Tested bounds cover eight resolver entries,
+  sixteen alias edges/seventeen names and fixed probe deadlines. Endpoint
+  state stores desired/working evidence separately from pending probes;
+  these token/deadline/path fields implement PLAN2's scoped policy. No dependency.

@@ -1,6 +1,8 @@
 //! Resolver-scoped DDR validation. Opportunistic designations retain the original IP.
+mod policy;
 use super::wire::{Context, Message, Name, Rdata};
 use crate::time::RandomSource;
+pub use policy::{DdrProbe, Policy, Probe, Route, TlsProbe};
 use std::{
     io,
     net::{IpAddr, SocketAddr},
