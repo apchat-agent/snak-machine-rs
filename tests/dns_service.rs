@@ -101,6 +101,13 @@ fn cycle(d: &mut Driver<MemoryIo>, hosts: &mut [Stack; 2], now: u64, rng: &mut S
         }
     }
 }
+fn registered(d: &Driver<MemoryIo>, relative: &str) -> String {
+    let site: String = d.router.identity.site.address.octets()[1..6]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{relative}.srp.snac-{site}.home.arpa.")
+}
 fn query(name: &str, kind: u16, id: u16) -> Vec<u8> {
     let mut m = Message::new(id, 0x100);
     m.questions.push(Question {
@@ -650,7 +657,7 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
     let mut registration = common::srp::update();
     registration.id = 85;
     bytes.extend(TcpFrames::frame(&common::srp::sign(registration)).unwrap());
-    bytes.extend(TcpFrames::frame(&query("host.default.service.arpa.", 28, 86)).unwrap());
+    bytes.extend(TcpFrames::frame(&query(&registered(&d, "host"), 28, 86)).unwrap());
     tls.writer().write_all(&bytes).unwrap();
     let mut frames = TcpFrames::new(65535).unwrap();
     let mut replies = std::collections::BTreeMap::new();
@@ -697,7 +704,7 @@ fn s10_driver_dot_pipeline_large_query_and_update_dispatch() {
     )
     .unwrap();
     assert!(durable
-        .key(&"host.default.service.arpa.".parse().unwrap(), 0)
+        .key(&registered(&d, "host").parse().unwrap(), 0)
         .is_some());
     assert_eq!(
         replies[&0x1234].flags & 15,
@@ -814,7 +821,7 @@ fn s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss()
     assert!(
         snac_rs::srp::registry::Registry::restore(&committed, 0, common::srp::NOW)
             .unwrap()
-            .key(&"host.default.service.arpa.".parse().unwrap(), 0)
+            .key(&registered(&d, "host").parse().unwrap(), 0)
             .is_some()
     );
     hosts[1]
@@ -823,7 +830,7 @@ fn s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss()
             40000,
             own,
             53,
-            &query("host.default.service.arpa.", 28, 42),
+            &query(&registered(&d, "host"), 28, 42),
         )
         .unwrap();
     let mut answer = None;
@@ -895,9 +902,7 @@ fn s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss()
     );
     assert!(matches!(
         d.dns.registry().unwrap().records(
-            &"My Printer._http._tcp.default.service.arpa."
-                .parse()
-                .unwrap(),
+            &registered(&d, "My Printer._http._tcp").parse().unwrap(),
             33,
             5500
         )[0]
@@ -1135,4 +1140,176 @@ fn s15_native_discovery_answers_own_ready_publications_without_looping_multicast
     }
     assert!(hosts[1].receive_udp().is_none());
     assert_eq!(d.mdns.querier.counts().0, 1);
+}
+
+#[test]
+fn s16_native_browsing_inventory_discovers_dot_then_registers_into_the_canonical_zone() {
+    use snac_rs::{
+        dns::wire::TcpFrames,
+        service_io::{identity::TlsIdentity, tls::opportunistic_client},
+    };
+    use std::io::{Read, Write};
+    struct Sender<'a>(&'a mut Stack, usize);
+    impl Write for Sender<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.send_tcp(self.1, b)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(1..10000);
+    let identity =
+        TlsIdentity::load_or_create(&mut MemoryStore::default(), common::srp::NOW, &mut rng)
+            .unwrap();
+    d.enable_dot(identity.server_config().unwrap().into())
+        .unwrap();
+    d.dns
+        .enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    learn(&mut d, Link::Stub, &mut rng);
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    let own: IpAddr = d.router.identity.link_local(Link::Stub).into();
+    hosts[1].listen_udp(40000).unwrap();
+    hosts[1]
+        .send_udp(
+            peer(Link::Stub),
+            40000,
+            own,
+            53,
+            &query("lb._dns-sd._udp.local.", 12, 120),
+        )
+        .unwrap();
+    for now in 1010..1015 {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let browse = Message::parse(
+        &hosts[1]
+            .receive_udp()
+            .expect("local browsing inventory")
+            .bytes,
+        Context::Unicast,
+    )
+    .unwrap();
+    assert_eq!(browse.answers.len(), 2);
+    assert!(browse
+        .answers
+        .iter()
+        .any(|r| r.data == Rdata::Name("default.service.arpa.".parse().unwrap())));
+    let zone = browse
+        .answers
+        .iter()
+        .find_map(|r| {
+            if let Rdata::Name(n) = &r.data {
+                (n.labels()[0] == b"srp").then_some(n.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let mut labels = vec![b"_dnssd-srp-tls".to_vec(), b"_tcp".to_vec()];
+    labels.extend_from_slice(zone.labels());
+    let service = snac_rs::dns::wire::Name::from_labels(labels).unwrap();
+    let mut message = Message::new(121, 0x100);
+    message.questions.push(Question {
+        name: service,
+        kind: 33,
+        class: 1,
+    });
+    hosts[1]
+        .send_udp(peer(Link::Stub), 40000, own, 53, &message.encode().unwrap())
+        .unwrap();
+    for now in 1020..1025 {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let service = Message::parse(
+        &hosts[1]
+            .receive_udp()
+            .expect("registrar SRV bootstrap")
+            .bytes,
+        Context::Unicast,
+    )
+    .unwrap();
+    let Rdata::Srv { target, port, .. } = &service.answers[0].data else {
+        panic!("SRV")
+    };
+    assert_eq!(*port, 853);
+    assert!(service
+        .additional
+        .iter()
+        .any(|r| r.name == *target && matches!(r.data, Rdata::Aaaa(_))));
+    let id = hosts[1]
+        .connect(peer(Link::Stub), 40001, own, *port, 1030)
+        .unwrap();
+    for now in (1030..1500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let mut tls = rustls::ClientConnection::new(
+        opportunistic_client().unwrap().into(),
+        "opportunistic.test".try_into().unwrap(),
+    )
+    .unwrap();
+    let mut sent = false;
+    let mut frames = TcpFrames::new(65535).unwrap();
+    let mut ack = None;
+    for now in (1500..4000).step_by(10) {
+        if !tls.is_handshaking() && !sent {
+            tls.writer()
+                .write_all(&TcpFrames::frame(&common::srp::sign(common::srp::update())).unwrap())
+                .unwrap();
+            sent = true;
+        }
+        tls.write_tls(&mut Sender(&mut hosts[1], id)).unwrap();
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        let b = hosts[1].receive_tcp(id);
+        let mut p = b.as_slice();
+        while !p.is_empty() {
+            assert!(tls.read_tls(&mut p).unwrap() > 0);
+            tls.process_new_packets().unwrap();
+        }
+        let mut b = [0; 4096];
+        while let Ok(n) = tls.reader().read(&mut b) {
+            if n == 0 {
+                break;
+            }
+            frames.input(&b[..n]).unwrap();
+        }
+        if let Some(bytes) = frames.pop() {
+            ack = Some(Message::parse(&bytes, Context::Unicast).unwrap());
+            break;
+        }
+    }
+    assert_eq!(
+        ack.expect("signed update through discovered DoT port")
+            .flags
+            & 15,
+        0
+    );
+    assert!(d
+        .dns
+        .registry()
+        .unwrap()
+        .hosts()
+        .all(|(name, _)| name.labels().ends_with(zone.labels())));
+    d.io.up[Link::Stub.index()] = false;
+    d.step(4500, &mut rng).unwrap();
+    let actions = d
+        .dns
+        .submit(
+            snac_rs::dns::resolver::Client::udp("[::1]:41000".parse().unwrap()),
+            &message.encode().unwrap(),
+            4500,
+            &mut rng,
+        )
+        .unwrap();
+    let snac_rs::dns::resolver::Action::Reply { bytes, .. } = &actions[0] else {
+        panic!("unready service negative")
+    };
+    assert!(Message::parse(bytes, Context::Unicast)
+        .unwrap()
+        .answers
+        .is_empty());
 }
