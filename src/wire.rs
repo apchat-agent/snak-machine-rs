@@ -357,6 +357,21 @@ pub struct Pref64 {
     pub lifetime: u32,
 }
 impl Pref64 {
+    /// Encode a remaining backing lifetime, rounding down to avoid over-promising.
+    pub fn encode(self) -> Result<Vec<u8>, WireError> {
+        let plc = [96, 64, 56, 48, 40, 32]
+            .iter()
+            .position(|n| *n == self.prefix.length)
+            .ok_or(WireError::Invalid)?;
+        if Prefix::new(self.prefix.address, self.prefix.length) != Some(self.prefix) {
+            return Err(WireError::Invalid);
+        }
+        let word = (self.lifetime.min(65528) as u16 & 0xfff8) | plc as u16;
+        let mut b = vec![38, 2];
+        b.extend(word.to_be_bytes());
+        b.extend(&self.prefix.address.octets()[..12]);
+        Ok(b)
+    }
     pub fn decode(b: &[u8]) -> Option<Self> {
         if b.len() != 16 || b[0] != 38 || b[1] != 2 {
             return None;

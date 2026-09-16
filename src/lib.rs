@@ -37,3 +37,5 @@ pub mod mdns;
 pub mod srp;
 
 pub mod discovery_proxy;
+
+pub mod nat64;

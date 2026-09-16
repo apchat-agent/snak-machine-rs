@@ -1477,3 +1477,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   The default transport is opportunistic DoT with plaintext fallback; verified
   TLS can be supplied through the library API, and DoH/DoQ are outside this
   profile. Whole-router restart/attachment integration closes in S23.
+
+### S18 — PREF64, selection, /96 allocation and administration (in progress)
+
+- S18 wire/observation RED `8faf00d` confirms missing encoding/observation
+  seams. GREEN passes **345 tests** and all-feature clippy. PREF64 encodes all
+  six lengths, floors remaining backing lifetimes in eight-second units and
+  clamps at 65528 seconds; unsupported lengths fail. Observations validate
+  complete RAs, ignore reserved/invalid PREF64 options and unusable prefixes,
+  and retain exact advertiser/link/prefix lifetimes independently of the
+  header Router Lifetime or subsequent RA omission.
+- Tests cover hostile/truncated RA input, both SNAC flags, withdrawals,
+  reachability filtering, link loss, expiry and the thirty-two observations
+  per link bound with atomic failed admission. The bounded observation map
+  implements PLAN2's evidence owner; no dependency. Selection/reload follow.
