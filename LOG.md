@@ -1423,3 +1423,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   the router's separately owned DDR control transaction remains operational.
   A native reset/fallback/recovery scenario confirms renewed encrypted use on
   a fresh stream after the backoff. No new field or dependency.
+- S17 browsing evidence RED `e6655ff` confirms the missing source-aware owner.
+  GREEN passes **334 tests** and all-feature clippy. Enumeration queries bind
+  PTR answers to a live resolver, exact question and search context. TTLs are
+  capped at one day, withdrawal removes only its source's evidence, and stale
+  tokens, foreign owners/additionals, reserved targets and malformed responses
+  cannot add domains. Optional browsing choices remain distinct from legacy
+  automatic browsing domains (RFC 6763 section 11).
+- Tested bounds: eight sources, sixty-four contexts, eight concurrent probes,
+  sixty-four evidence entries/response records, atomic failed admission and
+  removal/re-addition. Sweep cursor/deadline, monotonically numbered probes and
+  source/context/target evidence implement the planned enumeration owner;
+  contexts never become advertised domains without PTR evidence. No dependency.
