@@ -1,5 +1,8 @@
 //! Shared transport binding/session indexes. A live mapping is never evicted.
-use crate::time::RandomSource;
+use crate::{
+    service_io::ports::{Lease, Owner, Ports},
+    time::RandomSource,
+};
 use std::{
     collections::BTreeMap,
     io,
@@ -14,6 +17,7 @@ pub enum UdpFiltering {
     EndpointIndependent,
 }
 struct Binding {
+    _port: Lease,
     port: u16,
     sessions: usize,
 }
@@ -21,6 +25,7 @@ struct Session {
     expires: u64,
 }
 pub struct Bindings {
+    ports: Ports,
     bindings: BTreeMap<Key, Binding>,
     reverse: BTreeMap<(u8, u16), Key>,
     sessions: BTreeMap<SessionKey, Session>,
@@ -32,6 +37,7 @@ pub struct Bindings {
 impl Default for Bindings {
     fn default() -> Self {
         Self {
+            ports: Ports::default(),
             bindings: BTreeMap::new(),
             reverse: BTreeMap::new(),
             sessions: BTreeMap::new(),
@@ -49,6 +55,12 @@ fn full() -> io::Error {
     )
 }
 impl Bindings {
+    pub fn with_ports(ports: Ports) -> Self {
+        Self {
+            ports,
+            ..Self::default()
+        }
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.bindings.len(), self.sessions.len(), self.hosts.len())
     }
@@ -153,9 +165,11 @@ impl Bindings {
             b.port
         } else {
             let allocated = self.allocate(17, port, rng, occupied)?;
+            let lease = self.ports.claim(17, allocated, Owner::Translation)?;
             self.bindings.insert(
                 key,
                 Binding {
+                    _port: lease,
                     port: allocated,
                     sessions: 0,
                 },
@@ -195,7 +209,11 @@ impl Bindings {
         rng: &mut impl RandomSource,
         occupied: impl Fn(u16) -> bool,
     ) -> io::Result<u16> {
-        let free = |p| !self.reverse.contains_key(&(protocol, p)) && !occupied(p);
+        let free = |p| {
+            !self.reverse.contains_key(&(protocol, p))
+                && !self.ports.occupied(protocol, p)
+                && !occupied(p)
+        };
         if port != 0 && free(port) {
             return Ok(port);
         }

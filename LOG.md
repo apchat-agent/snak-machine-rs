@@ -1568,3 +1568,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   cannot create mappings. Protocol-keyed indexes, source counts and a cached
   expiry wakeup implement the planned shared state. No dependency. Shared
   native port ownership, wire translation, hairpin and ARP integration follow.
+- S19 shared-port RED `6632057` confirms missing bidirectional ownership.
+  GREEN passes **362 tests** and all-feature clippy. A per-interface registry
+  owns both endpoint ports and translator ports/ICMP identifiers. Socket and
+  binding leases release ownership only after their last reference disappears;
+  accepted TCP streams share the listener's lease. Both allocation directions
+  reject collisions, including outgoing native TCP and later UDP listeners.
+- The registry has tested separate caps of 256 local ports and 4096 translation
+  ports, supports protocol-specific reuse, and rejects invalid protocols/ports.
+  Existing binding charges reserve room for its port lease/index. This is the
+  shared ownership map required by PLAN2; no dependency. Native DHCP/mDNS
+  reservations are added at the Driver edge with the packet integration.

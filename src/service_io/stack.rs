@@ -1,5 +1,9 @@
 //! IP-medium service sockets; route and neighbor decisions belong to Driver.
-use super::{instant, IpDevice, IP_QUEUE_BYTES};
+use super::{
+    instant,
+    ports::{Lease, Owner, Ports},
+    IpDevice, IP_QUEUE_BYTES,
+};
 use crate::{
     time::RandomSource,
     wire::{envelope, transport, FrameKind},
@@ -22,10 +26,12 @@ fn capacity() -> io::Error {
     io::Error::new(io::ErrorKind::WouldBlock, "service socket capacity")
 }
 struct Listener {
+    port: Lease,
     handle: SocketHandle,
     buffer: usize,
 }
 struct Connection {
+    _port: Lease,
     handle: SocketHandle,
     last_io: u64,
 }
@@ -37,13 +43,18 @@ pub struct Datagram {
     pub destination_port: u16,
     pub bytes: Vec<u8>,
 }
+struct UdpSocket {
+    handle: SocketHandle,
+    _port: Lease,
+}
 pub struct Stack {
+    ports: Ports,
     device: IpDevice,
     iface: Interface,
     sockets: SocketSet<'static>,
     addresses: Vec<IpAddr>,
     listeners: BTreeMap<u16, Listener>,
-    udp: BTreeMap<u16, SocketHandle>,
+    udp: BTreeMap<u16, UdpSocket>,
     connections: BTreeMap<usize, Connection>,
     next_id: usize,
     now: u64,
@@ -62,6 +73,7 @@ impl Stack {
         cfg.random_seed = u64::from_le_bytes(seed);
         let iface = Interface::new(cfg, &mut device, instant(now));
         Ok(Self {
+            ports: Ports::default(),
             device,
             iface,
             sockets: SocketSet::new(vec![]),
@@ -115,6 +127,9 @@ impl Stack {
         }
         Ok(())
     }
+    pub fn ports(&self) -> Ports {
+        self.ports.clone()
+    }
     pub fn addresses(&self) -> &[IpAddr] {
         &self.addresses
     }
@@ -136,40 +151,43 @@ impl Stack {
         if port == 0 || self.port_owned(6, port) || self.listeners.len() >= LISTENERS {
             return Err(capacity());
         }
+        let lease = self.ports.claim(6, port, Owner::Local)?;
         let h = self.tcp_socket(buffer);
         self.sockets
             .get_mut::<tcp::Socket>(h)
             .listen(port)
             .map_err(io::Error::other)?;
-        self.listeners.insert(port, Listener { handle: h, buffer });
+        self.listeners.insert(
+            port,
+            Listener {
+                handle: h,
+                buffer,
+                port: lease,
+            },
+        );
         Ok(())
     }
     pub fn listen_udp(&mut self, port: u16) -> io::Result<()> {
-        if port == 0 || self.udp.contains_key(&port) || self.udp.len() >= LISTENERS {
+        if port == 0 || self.port_owned(17, port) || self.udp.len() >= LISTENERS {
             return Err(capacity());
         }
+        let lease = self.ports.claim(17, port, Owner::Local)?;
         let buffer =
             || udp::PacketBuffer::new(vec![udp::PacketMetadata::EMPTY; 32], vec![0; UDP_BUFFER]);
         let mut s = udp::Socket::new(buffer(), buffer());
         s.bind(port).map_err(io::Error::other)?;
         let h = self.sockets.add(s);
-        self.udp.insert(port, h);
+        self.udp.insert(
+            port,
+            UdpSocket {
+                handle: h,
+                _port: lease,
+            },
+        );
         Ok(())
     }
     pub fn port_owned(&self, protocol: u8, port: u16) -> bool {
-        match protocol {
-            17 => self.udp.contains_key(&port),
-            6 => {
-                self.listeners.contains_key(&port)
-                    || self.connections.values().any(|c| {
-                        self.sockets
-                            .get::<tcp::Socket>(c.handle)
-                            .local_endpoint()
-                            .is_some_and(|e| e.port == port)
-                    })
-            }
-            _ => false,
-        }
+        self.ports.occupied(protocol, port)
     }
     pub fn connect(
         &mut self,
@@ -189,6 +207,7 @@ impl Stack {
         {
             return Err(capacity());
         }
+        let lease = self.ports.claim(6, port, Owner::Local)?;
         let h = self.tcp_socket(TCP_BUFFER);
         if let Err(e) = self.sockets.get_mut::<tcp::Socket>(h).connect(
             self.iface.context(),
@@ -198,14 +217,20 @@ impl Stack {
             self.sockets.remove(h);
             return Err(io::Error::other(e));
         }
-        self.insert_connection(h, now)
+        self.insert_connection(h, now, lease)
     }
-    fn insert_connection(&mut self, handle: SocketHandle, now: u64) -> io::Result<usize> {
+    fn insert_connection(
+        &mut self,
+        handle: SocketHandle,
+        now: u64,
+        lease: Lease,
+    ) -> io::Result<usize> {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).ok_or_else(capacity)?;
         self.connections.insert(
             id,
             Connection {
+                _port: lease,
                 handle,
                 last_io: now,
             },
@@ -346,7 +371,7 @@ impl Stack {
         {
             return Err(capacity());
         }
-        let h = *self.udp.get(&source_port).ok_or_else(capacity)?;
+        let h = self.udp.get(&source_port).ok_or_else(capacity)?.handle;
         let meta = udp::UdpMetadata {
             endpoint: (IpAddress::from(dest), dest_port).into(),
             local_address: Some(source.into()),
@@ -362,7 +387,7 @@ impl Stack {
     }
     pub fn receive_udp(&mut self) -> Option<Datagram> {
         for (port, h) in &self.udp {
-            if let Ok((bytes, meta)) = self.sockets.get_mut::<udp::Socket>(*h).recv() {
+            if let Ok((bytes, meta)) = self.sockets.get_mut::<udp::Socket>(h.handle).recv() {
                 return Some(Datagram {
                     source: meta.endpoint.addr.into(),
                     destination: meta.local_address?.into(),
@@ -375,7 +400,7 @@ impl Stack {
         None
     }
     pub fn receive_udp_on(&mut self, port: u16) -> Option<Datagram> {
-        let h = *self.udp.get(&port)?;
+        let h = self.udp.get(&port)?.handle;
         let (bytes, meta) = self.sockets.get_mut::<udp::Socket>(h).recv().ok()?;
         Some(Datagram {
             source: meta.endpoint.addr.into(),
@@ -387,7 +412,7 @@ impl Stack {
     }
     pub fn unlisten_udp(&mut self, port: u16) {
         if let Some(h) = self.udp.remove(&port) {
-            self.sockets.remove(h);
+            self.sockets.remove(h.handle);
         }
     }
     // The runtime validates AIL mDNS ownership/hop/source before using the
@@ -561,14 +586,14 @@ impl Stack {
             .filter(|(_, h)| {
                 self.sockets.get::<tcp::Socket>(h.handle).state() != tcp::State::Listen
             })
-            .map(|(p, h)| (*p, h.handle, h.buffer))
+            .map(|(p, h)| (*p, h.handle, h.buffer, h.port.clone()))
             .collect();
-        for (port, h, buffer) in accepted {
+        for (port, h, buffer, lease) in accepted {
             let remote = self.sockets.get::<tcp::Socket>(h).remote_endpoint();
             if remote.is_some_and(|r| {
                 self.connections.len() < self.connection_limit && self.peer_count(r.addr.into()) < 4
             }) {
-                self.insert_connection(h, now)?;
+                self.insert_connection(h, now, lease.clone())?;
             } else {
                 self.sockets.remove(h);
             }
@@ -580,6 +605,7 @@ impl Stack {
             self.listeners.insert(
                 port,
                 Listener {
+                    port: lease,
                     handle: fresh,
                     buffer,
                 },
@@ -642,7 +668,7 @@ impl Stack {
             || self
                 .udp
                 .values()
-                .any(|h| self.sockets.get::<udp::Socket>(*h).can_recv())
+                .any(|h| self.sockets.get::<udp::Socket>(h.handle).can_recv())
             || self
                 .connections
                 .values()
