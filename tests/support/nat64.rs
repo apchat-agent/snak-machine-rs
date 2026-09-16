@@ -60,3 +60,84 @@ pub fn udp6_valid(b: &[u8]) -> bool {
     pseudo.extend(&b[40..]);
     sum(&pseudo) == 0 && b[46..48] != [0, 0]
 }
+pub fn tcp6(
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    sp: u16,
+    dp: u16,
+    flags: u8,
+    data: &[u8],
+) -> Vec<u8> {
+    let tcp = tcp(sp, dp, flags, data);
+    let mut p = vec![0x60, 0, 0, 0];
+    p.extend((tcp.len() as u16).to_be_bytes());
+    p.extend([6, 64]);
+    p.extend(source.octets());
+    p.extend(destination.octets());
+    p.extend(tcp);
+    tcp_fix(&mut p);
+    p
+}
+pub fn tcp4(
+    source: Ipv4Addr,
+    destination: Ipv4Addr,
+    sp: u16,
+    dp: u16,
+    flags: u8,
+    data: &[u8],
+) -> Vec<u8> {
+    let tcp = tcp(sp, dp, flags, data);
+    let mut p = vec![0x45, 0];
+    p.extend(((tcp.len() + 20) as u16).to_be_bytes());
+    p.extend([0, 0, 0, 0, 64, 6, 0, 0]);
+    p.extend(source.octets());
+    p.extend(destination.octets());
+    let c = sum(&p);
+    p[10..12].copy_from_slice(&c.to_be_bytes());
+    p.extend(tcp);
+    tcp_fix(&mut p);
+    p
+}
+fn tcp(sp: u16, dp: u16, flags: u8, data: &[u8]) -> Vec<u8> {
+    let mut p = sp.to_be_bytes().to_vec();
+    p.extend(dp.to_be_bytes());
+    p.extend([
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x50, flags, 0x20, 0, 0, 0, 0, 0,
+    ]);
+    p.extend(data);
+    p
+}
+fn tcp_sum(p: &[u8]) -> u16 {
+    let header = if p[0] >> 4 == 6 {
+        40
+    } else {
+        usize::from(p[0] & 15) * 4
+    };
+    let mut pseudo = if header == 40 && p[0] >> 4 == 6 {
+        p[8..40].to_vec()
+    } else {
+        p[12..20].to_vec()
+    };
+    if p[0] >> 4 == 6 {
+        pseudo.extend(((p.len() - header) as u32).to_be_bytes());
+        pseudo.extend([0, 0, 0, 6]);
+    } else {
+        pseudo.extend([0, 6]);
+        pseudo.extend(((p.len() - header) as u16).to_be_bytes());
+    }
+    pseudo.extend(&p[header..]);
+    sum(&pseudo)
+}
+pub fn tcp_fix(p: &mut [u8]) {
+    let h = if p[0] >> 4 == 6 {
+        40
+    } else {
+        usize::from(p[0] & 15) * 4
+    };
+    p[h + 16..h + 18].fill(0);
+    let c = tcp_sum(p);
+    p[h + 16..h + 18].copy_from_slice(&c.to_be_bytes());
+}
+pub fn tcp_valid(p: &[u8]) -> bool {
+    tcp_sum(p) == 0
+}

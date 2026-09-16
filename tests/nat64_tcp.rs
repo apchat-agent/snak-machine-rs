@@ -254,3 +254,230 @@ fn s20_tcp_udp_share_global_and_per_source_caps_without_live_mapping_eviction() 
         Some(10000)
     );
 }
+
+#[path = "support/nat64_driver.rs"]
+mod native;
+#[path = "support/nat64.rs"]
+mod packets;
+const TCP_OUT:&str="6000000000140640fd220000000000000000000000000001fd1122334455ffff00000000c63364079c4001bb0123456789abcdef50022000c8c80000";
+const TCP_OUT_EXPECTED: &str =
+    "45000028000000003f068f8bc000020ac63364079c4001bb0123456789abcdef50022000677c0000";
+const TCP_IN: &str =
+    "450000280000000040068e8bc6336407c000020a01bb9c400123456789abcdef50122000676c0000";
+const TCP_IN_EXPECTED:&str="600000000014063ffd1122334455ffff00000000c6336407fd22000000000000000000000000000101bb9c400123456789abcdef50122000c8b80000";
+fn translator() -> snac_rs::nat64::Translator {
+    snac_rs::nat64::Translator::new(
+        snac_rs::wire::Prefix::new("fd11:2233:4455:ffff::".parse().unwrap(), 96).unwrap(),
+        [192, 0, 2, 10].into(),
+        Default::default(),
+    )
+    .unwrap()
+}
+fn send(
+    t: &mut snac_rs::nat64::Translator,
+    p: &[u8],
+    now: u64,
+) -> std::io::Result<Vec<snac_rs::router::Tx>> {
+    t.outbound(p, now, &mut ScriptedRandom::new([]), |_| true, |_| true)
+}
+#[test]
+fn s20_literal_tcp_segments_translate_sequence_flags_checksum_and_payload() {
+    let mut t = translator();
+    assert_eq!(
+        send(&mut t, &packets::hex(TCP_OUT), 0).unwrap()[0].packet,
+        packets::hex(TCP_OUT_EXPECTED)
+    );
+    assert_eq!(
+        t.inbound(&packets::hex(TCP_IN), 1).unwrap()[0].packet,
+        packets::hex(TCP_IN_EXPECTED)
+    );
+    let destination = "fd11:2233:4455:ffff::c633:6407".parse().unwrap();
+    let data = packets::tcp6(
+        host(1),
+        destination,
+        40000,
+        443,
+        ACK | 8,
+        b"TCP payload with sequence numbers intact",
+    );
+    let output = send(&mut t, &data, 2).unwrap();
+    let p = &output[0].packet;
+    assert!(packets::tcp_valid(p));
+    assert_eq!(&p[24..36], &data[44..56]);
+    assert_eq!(&p[40..], &data[60..]);
+    assert_eq!(p[8], 63);
+    assert_eq!(packets::sum(&p[..20]), 0);
+    let reply = packets::tcp4(
+        [198, 51, 100, 7].into(),
+        [192, 0, 2, 10].into(),
+        443,
+        40000,
+        ACK | 8,
+        b"reply bytes",
+    );
+    let output = t.inbound(&reply, 3).unwrap();
+    assert!(packets::tcp_valid(&output[0].packet));
+    assert_eq!(&output[0].packet[60..], b"reply bytes");
+}
+#[test]
+fn s20_hostile_tcp_headers_options_and_checksum_cannot_create_or_refresh_sessions() {
+    let good = packets::hex(TCP_OUT);
+    let mut t = translator();
+    for n in 0..good.len() {
+        assert!(send(&mut t, &good[..n], 0).is_err());
+    }
+    for offset in [0, 4, 6, 15] {
+        let mut bad = good.clone();
+        bad[52] = offset << 4;
+        packets::tcp_fix(&mut bad);
+        assert!(send(&mut t, &bad, 0).is_err());
+    }
+    for flags in [SYN | FIN, SYN | RST] {
+        let mut bad = good.clone();
+        bad[53] = flags;
+        packets::tcp_fix(&mut bad);
+        assert!(send(&mut t, &bad, 0).is_err());
+    }
+    for option in [
+        [2, 3, 1, 0],
+        [3, 4, 0, 0],
+        [8, 4, 0, 0],
+        [30, 0, 0, 0],
+        [0, 1, 0, 0],
+        [5, 4, 0, 0],
+    ] {
+        let mut bad = good.clone();
+        bad[4..6].copy_from_slice(&24u16.to_be_bytes());
+        bad[52] = 0x60;
+        bad.extend(option);
+        packets::tcp_fix(&mut bad);
+        assert!(send(&mut t, &bad, 0).is_err(), "{option:?}");
+    }
+    assert_eq!(t.bindings.counts(), (0, 0, 0));
+    send(&mut t, &good, 100).unwrap();
+    let before = t.bindings.tcp_state(host(1), 40000, remote(443));
+    let mut corrupt = packets::hex(TCP_IN);
+    corrupt[24] ^= 1;
+    assert!(t.inbound(&corrupt, 1000).is_err());
+    assert_eq!(t.bindings.tcp_state(host(1), 40000, remote(443)), before);
+    let mut valid = good.clone();
+    valid[4..6].copy_from_slice(&24u16.to_be_bytes());
+    valid[52] = 0x60;
+    valid.extend([2, 4, 5, 180]);
+    packets::tcp_fix(&mut valid);
+    let out = send(&mut t, &valid, 101).unwrap();
+    assert_eq!(&out[0].packet[40..], &[2, 4, 5, 180]);
+    assert!(packets::tcp_valid(&out[0].packet));
+}
+#[test]
+fn s20_tcp_poll_emits_exact_idle_probe_and_bounded_initial_syn_timeout_errors() {
+    use snac_rs::Link;
+    let mut t = translator();
+    send(&mut t, &packets::hex(TCP_OUT), 0).unwrap();
+    t.inbound(&packets::hex(TCP_IN), 1).unwrap();
+    assert!(t.poll(EST).unwrap().is_empty());
+    let out = t.poll(EST + 1).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].link, Link::Stub);
+    let probe = &out[0].packet;
+    assert_eq!(probe.len(), 60);
+    assert_eq!(&probe[24..40], &host(1).octets());
+    assert_eq!(&probe[40..44], &[1, 187, 156, 64]);
+    assert_eq!(&probe[44..52], &[0; 8]);
+    assert_eq!(probe[53], ACK);
+    assert!(packets::tcp_valid(probe));
+    assert!(t.poll(EST + 2).unwrap().is_empty());
+    let mut t = translator();
+    send(&mut t, &packets::hex(TCP_OUT), 0).unwrap();
+    t.inbound(&packets::hex(TCP_IN), 1).unwrap();
+    for port in 1000..1064 {
+        let p = packets::tcp4(
+            [198, 51, 100, 7].into(),
+            [192, 0, 2, 10].into(),
+            port,
+            40000,
+            SYN,
+            &[],
+        );
+        assert_eq!(t.inbound(&p, 2).unwrap().len(), 1);
+    }
+    t.bindings.expire(TRANS + 2);
+    assert_eq!(t.bindings.tcp_timeout_load(), (32, 32 * 28));
+    let out = t.poll(TRANS + 2).unwrap();
+    assert_eq!(out.len(), 32);
+    assert_eq!(t.bindings.tcp_timeout_load(), (0, 0));
+    for tx in out {
+        assert_eq!(tx.link, Link::Ail);
+        let p = tx.packet;
+        assert_eq!(p[9], 1);
+        assert_eq!(&p[20..22], &[3, 3]);
+        assert_eq!(packets::sum(&p[20..]), 0);
+        assert_eq!(&p[28 + 12..28 + 20], &[198, 51, 100, 7, 192, 0, 2, 10]);
+    }
+    assert!(t.poll(TRANS + 3).unwrap().is_empty());
+    assert_eq!(t.bindings.counts(), (1, 1, 1));
+}
+#[test]
+fn s20_native_tcp_handshake_data_and_half_close_use_translation_without_endpoint_proxy() {
+    use snac_rs::Link;
+    let mut d = native::driver(30, [192, 0, 2, 10].into());
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, [198, 51, 100, 7].into());
+    native::learn(&mut d, h, 20001);
+    d.io.output.clear();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::tcp6(h, target, 40000, 443, SYN, &[]),
+        20002,
+    );
+    native::arp(&mut d, [192, 0, 2, 1].into(), 20003);
+    let out = native::translated(&mut d, Link::Ail, 6);
+    assert_eq!(out.len(), 1);
+    assert!(packets::tcp_valid(&out[0]));
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::tcp4(
+            [198, 51, 100, 7].into(),
+            [192, 0, 2, 10].into(),
+            443,
+            40000,
+            SYN | ACK,
+            &[],
+        ),
+        20004,
+    );
+    d.step(20004, &mut ScriptedRandom::new([])).unwrap();
+    let out = native::translated(&mut d, Link::Stub, 6);
+    assert_eq!(out.len(), 1);
+    assert!(packets::tcp_valid(&out[0]));
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::tcp6(h, target, 40000, 443, ACK | 8, b"native TCP data"),
+        20005,
+    );
+    let out = native::translated(&mut d, Link::Ail, 6);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][40..], b"native TCP data");
+    assert!(packets::tcp_valid(&out[0]));
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::tcp6(h, target, 40000, 443, FIN | ACK, &[]),
+        20006,
+    );
+    assert_eq!(
+        d.nat64
+            .as_ref()
+            .unwrap()
+            .bindings
+            .tcp_state(h, 40000, remote(443))
+            .unwrap()
+            .0,
+        State::V6Fin
+    );
+    assert!(d.stack_mut(Link::Ail).unwrap().connections().is_empty());
+    assert!(d.stack_mut(Link::Stub).unwrap().connections().is_empty());
+}
