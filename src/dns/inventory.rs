@@ -180,7 +180,7 @@ impl Inventory {
             },
         )
     }
-    fn enumeration(&self, q: &Question) -> io::Result<Option<Vec<Record>>> {
+    fn enumeration(&self, q: &Question, extra_context: bool) -> io::Result<Option<Vec<Record>>> {
         let labels = q.name.labels();
         if labels.len() < 4
             || !labels[1].eq_ignore_ascii_case(b"_dns-sd")
@@ -193,7 +193,8 @@ impl Inventory {
             return Ok(None);
         }
         let context = Name::from_labels(labels[3..].to_vec())?;
-        if context != "local.".parse().unwrap()
+        if !extra_context
+            && context != "local.".parse().unwrap()
             && context != self.zones.discovery
             && context != self.zones.registrar
             && context != self.zones.hostname
@@ -258,18 +259,32 @@ impl Inventory {
         }
         Ok(records)
     }
-    pub fn answer(&self, q: &Question, _now: u64) -> io::Result<Option<Message>> {
+    pub fn answer(&self, q: &Question, now: u64) -> io::Result<Option<Message>> {
+        self.answer_in_context(q, now, false)
+    }
+    pub(crate) fn answer_in_context(
+        &self,
+        q: &Question,
+        _now: u64,
+        extra_context: bool,
+    ) -> io::Result<Option<Message>> {
         if q.class != 1 || q.kind == 0 {
             return Ok(None);
         }
         let mut answer = Message::new(0, 0x8400);
         answer.questions.push(q.clone());
-        if let Some(records) = self.enumeration(q)? {
+        if let Some(records) = self.enumeration(q, extra_context)? {
             answer.answers = records;
             if answer.answers.is_empty() {
                 answer.authority.push(self.soa(&self.zones.registrar));
             }
             return Ok(Some(answer));
+        }
+        if within(&q.name, &self.zones.discovery)
+            || self.zones.host.as_ref().is_some_and(|z| within(&q.name, z))
+            || self.zones.reverse.iter().any(|z| within(&q.name, z))
+        {
+            return Ok(None);
         }
         let zone = if within(&q.name, &self.zones.registrar) {
             &self.zones.registrar
@@ -320,4 +335,15 @@ impl Inventory {
         }
         Ok(Some(answer))
     }
+}
+
+pub(crate) fn reverse_network(prefix: crate::wire::Prefix) -> Name {
+    let mut labels: Vec<Vec<u8>> = format!("{:032x}", u128::from(prefix.address))
+        .as_bytes()
+        .iter()
+        .rev()
+        .map(|b| vec![*b])
+        .collect();
+    labels.extend([b"ip6".to_vec(), b"arpa".to_vec()]);
+    Name::from_labels(labels).unwrap()
 }

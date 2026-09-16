@@ -1321,3 +1321,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Basis: PLAN2 section 2.2 and draft sections 5.5.2/8 (RFC 9665 3.1.2's update
   alias, complementary Discovery Proxy QUERY). No dependency; the inventory
   owner stores the planned static configuration/readiness, deriving responses.
+- S16 configuration RED `738fa03` confirms missing CLI and scoped dispatch.
+  GREEN passes **310 tests** and all-feature clippy. CLI accepts canonical SRP,
+  rich-text discovery, LDH host, bounded reverse-zone, SOA mailbox and explicit
+  filtering-override settings; main validates them before opening interfaces.
+  Address-derived enumeration uses current stub prefix state without another
+  table, and disappears when that state is removed. A nested Discovery Proxy
+  zone remains delegated within the router-owned namespace, and canonical
+  Additional-A lookups can read the router's static address inventory.
+  New Config fields correspond to PLAN2's explicit settings; no dependency.

@@ -62,6 +62,7 @@ fn run() -> io::Result<()> {
     )?;
     router.no_stub_default = config.no_stub_default;
     router.always_advertise_ail_routes = config.always_advertise_ail_routes;
+    let dns_zones = config.dns_zones(&router.identity)?;
     let backend = match config.backend {
         BackendKind::Tap => {
             if let Some((a, s, f)) = config.fds {
@@ -105,6 +106,13 @@ fn run() -> io::Result<()> {
         snac_rs::service_io::identity::TlsIdentity::load_file(&tls_path, wall()?, &mut random)?;
     let mut tls_renew_at = identity.expires_at()?;
     let mut driver = Driver::new(router, backend)?;
+    driver.dns.configure_zones(dns_zones)?;
+    driver
+        .dns
+        .set_discovery_reachability(snac_rs::discovery_proxy::Reachability {
+            include_unusable: config.discovery_include_unusable,
+            ..Default::default()
+        });
     driver.mdns.set_tsr_code(config.tsr_option_code)?;
     driver.enable_dot(identity.server_config()?.into())?;
 

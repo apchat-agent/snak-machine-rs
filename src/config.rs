@@ -6,6 +6,12 @@ pub enum BackendKind {
 }
 #[derive(Debug)]
 pub struct Config {
+    pub srp_zone: Option<crate::dns::wire::Name>,
+    pub discovery_zone: Option<crate::dns::wire::Name>,
+    pub discovery_host_zone: Option<crate::dns::wire::Name>,
+    pub discovery_reverse_zones: Vec<crate::dns::wire::Name>,
+    pub dns_soa_rname: Option<crate::dns::wire::Name>,
+    pub discovery_include_unusable: bool,
     pub tsr_option_code: u16,
     pub srp_policy: crate::srp::registry::LeasePolicy,
     pub ula_policy: crate::router::attachment::UlaPolicy,
@@ -21,8 +27,28 @@ pub struct Config {
     pub no_additional_a: bool,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --tsr-option-code CODE (experimental default 65002)\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery proxies and NAT64 are not yet implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --tsr-option-code CODE (experimental default 65002)\n  --srp-zone NAME  --discovery-zone NAME\n  --discovery-host-zone NAME  --discovery-reverse-zone NAME (repeat up to 64)\n  --dns-soa-rname NAME  --discovery-include-unusable\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery and advertising proxies use AIL mDNS. NAT64 is not yet implemented.\nReal backends require root; --help opens no interfaces.";
 impl Config {
+    pub fn dns_zones(
+        &self,
+        identity: &crate::persist::Identity,
+    ) -> io::Result<crate::dns::inventory::Zones> {
+        let mut zones = crate::dns::inventory::Zones::for_identity(identity);
+        if let Some(zone) = &self.srp_zone {
+            zones.registrar = zone.clone();
+        }
+        if let Some(zone) = &self.discovery_zone {
+            zones.discovery = zone.clone();
+        }
+        zones.host = self.discovery_host_zone.clone();
+        zones.reverse = self.discovery_reverse_zones.clone();
+        if let Some(mailbox) = &self.dns_soa_rname {
+            zones.mailbox = mailbox.clone();
+        }
+        crate::dns::inventory::Inventory::new(zones.clone())?;
+        Ok(zones)
+    }
+
     pub fn tls_identity_path(&self) -> PathBuf {
         let mut name = self.state.as_os_str().to_owned();
         name.push(".tls");
@@ -44,6 +70,10 @@ impl Config {
         if args.iter().any(|a| a == "--help" || a == "-h") {
             return Ok(None);
         }
+        let (mut srp_zone, mut discovery_zone, mut discovery_host_zone, mut dns_soa_rname) =
+            (None, None, None, None);
+        let mut discovery_reverse_zones = vec![];
+        let mut discovery_include_unusable = false;
         let mut tsr_option_code = crate::mdns::tsr::OPTION_CODE;
         let mut srp_policy = crate::srp::registry::LeasePolicy::default();
         let mut dns_upstreams = vec![];
@@ -56,6 +86,10 @@ impl Config {
         let (mut no_stub_default, mut always_advertise_ail_routes) = (false, false);
         let (mut pcap_library, mut af, mut sf, mut framing) = (None, None, None, None);
         while let Some(key) = iter.next() {
+            if key == "--discovery-include-unusable" {
+                discovery_include_unusable = true;
+                continue;
+            }
             if key == "--no-additional-a" {
                 no_additional_a = true;
                 continue;
@@ -72,6 +106,24 @@ impl Config {
                 .next()
                 .ok_or_else(|| io::Error::other(format!("missing value for {key}")))?;
             match key.as_str() {
+                "--srp-zone" | "--discovery-zone" | "--discovery-host-zone" | "--dns-soa-rname" => {
+                    let name: crate::dns::wire::Name = value.parse()?;
+                    if name.labels().is_empty() {
+                        return Err(io::Error::other("DNS namespace must not be root"));
+                    }
+                    match key.as_str() {
+                        "--srp-zone" => srp_zone = Some(name),
+                        "--discovery-zone" => discovery_zone = Some(name),
+                        "--discovery-host-zone" => discovery_host_zone = Some(name),
+                        _ => dns_soa_rname = Some(name),
+                    }
+                }
+                "--discovery-reverse-zone" => {
+                    if discovery_reverse_zones.len() >= 64 {
+                        return Err(io::Error::other("reverse-zone capacity"));
+                    }
+                    discovery_reverse_zones.push(value.parse()?);
+                }
                 "--tsr-option-code" => {
                     tsr_option_code = value.parse().map_err(io::Error::other)?;
                     if tsr_option_code == 0 {
@@ -155,6 +207,12 @@ impl Config {
         };
         srp_policy.validate()?;
         Ok(Some(Self {
+            srp_zone,
+            discovery_zone,
+            discovery_host_zone,
+            discovery_reverse_zones,
+            dns_soa_rname,
+            discovery_include_unusable,
             tsr_option_code,
             srp_policy,
             ula_policy,

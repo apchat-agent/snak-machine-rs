@@ -198,6 +198,11 @@ impl Resolver {
             p.forward_cache = false;
             return self.finish_discovered(p, bytes, now);
         }
+        if let Some(answer) = self.inventory_answer(&question, now)? {
+            let bytes = augment(&base, &answer, &question.name).unwrap_or(base);
+            p.forward_cache = false;
+            return self.finish_discovered(p, bytes, now);
+        }
         if self.pending_bytes() + p.charge() + 16 * base.len() + 8192 > BYTES {
             return self.finish_discovered(p, base, now);
         }

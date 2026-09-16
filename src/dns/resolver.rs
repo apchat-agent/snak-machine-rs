@@ -149,6 +149,25 @@ impl Resolver {
         self.zones = Some(zones);
         Ok(())
     }
+    pub fn set_discovery_reachability(
+        &mut self,
+        reachability: crate::discovery_proxy::Reachability,
+    ) {
+        if let Some(d) = &mut self.discovery {
+            d.set_reachability(reachability);
+        }
+    }
+    fn inventory_answer(&self, q: &Question, now: u64) -> io::Result<Option<Message>> {
+        let Some(inventory) = &self.inventory else {
+            return Ok(None);
+        };
+        let reverse = q.name.labels().len() > 3
+            && self.srp_sources.iter().any(|p| {
+                Name::from_labels(q.name.labels()[3..].to_vec())
+                    .is_ok_and(|n| n == super::inventory::reverse_network(*p))
+            });
+        inventory.answer_in_context(q, now, reverse)
+    }
     pub fn set_service_ready(
         &mut self,
         addresses: &[IpAddr],
@@ -518,16 +537,14 @@ impl Resolver {
                 .iter()
                 .any(|r| r.kind == 41 && r.ttl & 0x8000 != 0);
         if !ds_exception {
-            if let Some(inventory) = &self.inventory {
-                if let Some(mut answer) = inventory.answer(&m.questions[0], now)? {
-                    answer.flags |= m.flags & 0x110;
-                    return Ok(vec![self.answer_local(
-                        client,
-                        bytes,
-                        &answer.encode()?,
-                        |q| inventory.answer(q, now)?.ok_or_else(invalid)?.encode(),
-                    )?]);
-                }
+            if let Some(mut answer) = self.inventory_answer(&m.questions[0], now)? {
+                answer.flags |= m.flags & 0x110;
+                return Ok(vec![self.answer_local(
+                    client,
+                    bytes,
+                    &answer.encode()?,
+                    |q| self.inventory_answer(q, now)?.ok_or_else(invalid)?.encode(),
+                )?]);
             }
         }
         let key = query_key(&m)?;
