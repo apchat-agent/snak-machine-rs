@@ -62,6 +62,7 @@ pub struct Selector {
     local: Prefix,
     promised: BTreeMap<Prefix, (Source, u64, bool)>,
     suppressed: bool,
+    blocked: std::collections::BTreeSet<Prefix>,
 }
 impl Selector {
     pub fn new(site: Prefix) -> io::Result<Self> {
@@ -76,6 +77,7 @@ impl Selector {
             local,
             promised: BTreeMap::new(),
             suppressed: false,
+            blocked: Default::default(),
         })
     }
     pub fn expire(&mut self, now: u64) {
@@ -91,10 +93,49 @@ impl Selector {
     pub fn configure(&mut self, policy: Policy, _now: u64) -> io::Result<()> {
         policy.validate()?;
         if self.policy != policy {
+            if !policy.enabled {
+                self.blocked
+                    .extend(self.observations.entries.keys().map(|(_, _, p)| *p));
+                let mut blocked = self.blocked.clone();
+                blocked.extend(self.observations.entries.keys().map(|(_, _, p)| *p));
+                blocked.extend(self.promised.keys().copied());
+                blocked.extend(self.policy.infrastructure);
+                blocked.extend(policy.infrastructure);
+                if blocked.len() > 74 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "disabled NAT64 prefix history capacity",
+                    ));
+                }
+                self.blocked = blocked;
+            } else {
+                self.blocked.clear();
+            }
             self.observations = Observations::default();
             self.suppressed = false;
         }
         self.policy = policy;
+        Ok(())
+    }
+    pub(crate) fn blocked(&self, destination: Ipv6Addr) -> bool {
+        !self.policy.enabled
+            && (self.local.contains(destination)
+                || self.blocked.iter().any(|p| p.contains(destination)))
+    }
+    pub(crate) fn promises(&self) -> impl Iterator<Item = (&Prefix, &(Source, u64, bool))> {
+        self.promised.iter()
+    }
+    pub(crate) fn restore_promise(
+        &mut self,
+        prefix: Prefix,
+        source: Source,
+        until: u64,
+        withdrawn: bool,
+    ) -> io::Result<()> {
+        if !usable(prefix) || self.promised.len() == 8 || self.promised.contains_key(&prefix) {
+            return Err(invalid());
+        }
+        self.promised.insert(prefix, (source, until, withdrawn));
         Ok(())
     }
     pub fn receive(&mut self, link: Link, packet: &[u8], now: u64) -> io::Result<()> {

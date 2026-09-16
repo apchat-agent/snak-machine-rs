@@ -1778,3 +1778,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   withdrawal on physical interfaces. Native memory Ethernet exercises the
   production encoder, readiness and success feedback. No dependency or field
   beyond PLAN2 was added in this slice.
+
+### S23 — runtime recovery and complete scenarios (in progress)
+
+- RED `ae1383d` fails on lost PREF64/RDNSS restart promises and disabled NAT64
+  escaping through generic IPv6 forwarding. GREEN passes **413 tests** and
+  all-feature clippy. Version-2 journals now include bounded NAT and resolver
+  advertisement deadlines/withdrawal progress; wall-clock conversion never
+  restores IPv4 readiness or reachable neighbours. Native shutdown immediately
+  after reboot withdraws outstanding promises, including after a backward clock.
+- Disable retains a bounded set of known translation prefixes and blocks their
+  generic forwarding while ordinary IPv6 routes continue. Re-enable clears that
+  evidence and rediscovers. The 74-prefix block set (64 observations, eight
+  promises and old/new configured values) is needed to enforce PLAN2 §4.2 after
+  discovery is cleared; repeated disabled reconfiguration rejects growth at the
+  same bound. This is derived administrative history, not new peer readiness.
+  Parser/capacity sweeps follow in S24. No dependency added.

@@ -5,7 +5,7 @@ use crate::nat64::{Announcement, Readiness, Source};
 pub(super) struct Services {
     // At most two installed resolver endpoints, and two outstanding promises.
     pub(super) resolvers: Vec<Ipv6Addr>,
-    dns_history: BTreeMap<Ipv6Addr, (Lifetime, u8)>,
+    pub(super) dns_history: BTreeMap<Ipv6Addr, (Lifetime, u8)>,
     ipv4: Option<Time>,
     translator: bool,
 }

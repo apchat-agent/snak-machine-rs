@@ -66,6 +66,9 @@ impl Router {
         {
             return self.receive(link, e.packet, now, rng);
         }
+        if self.nat64.blocked(e.destination) {
+            return Ok(vec![]);
+        }
         self.forward(link, &e, now)
     }
     pub fn lookup(

@@ -136,6 +136,33 @@ impl Router {
                 ));
             }
         }
+        for (prefix, (source, until, withdrawn)) in self.nat64.promises() {
+            if *until > now {
+                let source = match source {
+                    crate::nat64::Source::Local => 0,
+                    crate::nat64::Source::Infrastructure => 1,
+                    crate::nat64::Source::Configured => 2,
+                };
+                text.push_str(&format!(
+                    "N {} {} {} {} {}\n",
+                    prefix.address,
+                    prefix.length,
+                    source,
+                    end(Lifetime::Until(*until), now, wall),
+                    u8::from(*withdrawn)
+                ));
+            }
+        }
+        for (address, (until, count)) in &self.services.dns_history {
+            if until.live(now) {
+                text.push_str(&format!(
+                    "E {} {} {}\n",
+                    address,
+                    end(*until, now, wall),
+                    count
+                ));
+            }
+        }
         for ((link, address), owned) in &self.owned {
             if let Some(prefix) = owned.prefix {
                 text.push_str(&format!(
@@ -336,6 +363,40 @@ impl Router {
                             r.withdrawals.insert((link, p), count);
                         }
                     }
+                }
+                ["N", address, length, source, valid, withdrawn] if version2 => {
+                    let prefix = prefix(address, length)?;
+                    let source = match *source {
+                        "0" => crate::nat64::Source::Local,
+                        "1" => crate::nat64::Source::Infrastructure,
+                        "2" => crate::nat64::Source::Configured,
+                        _ => return Err(invalid()),
+                    };
+                    let withdrawn = match *withdrawn {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err(invalid()),
+                    };
+                    let Lifetime::Until(until) = lifetime(valid)? else {
+                        return Err(invalid());
+                    };
+                    r.nat64.restore_promise(prefix, source, until, withdrawn)?;
+                }
+                ["E", address, valid, count] if version2 => {
+                    let address: Ipv6Addr = address.parse().map_err(|_| invalid())?;
+                    let valid = lifetime(valid)?;
+                    let count = u8::try_from(parse(count)?).map_err(|_| invalid())?;
+                    if address.is_unspecified()
+                        || address.is_multicast()
+                        || address.is_loopback()
+                        || valid == Lifetime::Infinite
+                        || !(1..=3).contains(&count)
+                        || r.services.dns_history.len() == 2
+                        || r.services.dns_history.contains_key(&address)
+                    {
+                        return Err(invalid());
+                    }
+                    r.services.dns_history.insert(address, (valid, count));
                 }
                 ["I", link, address, net, length, attempts] if version2 => {
                     let link = parse_link(link)?;
