@@ -1624,3 +1624,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   expired grace time. At most 32 probes are taken per poll; no separate probe
   table. State/expiry/probe bit are required RFC transport state. No dependency.
   Wire checks, probe/error output and native integration follow.
+- Packet RED `e35c25d` confirms missing TCP wire and timer output. GREEN
+  passes **378 tests** and all-feature clippy. Independent literal SYN/SYN-ACK
+  fixtures and data packets verify addresses/ports, sequence/acknowledgment,
+  flags/options/payload, hop count and both IP/TCP checksums. Truncated headers,
+  invalid offsets/options, contradictory SYN flags and corrupted checksums
+  cannot create or refresh sessions. Valid MSS bytes are preserved.
+- Driver's native DHCP/ARP/ND fixture completes a translated TCP handshake,
+  sends data and enters half-close without creating endpoint TCP connections.
+  Idle probes have zero sequence/acknowledgment and only ACK set. An IPv4
+  initiation timeout sends Port Unreachable quoting its validated initial SYN.
+  Quotes are bounded to IPv4 header plus eight bytes (at most 68); the tested
+  pending-error queue holds at most 32, and combined probe/error output is at
+  most 32 per poll. Quote/error state is required by RFC 6146 section 3.5.2.2;
+  its charge is included in the shared byte budget. No dependency.

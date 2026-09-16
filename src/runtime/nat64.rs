@@ -88,11 +88,11 @@ impl<I: PacketIo> Driver<I> {
             let translated = crate::ipv4::wire::Packet::parse(&packet)
                 .ok()
                 .is_some_and(|p| {
-                    p.protocol == 17
+                    [6, 17].contains(&p.protocol)
                         && p.payload.len() >= 4
                         && self.nat64.as_ref().is_some_and(|n| {
                             n.bindings
-                                .owns(17, u16::from_be_bytes([p.payload[2], p.payload[3]]))
+                                .owns(p.protocol, u16::from_be_bytes([p.payload[2], p.payload[3]]))
                         })
                 });
             if translated {
@@ -108,6 +108,10 @@ impl<I: PacketIo> Driver<I> {
             } else if let Some(stacks) = &mut self.stacks {
                 let _ = stacks[0].input(&packet, now);
             }
+        }
+        if let Some(nat) = &mut self.nat64 {
+            let output = nat.poll(now)?;
+            self.dispatch_nat64(output, now, rng)?;
         }
         Ok(())
     }

@@ -49,14 +49,16 @@ impl Translator {
     ) -> io::Result<Vec<Tx>> {
         let e = wire::envelope(FrameKind::RawIpv6, packet).map_err(|_| invalid())?;
         if e.packet.len() != packet.len()
-            || e.next_header != 17
+            || ![6, 17].contains(&e.next_header)
             || e.hop_limit <= 1
             || e.payload.len() > 65515
         {
             return Err(invalid());
         }
-        let (sport, dport) = udp(e.payload)?;
-        if e.payload[6..8] == [0, 0] || wire::checksum(e.source, e.destination, 17, e.payload) != 0
+        let protocol = e.next_header;
+        let (sport, dport) = ports(protocol, e.payload)?;
+        if (protocol == 17 && e.payload[6..8] == [0, 0])
+            || wire::checksum(e.source, e.destination, protocol, e.payload) != 0
         {
             return Err(invalid());
         }
@@ -78,30 +80,39 @@ impl Translator {
         if !ipv4::unicast(dest) || (dest != pool && !reachable(dest)) {
             return Ok(vec![]);
         }
-        let assigned = self.bindings.udp_out(
-            e.source,
-            sport,
-            SocketAddrV4::new(dest, dport),
-            now,
-            rng,
-            |_| false,
-        )?;
+        let remote = SocketAddrV4::new(dest, dport);
+        let assigned = if protocol == 17 {
+            self.bindings
+                .udp_out(e.source, sport, remote, now, rng, |_| false)?
+        } else {
+            let Some(port) =
+                self.bindings
+                    .tcp_out(e.source, sport, remote, e.payload[13], now, rng)?
+            else {
+                return Ok(vec![]);
+            };
+            port
+        };
         let class = (packet[0] & 15) << 4 | packet[1] >> 4;
         let mut payload = e.payload.to_vec();
         payload[..2].copy_from_slice(&assigned.to_be_bytes());
         if dest == pool {
             // RFC 6146 3.8: apply the outgoing tuple to the inbound filter.
             // This is one router hop; no intermediate IPv4 packet is forwarded.
-            let Some((target, port)) =
-                self.bindings
-                    .udp_in(dport, SocketAddrV4::new(pool, assigned), now)?
-            else {
+            let remote = SocketAddrV4::new(pool, assigned);
+            let target = if protocol == 17 {
+                self.bindings.udp_in(dport, remote, now)?
+            } else {
+                self.bindings.tcp_in(dport, remote, payload[13], now)?
+            };
+            let Some((target, port)) = target else {
                 return Ok(vec![]);
             };
             payload[2..4].copy_from_slice(&port.to_be_bytes());
             return Ok(vec![Tx {
                 link: Link::Stub,
                 packet: encode6(
+                    protocol,
                     self.synthesize(pool),
                     target,
                     class,
@@ -110,10 +121,11 @@ impl Translator {
                 )?,
             }]);
         }
-        payload[6..8].fill(0);
-        let sum = checksum4(pool, dest, 17, &payload);
-        payload[6..8].copy_from_slice(&nonzero(sum).to_be_bytes());
-        let mut out = ipv4::wire::encode(pool, dest, 17, e.hop_limit - 1, &payload)?;
+        let at = checksum_offset(protocol);
+        payload[at..at + 2].fill(0);
+        let sum = checksum4(pool, dest, protocol, &payload);
+        payload[at..at + 2].copy_from_slice(&transport_sum(protocol, sum).to_be_bytes());
+        let mut out = ipv4::wire::encode(pool, dest, protocol, e.hop_limit - 1, &payload)?;
         out[1] = class;
         out[4..6].copy_from_slice(&self.identification.to_be_bytes());
         self.identification = self.identification.wrapping_add(1);
@@ -131,31 +143,41 @@ impl Translator {
     pub fn inbound(&mut self, packet: &[u8], now: u64) -> io::Result<Vec<Tx>> {
         let p = ipv4::wire::Packet::parse(packet)?;
         if p.bytes.len() != packet.len()
-            || p.protocol != 17
+            || ![6, 17].contains(&p.protocol)
             || p.fragment_offset != 0
             || p.more_fragments
             || p.ttl <= 1
         {
             return Err(invalid());
         }
-        let (sport, dport) = udp(p.payload)?;
-        if p.payload[6..8] != [0, 0] && checksum4(p.source, p.destination, 17, p.payload) != 0 {
+        let protocol = p.protocol;
+        let (sport, dport) = ports(protocol, p.payload)?;
+        if (protocol == 6 || p.payload[6..8] != [0, 0])
+            && checksum4(p.source, p.destination, protocol, p.payload) != 0
+        {
             return Err(invalid());
         }
         if self.ipv4 != Some(p.destination) || !ipv4::unicast(p.source) {
             return Ok(vec![]);
         }
-        let Some((target, port)) =
-            self.bindings
-                .udp_in(dport, SocketAddrV4::new(p.source, sport), now)?
-        else {
+        let remote = SocketAddrV4::new(p.source, sport);
+        let target = if protocol == 17 {
+            self.bindings.udp_in(dport, remote, now)?
+        } else {
+            self.bindings.tcp_in(dport, remote, p.payload[13], now)?
+        };
+        let Some((target, port)) = target else {
             return Ok(vec![]);
         };
+        if protocol == 6 && p.payload[13] & 2 != 0 {
+            self.bindings.remember_tcp_syn(dport, remote, p.bytes);
+        }
         let mut payload = p.payload.to_vec();
         payload[2..4].copy_from_slice(&port.to_be_bytes());
         Ok(vec![Tx {
             link: Link::Stub,
             packet: encode6(
+                protocol,
                 self.synthesize(p.source),
                 target,
                 p.traffic_class,
@@ -164,8 +186,59 @@ impl Translator {
             )?,
         }])
     }
+    pub fn poll(&mut self, now: u64) -> io::Result<Vec<Tx>> {
+        self.bindings.expire(now);
+        let Some(pool) = self.ipv4 else {
+            return Ok(vec![]);
+        };
+        let mut output = vec![];
+        for (source, port, _, remote) in self.bindings.take_tcp_probes(32) {
+            let mut tcp = vec![0; 20];
+            tcp[..2].copy_from_slice(&remote.port().to_be_bytes());
+            tcp[2..4].copy_from_slice(&port.to_be_bytes());
+            tcp[12] = 0x50;
+            tcp[13] = 16;
+            output.push(Tx {
+                link: Link::Stub,
+                packet: encode6(6, self.synthesize(*remote.ip()), source, 0, 64, tcp)?,
+            });
+        }
+        for quote in self.bindings.take_tcp_timeouts(32 - output.len()) {
+            let p = ipv4::wire::Packet::quoted(&quote)?;
+            let mut icmp = vec![3, 3, 0, 0, 0, 0, 0, 0];
+            icmp.extend(&quote);
+            let sum = ipv4::wire::checksum(&icmp);
+            icmp[2..4].copy_from_slice(&sum.to_be_bytes());
+            output.push(Tx {
+                link: Link::Ail,
+                packet: ipv4::wire::encode(pool, p.source, 1, 64, &icmp)?,
+            });
+        }
+        Ok(output)
+    }
     fn synthesize(&self, ipv4: Ipv4Addr) -> Ipv6Addr {
         (u128::from(self.prefix.address) | u128::from(u32::from(ipv4))).into()
+    }
+}
+fn ports(protocol: u8, b: &[u8]) -> io::Result<(u16, u16)> {
+    if protocol == 6 {
+        super::tcp::ports(b)
+    } else {
+        udp(b)
+    }
+}
+fn checksum_offset(protocol: u8) -> usize {
+    if protocol == 6 {
+        16
+    } else {
+        6
+    }
+}
+fn transport_sum(protocol: u8, sum: u16) -> u16 {
+    if protocol == 17 {
+        nonzero(sum)
+    } else {
+        sum
     }
 }
 fn udp(b: &[u8]) -> io::Result<(u16, u16)> {
@@ -195,16 +268,19 @@ fn nonzero(value: u16) -> u16 {
     }
 }
 fn encode6(
+    protocol: u8,
     source: Ipv6Addr,
     dest: Ipv6Addr,
     class: u8,
     hop: u8,
     mut payload: Vec<u8>,
 ) -> io::Result<Vec<u8>> {
-    payload[6..8].fill(0);
-    let sum = wire::checksum(source, dest, 17, &payload);
-    payload[6..8].copy_from_slice(&nonzero(sum).to_be_bytes());
-    let mut out = wire::ipv6_packet(source, dest, 17, hop, &payload).map_err(|_| invalid())?;
+    let at = checksum_offset(protocol);
+    payload[at..at + 2].fill(0);
+    let sum = wire::checksum(source, dest, protocol, &payload);
+    payload[at..at + 2].copy_from_slice(&transport_sum(protocol, sum).to_be_bytes());
+    let mut out =
+        wire::ipv6_packet(source, dest, protocol, hop, &payload).map_err(|_| invalid())?;
     out[0] |= class >> 4;
     out[1] = class << 4;
     Ok(out)

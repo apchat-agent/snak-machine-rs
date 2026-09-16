@@ -1,6 +1,29 @@
 use super::*;
 use crate::nat64::tcp::{State, TRANSITORY};
 impl Bindings {
+    pub fn tcp_timeout_load(&self) -> (usize, usize) {
+        (
+            self.tcp_timeouts.len(),
+            self.tcp_timeouts.iter().map(Vec::len).sum(),
+        )
+    }
+    pub(crate) fn take_tcp_timeouts(&mut self, limit: usize) -> Vec<Vec<u8>> {
+        self.tcp_timeouts
+            .drain(..limit.min(32).min(self.tcp_timeouts.len()))
+            .collect()
+    }
+    pub(crate) fn remember_tcp_syn(&mut self, port: u16, remote: SocketAddrV4, packet: &[u8]) {
+        let Some(key) = self.reverse.get(&(6, port)) else {
+            return;
+        };
+        let Some(session) = self.sessions.get_mut(&(*key, remote)) else {
+            return;
+        };
+        if session.tcp == Some(State::V4Init) && session.syn_quote.is_empty() {
+            let header = usize::from(packet[0] & 15) * 4;
+            session.syn_quote = packet[..(header + 8).min(packet.len()).min(68)].to_vec();
+        }
+    }
     pub fn tcp_state(
         &self,
         source: Ipv6Addr,
@@ -26,6 +49,9 @@ impl Bindings {
     fn tcp_session(&mut self, key: Key, remote: SocketAddrV4, v6: bool, flags: u8, now: u64) {
         let expires = if let Some(s) = self.sessions.get_mut(&(key, remote)) {
             let (state, expires) = s.tcp.unwrap().packet(v6, flags, s.expires, now);
+            if state != State::V4Init {
+                s.syn_quote.clear();
+            }
             s.tcp = Some(state);
             s.expires = expires;
             s.probe = false;
@@ -38,6 +64,7 @@ impl Bindings {
                     expires,
                     tcp: Some(if v6 { State::V6Init } else { State::V4Init }),
                     probe: false,
+                    syn_quote: vec![],
                 },
             );
             self.bindings.get_mut(&key).unwrap().sessions += 1;

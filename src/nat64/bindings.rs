@@ -5,7 +5,7 @@ use crate::{
     time::RandomSource,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     io,
     net::{Ipv6Addr, SocketAddrV4},
 };
@@ -26,6 +26,7 @@ struct Session {
     expires: u64,
     tcp: Option<super::tcp::State>,
     probe: bool,
+    syn_quote: Vec<u8>,
 }
 pub struct Bindings {
     ports: Ports,
@@ -36,6 +37,7 @@ pub struct Bindings {
     next: Option<u64>,
     udp_filtering: UdpFiltering,
     udp_seconds: u32,
+    tcp_timeouts: VecDeque<Vec<u8>>,
 }
 impl Default for Bindings {
     fn default() -> Self {
@@ -48,6 +50,7 @@ impl Default for Bindings {
             next: None,
             udp_filtering: UdpFiltering::default(),
             udp_seconds: 300,
+            tcp_timeouts: VecDeque::new(),
         }
     }
 }
@@ -75,9 +78,10 @@ impl Bindings {
             + self.reverse.len() * 96
             + self.sessions.len() * 256
             + self.hosts.len() * 128
+            + self.tcp_timeouts.len() * 128
     }
     pub fn next_deadline(&self) -> Option<u64> {
-        if self.sessions.values().any(|s| s.probe) {
+        if !self.tcp_timeouts.is_empty() || self.sessions.values().any(|s| s.probe) {
             Some(0)
         } else {
             self.next
@@ -115,7 +119,13 @@ impl Bindings {
             .collect();
         let mut released = vec![];
         for key in old {
-            self.sessions.remove(&key);
+            let s = self.sessions.remove(&key).unwrap();
+            if s.tcp == Some(super::tcp::State::V4Init)
+                && !s.syn_quote.is_empty()
+                && self.tcp_timeouts.len() < 32
+            {
+                self.tcp_timeouts.push_back(s.syn_quote);
+            }
             let b = self.bindings.get_mut(&key.0).unwrap();
             b.sessions -= 1;
             let host = self.hosts.get_mut(&key.0 .1).unwrap();
@@ -141,6 +151,7 @@ impl Bindings {
         self.sessions.clear();
         self.hosts.clear();
         self.next = None;
+        self.tcp_timeouts.clear();
         ports
     }
     fn admit(&self, key: Key, remote: SocketAddrV4) -> io::Result<()> {
@@ -163,6 +174,7 @@ impl Bindings {
                     expires,
                     tcp: None,
                     probe: false,
+                    syn_quote: vec![],
                 },
             )
             .is_none()
