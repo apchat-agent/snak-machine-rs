@@ -501,3 +501,99 @@ fn s21_native_icmp_errors_dispatch_by_quoted_binding() {
     assert_eq!(&out[0][24..40], &h.octets());
     assert!(packets::icmp6_valid(&out[0]));
 }
+
+fn with_ext(mut b: Vec<u8>, kind: u8, mut ext: Vec<u8>) -> Vec<u8> {
+    ext[0] = b[6];
+    b[6] = kind;
+    b.splice(40..40, ext);
+    let length = (b.len() - 40) as u16;
+    b[4..6].copy_from_slice(&length.to_be_bytes());
+    b
+}
+#[test]
+fn s21_extension_headers_are_validated_skipped_and_routing_errors_point_to_segments_left() {
+    let query = packets::udp6(host(1), synthetic(7), 1234, 80, b"extension");
+    for packet in [
+        with_ext(query.clone(), 0, vec![0; 8]),
+        with_ext(query.clone(), 60, vec![0; 8]),
+        with_ext(query.clone(), 43, vec![0; 8]),
+        with_ext(
+            with_ext(with_ext(query.clone(), 60, vec![0; 8]), 43, vec![0; 8]),
+            0,
+            vec![0; 8],
+        ),
+    ] {
+        let expected = send(&mut translator(), &query, 0).unwrap();
+        let actual = send(&mut translator(), &packet, 0).unwrap();
+        assert_eq!(actual.len(), 1);
+        assert_eq!(actual[0].packet, expected[0].packet);
+    }
+    let mut routing = vec![0; 8];
+    routing[3] = 1;
+    let bad = with_ext(query.clone(), 43, routing);
+    let mut t = translator();
+    let out = send(&mut t, &bad, 0).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].link, Link::Stub);
+    assert_eq!(&out[0].packet[40..42], &[4, 0]);
+    assert_eq!(&out[0].packet[44..48], &43u32.to_be_bytes());
+    assert_eq!(&out[0].packet[48..], bad);
+    assert_eq!(t.bindings.counts(), (0, 0, 0));
+    for bad in [
+        with_ext(with_ext(query.clone(), 0, vec![0; 8]), 0, vec![0; 8]),
+        with_ext(with_ext(query.clone(), 0, vec![0; 8]), 60, vec![0; 8]),
+        with_ext(query.clone(), 0, vec![0, 0, 2, 7, 0, 0, 0, 0]),
+        with_ext(query.clone(), 0, vec![0, 255, 0, 0, 0, 0, 0, 0]),
+    ] {
+        assert!(send(&mut t, &bad, 1).is_err());
+    }
+}
+#[test]
+fn s21_hop_expiry_unsupported_protocol_and_pmtu_generate_bounded_errors_without_bindings() {
+    let mut t = translator();
+    let mut p = packets::udp6(host(1), synthetic(7), 1234, 80, b"ttl");
+    p[7] = 1;
+    let out = send(&mut t, &p, 0).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0].packet[40..42], &[3, 0]);
+    assert_eq!(&out[0].packet[48..], p);
+    assert!(packets::icmp6_valid(&out[0].packet));
+    let mut unknown = p.clone();
+    unknown[7] = 64;
+    unknown[6] = 132;
+    let out = send(&mut t, &unknown, 0).unwrap();
+    assert_eq!(&out[0].packet[40..42], &[1, 4]);
+    let big = packets::udp6(host(1), synthetic(7), 1234, 80, &[0; 1600]);
+    let out = send(&mut t, &big, 0).unwrap();
+    assert_eq!(&out[0].packet[40..42], &[2, 0]);
+    assert_eq!(&out[0].packet[44..48], &1520u32.to_be_bytes());
+    assert!(out[0].packet.len() <= 1280);
+    assert_eq!(t.bindings.counts(), (0, 0, 0));
+    let mut err = error6(host(1), synthetic(7), 1, 4, 0, &p);
+    err[7] = 1;
+    assert!(
+        send(&mut t, &err, 0).unwrap().is_empty(),
+        "no error about an error"
+    );
+    for _ in 0..29 {
+        assert_eq!(send(&mut t, &p, 0).unwrap().len(), 1);
+    }
+    assert!(send(&mut t, &p, 0).unwrap().is_empty());
+    assert_eq!(send(&mut t, &p, 1000).unwrap().len(), 1);
+    // Inbound hop-limit handling uses an existing mapping without refreshing it.
+    let query = packets::udp6(host(1), synthetic(7), 1234, 80, b"ttl");
+    send(&mut t, &query, 1001).unwrap();
+    let deadline = t.bindings.next_deadline();
+    let mut reply = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, b"ttl");
+    reply[8] = 1;
+    reply[10..12].fill(0);
+    let c = packets::sum(&reply[..20]);
+    reply[10..12].copy_from_slice(&c.to_be_bytes());
+    let out = t.inbound(&reply, 1002).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].link, Link::Ail);
+    assert_eq!(&out[0].packet[20..22], &[11, 0]);
+    assert_eq!(&out[0].packet[28..], reply);
+    assert_eq!(packets::sum(&out[0].packet[20..]), 0);
+    assert_eq!(t.bindings.next_deadline(), deadline);
+}
