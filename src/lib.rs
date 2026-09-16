@@ -35,3 +35,5 @@ pub mod service_io;
 
 pub mod mdns;
 pub mod srp;
+
+pub mod discovery_proxy;

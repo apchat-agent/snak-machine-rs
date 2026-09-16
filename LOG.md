@@ -1169,3 +1169,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   real-interface multicast/fragment delivery and multiple physical Advertising
   Proxies, including the experimental TSR option code and Ed448 checksum
   convention. Final complete service-path and hostile-load audits remain S23/S24.
+
+### S15 — Discovery Proxy and all-answer A augmentation (in progress)
+
+- S15 mapping RED `cd46719` confirms the missing Discovery Proxy view.
+  GREEN passes **279 tests** and all-feature clippy. Rich-text service and LDH
+  host domains, reverse questions, embedded host names and binary TXT/labels
+  follow RFC 8766 section 5.5; translated data clears cache-flush and caps TTL
+  at ten seconds. Link-local addresses require actual same-link/IPv4 translator
+  reachability or an explicit filtering override; known private/ULA realm
+  mismatches suppress their addresses.
+- SOA/NS, unsupported administrative services, subdomain delegation records
+  and reverse enumeration metadata return immediate authoritative responses.
+  NS targets are required outside every delegated proxy zone. The reverse-zone
+  and nameserver lists have tested bounds of 64 and 8; expanded-name overflow
+  fails safely. Zone/scope/reachability fields implement the planned view and
+  readiness inputs. No dependency. Query scheduling, denial conversion, common
+  A augmentation and native DNS/DoT integration follow.
