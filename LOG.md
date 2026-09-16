@@ -1417,3 +1417,9 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   treats it as packet loss, leaving TCP/DNS retry timers responsible for retry.
   The router no longer fails because a discovered resolver cannot be reached.
   No new field or dependency; retained baseline assertions pass unchanged.
+- S17 forwarder RED `00651f6` confirms that client DDR queries escaped to the
+  infrastructure. GREEN passes **331 tests** and all-feature clippy. Queries
+  for resolver.arpa and its descendants return local NODATA (RFC 9462 6.1/6.4);
+  the router's separately owned DDR control transaction remains operational.
+  A native reset/fallback/recovery scenario confirms renewed encrypted use on
+  a fresh stream after the backoff. No new field or dependency.

@@ -567,6 +567,11 @@ impl Resolver {
             client,
             id: m.id,
         };
+        // RFC 9462 6.1/6.4: infrastructure designations do not designate us.
+        // Internal discovery bypasses this client-query dispatch.
+        if in_zone(&m.questions[0].name, &"resolver.arpa.".parse().unwrap()) {
+            return Ok(vec![deliver(waiter, &failure(&m, 0)?)?]);
+        }
         let service_arpa = in_zone(&m.questions[0].name, &"service.arpa.".parse().unwrap());
         let ds_exception = service_arpa
             && m.questions[0].kind == 43
