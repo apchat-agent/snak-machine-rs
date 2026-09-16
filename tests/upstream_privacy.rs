@@ -1212,3 +1212,97 @@ fn s17_native_configured_trust_rejects_wrong_resolver_identity_and_reports_fallb
         "do not change verification under an active stream"
     );
 }
+
+#[test]
+fn s17_removed_plaintext_upstream_cannot_complete_or_poison_a_current_transaction() {
+    use snac_rs::dns::resolver::{Action, Client, Resolver};
+    let mut r = Resolver::new(true);
+    let mut rng = snac_rs::time::ScriptedRandom::new([]);
+    let old = "192.168.1.53:53".parse().unwrap();
+    let new = "192.168.2.53:53".parse().unwrap();
+    r.configure_upstream_privacy(&[old], true, 0).unwrap();
+    let mut m = Message::new(130, 0x100);
+    m.questions.push(Question {
+        name: "live.example.".parse().unwrap(),
+        kind: 1,
+        class: 1,
+    });
+    let a = r
+        .submit(
+            Client::udp("[::1]:40000".parse().unwrap()),
+            &m.encode().unwrap(),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    let Action::Upstream(p) = &a[0] else {
+        panic!();
+    };
+    let mut response = Message::parse(&p.bytes, Context::Unicast).unwrap();
+    response.flags = 0x8180;
+    response.answers.push(snac_rs::dns::wire::Record {
+        name: response.questions[0].name.clone(),
+        kind: 1,
+        class: 1,
+        ttl: 60,
+        data: snac_rs::dns::wire::Rdata::A([192, 0, 2, 1]),
+    });
+    r.configure_upstream_privacy(&[new], true, 1).unwrap();
+    assert!(
+        r.receive(
+            p.exchange,
+            p.server,
+            p.source_port,
+            false,
+            &response.encode().unwrap(),
+            1,
+            &mut rng
+        )
+        .unwrap()
+        .is_empty(),
+        "late removed-source responses must not reach a client"
+    );
+    assert_eq!(r.cache_sets(), 0);
+    let a = r.tick(1, &mut rng).unwrap();
+    let Action::Upstream(retry) = &a[0] else {
+        panic!("configuration changes retry immediately");
+    };
+    assert_eq!(retry.server, new);
+    assert_ne!(retry.exchange, p.exchange);
+}
+#[test]
+fn s17_ddr_ipv6_hint_bound_accepts_eight_and_rejects_nine() {
+    let mut rng = snac_rs::time::ScriptedRandom::new([]);
+    let mut m = ddr();
+    let mut r = designation(1, 8853);
+    if let snac_rs::dns::wire::Rdata::Svcb { params, .. } = &mut r.data {
+        params.push((
+            6,
+            "fd11::53"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .repeat(8),
+        ));
+    }
+    m.answers = vec![r.clone()];
+    assert_eq!(
+        snac_rs::dns::privacy::ddr_candidates("[fd11::53]:53".parse().unwrap(), &m, 0, &mut rng)
+            .unwrap()
+            .candidates[0]
+            .endpoint
+            .port(),
+        8853
+    );
+    if let snac_rs::dns::wire::Rdata::Svcb { params, .. } = &mut r.data {
+        params.last_mut().unwrap().1.extend([0; 16]);
+    }
+    m.answers = vec![r];
+    assert!(snac_rs::dns::privacy::ddr_candidates(
+        "[fd11::53]:53".parse().unwrap(),
+        &m,
+        0,
+        &mut rng
+    )
+    .is_err());
+}
