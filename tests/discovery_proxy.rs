@@ -728,3 +728,206 @@ fn s15_proxy_suppresses_services_with_only_unusable_addresses_until_translation_
         .any(|r| r.data == Rdata::A([169, 254, 3, 4])));
     assert_eq!(m.counts().0, 0);
 }
+
+fn dns_query(id: u16, query: Question) -> Vec<u8> {
+    let mut m = Message::new(id, 0x100);
+    m.questions.push(query);
+    m.encode().unwrap()
+}
+fn response(action: snac_rs::dns::resolver::Action) -> (snac_rs::dns::resolver::Client, Message) {
+    let snac_rs::dns::resolver::Action::Reply { client, bytes } = action else {
+        panic!("expected resolver reply")
+    };
+    (client, Message::parse(&bytes, Context::Unicast).unwrap())
+}
+#[test]
+fn s15_resolver_discovery_coalesces_clients_and_preserves_reply_endpoints() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    r.enable_discovery(zone()).unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut udp = Client::udp("[fd11::1]:12000".parse().unwrap());
+    udp.local = Some("fd11::53".parse().unwrap());
+    let tcp = Client::tcp("[fd11::2]:12001".parse().unwrap(), 7);
+    for (id, client) in [(1, udp.clone()), (2, tcp.clone())] {
+        assert!(r
+            .submit(
+                client,
+                &dns_query(id, q("host.floor-1.example.", 1)),
+                0,
+                &mut rng
+            )
+            .unwrap()
+            .is_empty());
+    }
+    assert_eq!((r.pending_count(), r.waiter_count()), (1, 2));
+    assert!(r.connection_pending(7));
+    assert!(r
+        .poll_discovery(&mut engine, 0, &mut rng)
+        .unwrap()
+        .is_empty());
+    assert_eq!(engine.querier.counts().0, 1);
+    cached(
+        &mut engine.querier,
+        vec![record("host.local.", 1, Rdata::A([192, 0, 2, 8]))],
+        1,
+    );
+    let answers = r.poll_discovery(&mut engine, 1, &mut rng).unwrap();
+    assert_eq!(answers.len(), 2);
+    for (action, (client, id)) in answers.into_iter().zip([(udp, 1), (tcp, 2)]) {
+        let (actual, answer) = response(action);
+        assert_eq!(actual, client);
+        assert_eq!(answer.id, id);
+        assert_eq!(answer.flags & 0x848f, 0x8480);
+        assert_eq!(answer.answers[0].ttl, 10);
+    }
+    assert_eq!(
+        (
+            r.pending_count(),
+            r.waiter_count(),
+            engine.querier.counts().0
+        ),
+        (0, 0, 0)
+    );
+    assert_eq!(r.cache_sets(), 0, "learned mDNS stays in its own cache");
+}
+#[test]
+fn s15_resolver_discovery_adds_a_after_negative_aaaa_and_can_disable_it() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    r.enable_discovery(zone()).unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    cached(
+        &mut engine.querier,
+        vec![
+            record("host.local.", 1, Rdata::A([192, 0, 2, 8])),
+            record(
+                "host.local.",
+                47,
+                Rdata::Nsec {
+                    next: name("host.local."),
+                    bitmap: vec![0, 1, 0x40],
+                },
+            ),
+        ],
+        0,
+    );
+    let client = Client::udp("[fd11::1]:12000".parse().unwrap());
+    let query = dns_query(81, q("host.floor-1.example.", 28));
+    r.submit(client.clone(), &query, 0, &mut rng).unwrap();
+    let mut out = r.poll_discovery(&mut engine, 0, &mut rng).unwrap();
+    out.extend(r.poll_discovery(&mut engine, 0, &mut rng).unwrap());
+    assert_eq!(out.len(), 1);
+    let (_, answer) = response(out.pop().unwrap());
+    assert_eq!(answer.questions, [q("host.floor-1.example.", 28)]);
+    assert!(answer.answers.is_empty());
+    assert_eq!(answer.flags & 15, 0);
+    assert_eq!(answer.additional.len(), 1);
+    assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 8]));
+    assert_eq!(answer.additional[0].name, name("host.floor-1.example."));
+    r.set_additional_a(false);
+    r.submit(client, &query, 1, &mut rng).unwrap();
+    let (_, answer) = response(
+        r.poll_discovery(&mut engine, 1, &mut rng)
+            .unwrap()
+            .pop()
+            .unwrap(),
+    );
+    assert!(answer.additional.is_empty());
+}
+#[test]
+fn s15_resolver_shares_transaction_and_source_limits_between_forwarding_and_discovery() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    r.enable_discovery(zone()).unwrap();
+    r.set_upstreams(&["192.0.2.53:53".parse().unwrap()])
+        .unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    for i in 0..128 {
+        let client = Client::tcp(format!("[fd11::{}]:12000", i / 8 + 1).parse().unwrap(), i);
+        let suffix = if i % 2 == 0 {
+            "floor-1.example."
+        } else {
+            "outside.example."
+        };
+        r.submit(
+            client,
+            &dns_query(i as u16, q(&format!("host{i}.{suffix}"), 1)),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    assert_eq!((r.pending_count(), r.waiter_count()), (128, 128));
+    assert!(r.pending_bytes() <= 4 * 1024 * 1024);
+    for suffix in ["floor-1.example.", "outside.example."] {
+        let err = r
+            .submit(
+                Client::udp("[fd11::99]:12000".parse().unwrap()),
+                &dns_query(129, q(&format!("extra.{suffix}"), 1)),
+                0,
+                &mut rng,
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+    }
+    r.cancel_connection(0);
+    assert_eq!(r.pending_count(), 127);
+    let err = r
+        .submit(
+            Client::udp("[fd11::2]:12000".parse().unwrap()),
+            &dns_query(130, q("extra.floor-1.example.", 1)),
+            0,
+            &mut rng,
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock,
+        "mixed per-source eight-waiter bound"
+    );
+}
+#[test]
+fn s15_resolver_disconnect_cancels_multicast_only_after_last_waiter() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    r.enable_discovery(zone()).unwrap();
+    let mut engine = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    for id in [1, 2] {
+        r.submit(
+            Client::tcp("[fd11::1]:12000".parse().unwrap(), id),
+            &dns_query(id as u16, q("host.floor-1.example.", 1)),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    r.poll_discovery(&mut engine, 0, &mut rng).unwrap();
+    r.cancel_connection(1);
+    assert_eq!((r.pending_count(), r.waiter_count()), (1, 1));
+    r.poll_discovery(&mut engine, 1, &mut rng).unwrap();
+    assert_eq!(engine.querier.counts().0, 1);
+    r.cancel_connection(2);
+    assert_eq!(r.pending_count(), 0);
+    r.poll_discovery(&mut engine, 2, &mut rng).unwrap();
+    assert_eq!(engine.querier.counts().0, 0);
+    assert!(!r.connection_pending(2));
+}
