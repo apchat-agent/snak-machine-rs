@@ -855,26 +855,69 @@ fn s07_hostile_fragment_sources_are_rejected_before_reassembly() {
 fn s07_loopback_caps_partial_writes_and_udp_floods() {
     use snac_rs::service_io::loopback::Loopback;
     use std::net::{TcpStream, UdpSocket};
+    use std::os::fd::AsRawFd;
     let mut s = Loopback::bind("127.0.0.1".parse().unwrap()).unwrap();
     let mut peers = vec![];
     for n in 0..5 {
         peers.push(TcpStream::connect(s.local_addr()).unwrap());
         s.poll(n).unwrap();
     }
+    for _ in 0..200 {
+        if s.connections().len() == 4 {
+            break;
+        }
+        s.poll(5).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(s.connections().len(), 4);
     let id = s.connections()[0];
     assert_eq!(s.send_tcp(id, &vec![1; 100000]).unwrap(), 65536);
     assert_eq!(s.send_tcp(id, b"x").unwrap(), 0);
     let udp = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let sndbuf: libc::c_int = 65536;
+    assert_eq!(
+        unsafe {
+            libc::setsockopt(
+                udp.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&sndbuf as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        },
+        0
+    );
     for n in 10..75 {
         udp.send_to(b"flood", s.local_addr()).unwrap();
         s.poll(n).unwrap();
     }
+    for _ in 0..200 {
+        s.poll(74).unwrap();
+        if s.queued_udp() == (64, 64 * 69) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(s.queued_udp(), (64, 64 * 69));
     while s.receive_udp().is_some() {}
+    for _ in 0..200 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        s.poll(74).unwrap();
+        if s.queued_udp() == (0, 0) {
+            break;
+        }
+        while s.receive_udp().is_some() {}
+    }
     for n in 75..78 {
         udp.send_to(&vec![42; 30000], s.local_addr()).unwrap();
         s.poll(n).unwrap();
+    }
+    for _ in 0..200 {
+        s.poll(77).unwrap();
+        if s.queued_udp() == (2, 60128) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert_eq!(s.queued_udp(), (2, 60128));
     drop(peers);
