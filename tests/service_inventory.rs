@@ -206,3 +206,222 @@ fn s16_canonical_updates_verify_original_wire_and_map_service_rdata_without_touc
         "canonical namespace projects through Advertising Proxy"
     );
 }
+
+fn question(owner: &str, kind: u16) -> Question {
+    Question {
+        name: name(owner),
+        kind,
+        class: 1,
+    }
+}
+fn prefix(labels: &[&str], zone: &Name) -> Name {
+    let mut out: Vec<Vec<u8>> = labels.iter().map(|s| s.as_bytes().to_vec()).collect();
+    out.extend_from_slice(zone.labels());
+    Name::from_labels(out).unwrap()
+}
+#[test]
+fn s16_inventory_enumerates_both_browsing_zones_and_one_default_registration_domain() {
+    use snac_rs::dns::inventory::{Inventory, Zones};
+    let zones = Zones::for_identity(&identity());
+    let mut i = Inventory::new(zones.clone()).unwrap();
+    let reverse = name("0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.0.0.0.0.0.0.0.0.0.0.0.d.f.ip6.arpa.");
+    i.set_contexts(&[name("search.example."), reverse.clone()])
+        .unwrap();
+    for context in [
+        name("local."),
+        zones.discovery.clone(),
+        zones.registrar.clone(),
+        name("search.example."),
+        reverse,
+    ] {
+        for label in ["b", "lb", "db", "r", "dr"] {
+            let owner = prefix(&[label, "_dns-sd", "_udp"], &context);
+            let answer = i
+                .answer(
+                    &Question {
+                        name: owner,
+                        kind: 12,
+                        class: 1,
+                    },
+                    0,
+                )
+                .unwrap()
+                .unwrap();
+            let names: std::collections::BTreeSet<_> = answer
+                .answers
+                .iter()
+                .map(|r| {
+                    if let Rdata::Name(n) = &r.data {
+                        n.clone()
+                    } else {
+                        panic!("PTR")
+                    }
+                })
+                .collect();
+            let expected = match label {
+                "b" | "lb" => vec![zones.discovery.clone(), zones.registrar.clone()],
+                "db" => vec![zones.discovery.clone()],
+                _ => vec![zones.registrar.clone()],
+            };
+            assert_eq!(names, expected.into_iter().collect());
+            assert_eq!(answer.flags & 0x840f, 0x8400);
+        }
+    }
+    assert!(i
+        .answer(&question("lb._dns-sd._udp.outside.example.", 12), 0)
+        .unwrap()
+        .is_none());
+    for zone in [&zones.registrar, &zones.hostname] {
+        let soa: Message = i
+            .answer(
+                &Question {
+                    name: zone.clone(),
+                    kind: 6,
+                    class: 1,
+                },
+                0,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&soa.answers[0].data, Rdata::Soa { mname, rname, .. } if *mname == zones.hostname && *rname == zones.mailbox)
+        );
+        assert_eq!(
+            i.answer(
+                &Question {
+                    name: zone.clone(),
+                    kind: 2,
+                    class: 1
+                },
+                0
+            )
+            .unwrap()
+            .unwrap()
+            .answers[0]
+                .data,
+            Rdata::Name(zones.hostname.clone())
+        );
+    }
+}
+#[test]
+fn s16_registrar_discovery_uses_tcp_service_names_actual_ports_and_only_ready_addresses() {
+    use snac_rs::dns::inventory::{Inventory, Zones};
+    let zones = Zones::for_identity(&identity());
+    let mut i = Inventory::new(zones.clone()).unwrap();
+    let address: std::net::IpAddr = "fd11::53".parse().unwrap();
+    for (addresses, dns, tls, expected) in [
+        (vec![], Some(53), Some(853), 0),
+        (vec![address], Some(1053), None, 1),
+        (vec![address], Some(1053), Some(8853), 2),
+    ] {
+        i.set_ready(&addresses, dns, tls).unwrap();
+        let mut count = 0;
+        for (label, port) in [("_dnssd-srp", 1053), ("_dnssd-srp-tls", 8853)] {
+            let owner = prefix(&[label, "_tcp"], &zones.registrar);
+            let mut q = Question {
+                name: owner,
+                kind: 12,
+                class: 1,
+            };
+            let ptr: Message = i.answer(&q, 0).unwrap().unwrap();
+            if ptr.answers.is_empty() {
+                continue;
+            }
+            count += 1;
+            let Rdata::Name(instance) = &ptr.answers[0].data else {
+                panic!("instance PTR")
+            };
+            assert!(ptr.additional.iter().any(|r| matches!(&r.data, Rdata::Srv { target, port: actual, .. } if *target==zones.hostname && *actual==port)));
+            assert!(ptr.additional.iter().any(|r| r.kind == 16));
+            assert!(ptr.additional.iter().any(|r| matches!(r.data, Rdata::Aaaa(a) if a == "fd11::53".parse::<std::net::Ipv6Addr>().unwrap().octets())));
+            q.kind = 33;
+            assert_eq!(
+                i.answer(&q, 0).unwrap().unwrap().answers.len(),
+                1,
+                "RFC 9665 direct SRV bootstrap"
+            );
+            q.name = instance.clone();
+            assert_eq!(i.answer(&q, 0).unwrap().unwrap().answers.len(), 1);
+        }
+        assert_eq!(count, expected);
+    }
+    let q = Question {
+        name: prefix(&["_dnssd-srp", "_udp"], &zones.registrar),
+        kind: 12,
+        class: 1,
+    };
+    assert!(i.answer(&q, 0).unwrap().unwrap().answers.is_empty());
+    i.set_ready(&["fd22::53".parse().unwrap()], Some(53), None)
+        .unwrap();
+    let host = i
+        .answer(
+            &Question {
+                name: zones.hostname,
+                kind: 28,
+                class: 1,
+            },
+            1,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(host.answers.len(), 1);
+    assert_eq!(
+        host.answers[0].data,
+        Rdata::Aaaa("fd22::53".parse::<std::net::Ipv6Addr>().unwrap().octets())
+    );
+}
+#[test]
+fn s16_inventory_context_and_address_tables_are_bounded_and_reject_expanded_name_overflow() {
+    use snac_rs::dns::inventory::{Inventory, Zones};
+    let zones = Zones::for_identity(&identity());
+    let mut i = Inventory::new(zones.clone()).unwrap();
+    let mut contexts: Vec<_> = (0..64)
+        .map(|n| name(&format!("search{n}.example.")))
+        .collect();
+    i.set_contexts(&contexts).unwrap();
+    contexts.push(name("overflow.example."));
+    assert!(i.set_contexts(&contexts).is_err());
+    assert!(i
+        .answer(&question("lb._dns-sd._udp.search63.example.", 12), 0)
+        .unwrap()
+        .is_some());
+    assert!(i
+        .answer(&question("lb._dns-sd._udp.overflow.example.", 12), 0)
+        .unwrap()
+        .is_none());
+    let mut addresses: Vec<std::net::IpAddr> = (1..=32)
+        .map(|n| format!("fd11::{n}").parse().unwrap())
+        .collect();
+    i.set_ready(&addresses, Some(53), Some(853)).unwrap();
+    addresses.push("fd11::99".parse().unwrap());
+    assert!(i.set_ready(&addresses, Some(53), Some(853)).is_err());
+    let host = i
+        .answer(
+            &Question {
+                name: zones.hostname.clone(),
+                kind: 28,
+                class: 1,
+            },
+            0,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(host.answers.len(), 32);
+    for address in ["::", "ff02::1", "0.0.0.0", "224.0.0.1"] {
+        assert!(i
+            .set_ready(&[address.parse().unwrap()], Some(53), None)
+            .is_err());
+    }
+    assert!(i.set_ready(&addresses[..1], Some(0), None).is_err());
+    let long = Name::from_labels(vec![
+        vec![b'x'; 63],
+        vec![b'y'; 63],
+        vec![b'z'; 63],
+        vec![b'a'; 61],
+    ])
+    .unwrap();
+    assert!(i.set_contexts(std::slice::from_ref(&long)).is_err());
+    let mut bad = zones;
+    bad.registrar = long;
+    assert!(Inventory::new(bad).is_err());
+}
