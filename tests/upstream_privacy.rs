@@ -1126,3 +1126,89 @@ fn s17_native_browsing_uses_known_tls_then_answers_stub_legacy_enumeration() {
         .iter()
         .all(|m| m.questions[0].kind == 64));
 }
+
+#[test]
+fn s17_native_upstream_inflight_table_shares_resolver_cap_and_stream_byte_credit() {
+    use snac_rs::dns::resolver::Client;
+    let mut n = Network::new();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    for i in 0..128 {
+        let mut q = Message::new(i, 0x100);
+        q.questions.push(Question {
+            name: format!("q{i}.example.").parse().unwrap(),
+            kind: 1,
+            class: 1,
+        });
+        n.resolver
+            .submit(
+                Client::udp(format!("[fd22::{}]:40000", i / 4 + 10).parse().unwrap()),
+                &q.encode().unwrap(),
+                2000,
+                &mut n.rng,
+            )
+            .unwrap();
+    }
+    n.service
+        .poll(&mut n.resolver, &mut n.router, 2000, &mut n.rng)
+        .unwrap();
+    let (connections, inflight, bytes) = n.service.upstream_tls_load();
+    assert_eq!((connections, inflight), (1, 128));
+    assert!(bytes <= 128 * 1024);
+    let mut q = Message::new(129, 0x100);
+    q.questions.push(Question {
+        name: "over.example.".parse().unwrap(),
+        kind: 1,
+        class: 1,
+    });
+    assert!(n
+        .resolver
+        .submit(
+            Client::udp("[fd22::10]:40000".parse().unwrap()),
+            &q.encode().unwrap(),
+            2000,
+            &mut n.rng
+        )
+        .is_err());
+    assert_eq!(n.service.upstream_tls_load().1, 128);
+}
+#[test]
+fn s17_native_configured_trust_rejects_wrong_resolver_identity_and_reports_fallback() {
+    use snac_rs::dns::privacy::Route;
+    let mut n = Network::new();
+    let (cert, _) = tls::identity();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.into()).unwrap();
+    let config =
+        rustls::ClientConfig::builder_with_provider(snac_rs::service_io::crypto_provider().into())
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    n.service.configure_upstream_tls(Arc::new(config)).unwrap();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    let Route::Plain { reason } = n
+        .resolver
+        .upstream_route("[fd11::53]:53".parse().unwrap(), 2000)
+    else {
+        panic!("localhost certificate cannot authenticate this IP");
+    };
+    assert!(reason.contains("failed"));
+    n.ask("verified-fallback.example.", 123);
+    for now in (2000..2500).step_by(10) {
+        n.cycle(now);
+    }
+    assert!(n.plaintext_queries.iter().any(|q| q.questions[0].kind == 1));
+    let mut active = Network::new();
+    active.cycle(0);
+    assert!(
+        active
+            .service
+            .configure_upstream_tls(opportunistic_client().unwrap().into())
+            .is_err(),
+        "do not change verification under an active stream"
+    );
+}
