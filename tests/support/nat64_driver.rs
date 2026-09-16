@@ -125,7 +125,7 @@ pub fn translated(d: &mut Driver<MemoryIo>, link: Link, protocol: u8) -> Vec<Vec
     std::mem::take(&mut d.io.output)
         .into_iter()
         .filter_map(|(l, b)| {
-            if l != link || b.len() < 54 {
+            if l != link || b.len() < 34 {
                 return None;
             }
             if (b[12..14] == [8, 0] && b[23] == protocol)
