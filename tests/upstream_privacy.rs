@@ -935,3 +935,56 @@ fn s17_tls_buffered_plaintext_and_complete_frames_expose_ready_work() {
     frames.pop().unwrap();
     assert!(!frames.ready());
 }
+
+#[test]
+fn s17_ddr_parameter_byte_and_hint_bounds_do_not_apply_service_semantics_to_aliases() {
+    use snac_rs::dns::{privacy::ddr_candidates, wire::Rdata};
+    let origin = "192.168.0.53:53".parse().unwrap();
+    let mut rng = snac_rs::time::ScriptedRandom::new([]);
+    let mut m = ddr();
+    let mut r = designation(1, 853);
+    if let Rdata::Svcb { params, .. } = &mut r.data {
+        params.push((4, [192, 168, 0, 53].repeat(8)));
+    }
+    m.answers = vec![r.clone()];
+    assert_eq!(
+        ddr_candidates(origin, &m, 0, &mut rng)
+            .unwrap()
+            .candidates
+            .len(),
+        1
+    );
+    if let Rdata::Svcb { params, .. } = &mut r.data {
+        params.last_mut().unwrap().1.extend([192, 168, 0, 53]);
+    }
+    m.answers = vec![r.clone()];
+    assert!(ddr_candidates(origin, &m, 0, &mut rng).is_err());
+    if let Rdata::Svcb { priority, .. } = &mut r.data {
+        *priority = 0;
+    }
+    m.answers = vec![r];
+    assert!(
+        ddr_candidates(origin, &m, 0, &mut rng)
+            .unwrap()
+            .alias
+            .is_some(),
+        "AliasMode must ignore address hint semantics"
+    );
+    for size in [4096, 4097] {
+        m.answers = vec![snac_rs::dns::wire::Record {
+            name: m.questions[0].name.clone(),
+            kind: 64,
+            class: 1,
+            ttl: 60,
+            data: Rdata::Svcb {
+                priority: 0,
+                target: "alias.example.".parse().unwrap(),
+                params: vec![(65400, vec![0; size])],
+            },
+        }];
+        assert_eq!(
+            ddr_candidates(origin, &m, 0, &mut rng).is_ok(),
+            size == 4096
+        );
+    }
+}

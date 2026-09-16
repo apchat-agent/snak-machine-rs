@@ -1313,3 +1313,44 @@ fn s16_native_browsing_inventory_discovers_dot_then_registers_into_the_canonical
         .answers
         .is_empty());
 }
+
+#[test]
+fn s17_native_ra_and_dhcp_resolvers_start_privacy_probes_and_explicit_servers_do_not() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let mut opt = vec![25, 3, 0, 0, 0, 0, 0, 60];
+    opt.extend(common::ip("fe80::53").octets());
+    let p = common::nd_packet("fe80::99", "ff02::1", common::ra(0, 1800, &opt));
+    d.accept(rx(Link::Ail, p), 1001, &mut rng).unwrap();
+    d.step(1001, &mut rng).unwrap();
+    assert!(
+        d.dns
+            .queries()
+            .any(|q| Message::parse(&q.bytes, Context::Unicast)
+                .unwrap()
+                .questions[0]
+                .kind
+                == 64),
+        "native discovered DNS must activate DDR"
+    );
+    assert_eq!(
+        d.stack_mut(Link::Ail).unwrap().connections().len(),
+        1,
+        "native discovered DNS must activate DoT"
+    );
+    d.dns_discovery
+        .set_configured(&["[fe80::54]:53".parse().unwrap()])
+        .unwrap();
+    d.step(1002, &mut rng).unwrap();
+    assert_eq!(d.dns.queries().count(), 0);
+    assert_eq!(d.stack_mut(Link::Ail).unwrap().connections().len(), 0);
+    d.dns_discovery.set_configured(&[]).unwrap();
+    d.step(1003, &mut rng).unwrap();
+    assert_eq!(d.stack_mut(Link::Ail).unwrap().connections().len(), 1);
+    d.io.up[0] = false;
+    d.step(1004, &mut rng).unwrap();
+    assert_eq!(d.dns.queries().count(), 0);
+    assert_eq!(d.stack_mut(Link::Ail).unwrap().connections().len(), 0);
+}
