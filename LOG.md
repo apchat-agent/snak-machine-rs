@@ -1579,3 +1579,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Existing binding charges reserve room for its port lease/index. This is the
   shared ownership map required by PLAN2; no dependency. Native DHCP/mDNS
   reservations are added at the Driver edge with the packet integration.
+- S19 packet RED `019f884` confirms missing wire translation. GREEN passes
+  **366 tests** and all-feature clippy. Independent literal byte fixtures cover
+  both directions, IPv4 zero UDP checksum, traffic class, hop decrement,
+  DF threshold and recomputed IP/UDP checksums. Hairpin packets pass the same
+  inbound filter and cross the router once. Truncated/corrupt packets, invalid
+  source/destination scope and unreachable destinations cannot create state.
+- Losing/changing IPv4 immediately clears reverse mappings and port leases;
+  invalid reconfiguration is atomic. Translator's IPv4 identification counter
+  supplies RFC 7915 section 5.1 headers; its prefix/address and shared binding
+  owner are planned state. No dependency. Native integration follows.

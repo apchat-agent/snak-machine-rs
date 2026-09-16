@@ -94,3 +94,6 @@ pub(crate) mod config;
 pub use config::Reload;
 
 pub mod bindings;
+
+mod translate;
+pub use translate::Translator;
