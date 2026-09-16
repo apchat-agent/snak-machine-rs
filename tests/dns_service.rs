@@ -907,3 +907,168 @@ fn s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss()
     assert_eq!(d.dns.pending_count(), 0);
     assert_eq!(d.dns.cache_sets(), 0);
 }
+
+fn mdns_answer(d: &mut Driver<MemoryIo>, now: u64, rng: &mut ScriptedRandom) {
+    let mut answer = Message::new(0, 0x8400);
+    answer.answers.push(Record {
+        name: "lamp.local.".parse().unwrap(),
+        kind: 1,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::A([192, 0, 2, 8]),
+    });
+    answer.answers.push(Record {
+        name: "lamp.local.".parse().unwrap(),
+        kind: 47,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Nsec {
+            next: "lamp.local.".parse().unwrap(),
+            bitmap: vec![0, 1, 0x40],
+        },
+    });
+    let p = snac_rs::mdns::wire::encode(
+        "[fe80::53]:5353".parse().unwrap(),
+        "[ff02::fb]:5353".parse().unwrap(),
+        &answer,
+    )
+    .unwrap();
+    let mut input = rx(Link::Ail, p);
+    input.bytes[..6].copy_from_slice(&[0x33, 0x33, 0, 0, 0, 0xfb]);
+    d.accept(input, now, rng).unwrap();
+}
+#[test]
+fn s15_native_udp_discovery_starts_multicast_and_uses_first_answer_with_a_augmentation() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    learn(&mut d, Link::Stub, &mut rng);
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    hosts[1].listen_udp(40000).unwrap();
+    hosts[1]
+        .send_udp(
+            peer(Link::Stub),
+            40000,
+            d.router.identity.link_local(Link::Stub).into(),
+            53,
+            &query("lamp.default.service.arpa.", 28, 91),
+        )
+        .unwrap();
+    cycle(&mut d, &mut hosts, 1010, &mut rng);
+    assert!(
+        hosts[1].receive_udp().is_none(),
+        "a cold discovery query waits for multicast"
+    );
+    assert_eq!(d.dns.pending_count(), 1);
+    assert_eq!(d.mdns.querier.counts().0, 1);
+    d.io.output.clear();
+    d.step(1030, &mut rng).unwrap();
+    assert!(d
+        .io
+        .output
+        .iter()
+        .any(
+            |(l, b)| snac_rs::mdns::wire::Datagram::parse(*l, &b[14..]).is_ok_and(|m| m
+                .message
+                .questions
+                .iter()
+                .any(|q| q.name == "lamp.local.".parse().unwrap() && q.kind == 28))
+        ));
+    mdns_answer(&mut d, 1031, &mut rng);
+    for now in 1031..1036 {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let received = hosts[1]
+        .receive_udp()
+        .expect("first NSEC and cached A complete before six seconds");
+    let answer = Message::parse(&received.bytes, Context::Unicast).unwrap();
+    assert_eq!(answer.id, 91);
+    assert_eq!(answer.flags & 0x840f, 0x8400);
+    assert!(answer.answers.is_empty());
+    assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 8]));
+    assert_eq!(
+        answer.additional[0].name,
+        "lamp.default.service.arpa.".parse().unwrap()
+    );
+    assert_eq!(d.dns.pending_count(), 0);
+}
+#[test]
+fn s15_native_dot_queries_the_same_discovery_view() {
+    use snac_rs::{
+        dns::wire::TcpFrames,
+        service_io::{identity::TlsIdentity, tls::opportunistic_client},
+    };
+    use std::io::{Read, Write};
+    struct Sender<'a>(&'a mut Stack, usize);
+    impl Write for Sender<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.send_tcp(self.1, b)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new(1..10000);
+    let identity =
+        TlsIdentity::load_or_create(&mut MemoryStore::default(), 1789473600, &mut rng).unwrap();
+    d.enable_dot(identity.server_config().unwrap().into())
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    learn(&mut d, Link::Stub, &mut rng);
+    mdns_answer(&mut d, 1001, &mut rng);
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    let id = hosts[1]
+        .connect(
+            peer(Link::Stub),
+            40001,
+            d.router.identity.link_local(Link::Stub).into(),
+            853,
+            1001,
+        )
+        .unwrap();
+    for now in (1010..1500).step_by(10) {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let mut tls = rustls::ClientConnection::new(
+        opportunistic_client().unwrap().into(),
+        "self-signed.test".try_into().unwrap(),
+    )
+    .unwrap();
+    let mut sent = false;
+    let mut frames = TcpFrames::new(65535).unwrap();
+    for now in (1500..5000).step_by(10) {
+        if !tls.is_handshaking() && !sent {
+            tls.writer()
+                .write_all(&TcpFrames::frame(&query("lamp.default.service.arpa.", 28, 92)).unwrap())
+                .unwrap();
+            sent = true;
+        }
+        tls.write_tls(&mut Sender(&mut hosts[1], id)).unwrap();
+        cycle(&mut d, &mut hosts, now, &mut rng);
+        let b = hosts[1].receive_tcp(id);
+        let mut p = b.as_slice();
+        while !p.is_empty() {
+            assert!(tls.read_tls(&mut p).unwrap() > 0);
+            tls.process_new_packets().unwrap();
+        }
+        let mut b = [0; 4096];
+        while let Ok(n) = tls.reader().read(&mut b) {
+            if n == 0 {
+                break;
+            }
+            frames.input(&b[..n]).unwrap();
+        }
+        if let Some(bytes) = frames.pop() {
+            let answer = Message::parse(&bytes, Context::Unicast).unwrap();
+            assert_eq!(answer.id, 92);
+            assert_eq!(answer.flags & 0x840f, 0x8400);
+            assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 8]));
+            assert!(answer.answers.is_empty());
+            return;
+        }
+    }
+    panic!("DoT Discovery Proxy reply missing");
+}
