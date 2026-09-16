@@ -1883,3 +1883,35 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   seven nested Python auditor cases. The focused conformance, hostile and
   bounded suites also pass. All-feature build and all-target checks pass
   for Linux, x86_64 macOS and aarch64 macOS with Rust 1.85.
+
+### Task 6 — final documentation and validation
+
+- S01–S24 are complete. README now describes each running service, native
+  launch commands, configuration, recovery, resource limits and remaining
+  acceptance work. STATUS replaces the superseded S01 stop with current
+  implementation and evidence, including truthful Never exercised and Known
+  limitations sections. No code, field or dependency changed in this commit.
+- Final default and pcap builds, `cargo fmt --check`, all-target/all-feature
+  clippy with `-D warnings`, and the aarch64 macOS all-target pcap check pass
+  on the current toolchain. CLI help runs without opening interfaces.
+  The complete Rust 1.85 reviewer matrix passes as recorded above: **432 Rust
+  tests** with and without optional features, seven nested Python audit cases,
+  focused conformance/hostile/bounded passes, all-feature build and all-target
+  checks on Linux and both Apple targets. No required tests are ignored.
+- Final complete evidence audit reports 103 requirements, ten supplemental
+  commitments, 112 keyword lines and zero unfinished rows. The locked active
+  dependency audit passes on all three targets. `git diff --check` is clean.
+  Final command logs are retained locally under `.lane/step6-validation/`
+  with `final-` filenames. Independent semantic review remains task 7.
+- **needs privileged acceptance:** Linux TAP/pcap and macOS utun/pcap runtime
+  framing, real multicast reception/injection, carrier/bridge/descriptor OS
+  edges and coexistence; independent RA/ND/DAD/PD and RDNSS/PREF64 peers;
+  DNS/SRP/DoT/mDNS interoperability; DHCPv4/IPv4LL, bidirectional NAT64, PMTU
+  and fragment behavior on actual links; physical overload/long soak and
+  crash/power-loss durability on deployed filesystems. These code paths have
+  rootless logic/wire tests. No real interface or external peer acceptance
+  is claimed. The experimental TLS provider and TSR conventions are explicit
+  in README and STATUS.
+- No push. The completion marker counts all task-6 commits from `b7e0ff7`
+  through the final README commit, including S01 and the superseded earlier
+  documentation commit; no committed step was redone or squashed.

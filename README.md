@@ -1,234 +1,207 @@
 # snak-machine-rs
 
-A userspace IPv6 stub-router prototype for
-[draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt).
-It connects one adjacent infrastructure link (AIL) and one stub link.
-[PLAN.md](PLAN.md) records the original routing scope; [PLAN2.md](PLAN2.md)
-plans conformance completion. [LOG.md](LOG.md) records the paired commits and
-validation. This is not a complete SNAC implementation.
+A userspace router for one IPv6 stub network and one adjacent infrastructure
+link (AIL), implementing [draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt).
+The runtime provides IPv6 routing, DNS/DNS-SD, signed SRP, DNS-over-TLS,
+discovery and advertising proxies, IPv4 acquisition and stateful NAT64.
 
-**Task 6 stopped after S01.** S02 requires accepting valid SNAC-flagged stub
-RAs, while an existing baseline test requires rejecting them. Preserving that
-assertion conflicts with S02; the requested clarification is unresolved.
-S02–S24 remain unimplemented. See PLAN2's ADDENDUM 1 and LOG.md.
+[PLAN2.md](PLAN2.md) steps S01–S24 are implemented. [LOG.md](LOG.md) records
+separate red/green commits, design addenda and validation;
+[REVIEW.md](REVIEW.md) and [tests/requirements.tsv](tests/requirements.tsv)
+map all 103 requirements and ten supplemental commitments to current code and
+runnable tests. Independent review and physical interoperability acceptance
+remain outstanding; see [STATUS.md](STATUS.md).
 
-## Build and test
+## Build and verify
 
-Use stable Rust, edition 2021 (minimum Rust 1.85):
+Use Rust 1.85 or newer and Python 3.11+:
 
 ```sh
-cargo build
-cargo test
-cargo build --features pcap
-cargo test --features pcap
+cargo build --locked
+cargo test --locked
+cargo build --locked --features pcap
+cargo test --locked --all-features
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
+python3 scripts/conformance_audit.py --matrix REVIEW.md --require-complete
+python3 scripts/dependency_audit.py --locked --all-features
 cargo run -- --help
 ```
 
-The default build needs no additional system library. The optional `pcap`
-feature uses dynamic loading: it needs no libpcap headers or link-time library,
-but running that backend requires libpcap 1.5+.
-Automated tests use memory peers, scripted randomness and explicit times; they
-open no real interfaces and require no root privileges. The current suite
-passes **77 Rust tests**, including the unchanged original 72. One Rust test
-also runs six Python audit cases; Python 3.11+ is needed for its standard-library
-TOML reader.
-
-### Conformance harness (S01)
+The suite has **432 Rust tests** plus seven Python auditor cases invoked by
+one Rust test. Tests use memory Ethernet peers, scripted time/randomness and
+loopback sockets on unprivileged ports. No real interface or external DNS
+service is required. Focused integrated scenarios, deterministic parser
+corpora and bounded-state soak run with:
 
 ```sh
-cargo test --locked --test service_io
-python3 scripts/conformance_audit.py
-python3 scripts/dependency_audit.py --locked --all-features
-cargo +1.85.0 build --locked --all-features
+cargo test --locked --all-features --test conformance --test hostile --test bounded
 ```
 
-The harness exchanges real TCP packets between two in-memory userspace IP
-endpoints and completes TLS 1.2/1.3 handshakes with split records. It checks
-malformed input and bounded queues. The endpoint currently has one TCP socket
-with 64 KiB buffers in each direction and combined IP queues capped at 64
-packets/64 KiB. It is a library prerequisite for the later service steps.
-It is not connected to the production Driver and opens no service listeners.
+The default build needs no extra system library. `pcap` dynamically loads
+libpcap at runtime; compilation requires neither its headers nor link-time
+library. TLS, signatures and the userspace TCP/IP stack use exact pinned Rust
+crates. The dependency auditor checks active edges and reports inactive
+Cargo.lock entries separately. PLAN2 §6.1 lists the full Rust 1.85 and Linux/
+macOS check commands.
 
-The provisional auditor covers all 103 requirement rows, 112 physical keyword
-lines and ten supplemental commitments, and checks executable evidence.
-`python3 scripts/conformance_audit.py --require-complete` **currently fails**:
-45 rows remain unfinished. The current provisional inventory is
-[tests/requirements.tsv](tests/requirements.tsv); REVIEW.md is historical.
+## Start the router and its services
 
-Dependencies use the exact PLAN2 pins, including the pure Rust TLS provider.
-The dependency auditor distinguishes active build dependencies from inactive
-Cargo.lock entries such as ring/cc. The RustCrypto TLS provider is experimental;
-passing these fixtures is not an external security audit.
-
-## Run on Linux
-
-The TAP backend creates or attaches two TAP interfaces through `/dev/net/tun`:
+All services run in the same process. On Linux, TAP creates or attaches two
+Ethernet TAP interfaces through `/dev/net/tun`:
 
 ```sh
 sudo target/debug/snac-router --backend tap --stub snac-stub --infra snac-ail --state ./snac.state
 ```
 
-Connect each TAP's kernel endpoint to its own VM/namespace peer network or
-separate bridge. Creating a TAP does not connect it to a physical LAN.
-Keep the infrastructure and stub networks separate; selecting the same
-interface or a detected shared Linux bridge/master is rejected.
-
-For two existing, dedicated Ethernet interfaces, build with `--features pcap`,
-install your distribution's libpcap runtime, then substitute their names:
+Attach the kernel side of each TAP to its own peer network, namespace or
+separate bridge. TAP creation alone does not connect a physical LAN. For two
+existing, dedicated Ethernet interfaces, build with `--features pcap`, install
+the OS libpcap runtime, and use their names:
 
 ```sh
 sudo target/debug/snac-router --backend pcap --stub eth2 --infra eth1 --state ./snac.state
 ```
 
-## Run on macOS
-
-Build and test with the same Cargo commands. The `tap` CLI choice uses native
-**utun** on macOS. Choose two unused units:
-
-```sh
-sudo target/debug/snac-router --backend tap --stub utun21 --infra utun20 --state ./snac.state
-```
-
-utun provides point-to-point IPv6 packets with a four-byte family header.
-Its kernel endpoints need explicit peer addresses/routes for a lab harness;
-it does not provide an Ethernet connection to a physical LAN. The startup
-log reports the actual interfaces and userspace router addresses. Configure
-distinct peer addresses, never duplicate those router addresses in the kernel.
-Native RA/ND behavior on utun still needs macOS integration testing.
-
-For physical Ethernet-format interfaces, use the pcap-enabled build:
+On macOS, use Ethernet pcap for the full IPv4/ARP/DHCPv4/NAT64 profile:
 
 ```sh
 sudo target/debug/snac-router --backend pcap --stub en7 --infra en6 --state ./snac.state
 ```
 
-The macOS loader defaults to `/usr/lib/libpcap.A.dylib`; `--pcap-library PATH`
-overrides the library on either OS. Captures must use Ethernet framing;
-cooked, loopback and monitor-mode formats are rejected.
+The macOS `tap` CLI choice opens native utun devices instead:
 
-## Operation and scope
+```sh
+sudo target/debug/snac-router --backend tap --stub utun21 --infra utun20 --state ./snac.state
+```
 
-- Both native backends require root. Use dedicated lab links without competing
-  kernel forwarding or RA daemons. Router addresses, ND and routes belong to
-  this process; it does not install its addresses or forwarding routes in the
-  host's kernel. The backend joins scoped IPv6 multicast groups and obtains
-  actual interface metadata.
-- Implemented: persistent random ULA identity; RS/RA validation and pacing;
-  AIL/stub prefix arbitration and deprecation; DAD, NS/NA and supplier NUD;
-  bounded default/RIO export; DHCPv6-PD discovery, selection, Release,
-  Renew/Rebind, fallback and restart verification; two-link IPv6 forwarding,
-  MTU/ICMP errors and transit fragments; owned-address Echo Reply.
-- `--no-stub-default` disables the stub default. With
-  `--always-advertise-ail-routes`, AIL-prefix RIOs also accompany a default.
-  SIGINT/SIGTERM requests paced withdrawal advertisements before closing.
-  State changes and failures go to stderr with monotonic uptime.
-- Keep the state file to retain identity and used-lease validity. An exclusive
-  lock and atomic, synced replacement protect it. Corrupt state fails explicitly;
-  attachment changes create a new identity. Restart subtracts downtime and
-  revalidates PD rather than restoring observed neighbors. The reserved siblings
-  `<state>.lock` and `<state>.tmp` support locking and crash recovery. Checkpoints
-  follow persisted-state changes, with a five-minute idle heartbeat.
-- RA admission limits: 32 headers per link, 128 on-link prefixes/suppliers per
-  link, 128 AIL routes and 128 PD hints; 256 neighbors per link. Locally owned
-  prefixes additionally have a fixed maximum of one AIL ULA and 17 stub prefixes
-  (one ULA plus 16 acquired/retiring delegations). Pending resolution holds one
-  packet per neighbor, 64 total, at most 4,196,800 packet bytes. DHCP identifiers
-  are capped at 128 bytes, with 16 offers, leases and Release exchanges each.
-- Every RA fits 1280 IPv6 bytes. AIL exports preserve the exact length of learned
-  routable L=1 stub PIOs, including non-/64 prefixes (§5.3); local OSNRs remain
-  /64. The budget uses actual RIO sizes and logs omissions. Stub route capacity
-  reserves space for all 17 possible owned PIOs, leaving 664 bytes for RIOs.
-  Previously sent routes remain tracked until expiry or three zero-lifetime
-  advertisements, so degradation and link loss can withdraw the complete set.
-- Unsupported capacity or a SNAC-flagged stub RA disables forwarding across the
-  whole router and withdraws egress claims. The latter is the §9.7 topology
-  diagnostic, applied before §5.2 arbitration. Correct the topology/capacity
-  cause and restart the process to resume. Three DAD identity conflicts halt
-  only the affected link until restart. Ordinary link reconnection is automatic.
-- utun IPv4/invalid family headers and truncated pcap records are counted and
-  discarded. Backend receive failures initiate paced shutdown withdrawals.
-  Tests exercise framing and Driver behavior; they do not establish native
-  multicast reception, carrier detection, macOS bridge detection or FD provenance.
-- Not implemented: DNS/DNS-SD, SRP, DoT, NAT64, IPv4, multicast relay, generic
-  ND proxy, local fragment reassembly, jumbograms, host SLAAC on the AIL, or
-  arbitrary multi-AIL topologies. `--nat64 disabled` is the only accepted
-  NAT64 setting. ULA return routing beyond the AIL is not guaranteed.
+utun supplies an IPv6 L3 harness and requires explicit peer addresses/routes;
+it cannot supply the Ethernet IPv4/ARP profile. Startup reports actual link
+names and userspace router addresses. Give kernel peers different addresses.
+`--pcap-library PATH` overrides the runtime library; macOS defaults to
+`/usr/lib/libpcap.A.dylib`. Captures must use Ethernet framing.
 
-For a privileged acceptance test, provision peers on both links, capture
-RS/RA/NS/NA, check bidirectional ULA ping, then exercise PD renumbering,
-router loss/reconnect and shutdown withdrawals. Inspect multicast reception
-and duplicate suppression on pcap. These tests were **not run here**.
+Both native backends require root. Use distinct dedicated links and avoid
+competing kernel routing/RA services. Router addresses, neighbour state and
+forwarding routes belong to this process. Selecting the same interface or a
+detected shared bridge is rejected. The production platform calls for carrier,
+bridge membership and external descriptor provenance are implemented; their
+logic has rootless injected-result tests.
 
-## Service availability
-
-| Service | Current implementation / how to run |
+| Service | How it runs and how clients find it |
 | --- | --- |
-| IPv6 routing, ND, RA and AIL DHCPv6-PD client | Run `snac-router` with one of the Linux/macOS commands above. |
-| TCP/TLS endpoint prerequisite | Run `cargo test --locked --test service_io`; library harness only. |
-| DNS resolver, RDNSS, DNS-SD zones and enumeration | Not implemented; no listener or launch option. |
-| SRP registrar and DNS-over-TLS queries/updates | Not implemented; the TLS handshake fixture does not implement DNS or SRP. |
-| Advertising Proxy, Discovery Proxy, AIL mDNS and TSR | Not implemented. |
-| IPv4 DHCP/IPv4LL/ARP and NAT64 | Not implemented; only `--nat64 disabled` is accepted. |
+| IPv6 routing, ND, RA and DHCPv6-PD | Automatic on both configured links; the AIL client obtains/revalidates delegations. Stub RAs carry OSNRs, routes and service options. AIL Router Lifetime remains zero. |
+| DNS resolver | UDP/TCP port 53 on DAD-ready stub addresses, advertised through RDNSS. Infrastructure resolver/search information comes from RA, DHCPv4 and DHCPv6, or `--dns-upstream IP:PORT` (repeat up to eight). |
+| DNS-over-TLS | Port 853 on the same ready addresses, enabled automatically with a persistent self-signed identity. Opportunistic DoT carries queries and SRP updates. |
+| SRP registrar | Signed UPDATEs over UDP/TCP 53 or DoT 853. Discover `_dnssd-srp._tcp` and `_dnssd-srp-tls._tcp` through the resolver's browsing inventory; direct bootstrap SRV owners also work. |
+| Advertising Proxy | Accepted durable SRP registrations automatically publish on AIL IPv4/IPv6 mDNS port 5353, with probing, leases, conflict handling and TSR duplicate suppression. |
+| Discovery Proxy | AIL mDNS services appear through the authoritative `default.service.arpa.` zone. Local and infrastructure browsing domains are returned by DNS-SD enumeration. |
+| IPv4 acquisition | Ethernet AIL automatically uses DHCPv4, address conflict detection, ARP and renew/rebind; IPv4LL is the fallback and has no invented Internet default. No IPv4 service is installed on the stub. |
+| NAT64 | Enabled by default. Ready PD plus usable infrastructure PREF64 selects infrastructure forwarding; otherwise a ready local IPv4 path enables stateful UDP/TCP/ICMP translation. Local /96 comes from the site's `ffff` subnet and is advertised with PREF64 and an explicit RIO, including when an IPv6 default exists. |
 
-The missing DNS, SRP, proxy, DoT and NAT64 capabilities are mandatory
-conformance gaps under draft §§5.5–7. They are not optional services or merely
-awaiting privileged acceptance.
+The default registrar zone is `srp.snac-<site-id>.home.arpa.`. Signed updates
+for `default.service.arpa.` remain accepted and map into that canonical zone;
+queries retain the complementary Discovery Proxy role. The resolver does
+**not** synthesize AAAA records: qualifying empty AAAA replies trigger a bounded
+A lookup, with results in Additional for host-side synthesis.
+
+For service-specific rootless checks:
+
+```sh
+cargo test --locked --test dns_service --test dot --test service_inventory
+cargo test --locked --test srp_wire --test srp_registry --test srp_persistence
+cargo test --locked --test mdns_runtime --test advertising_proxy --test discovery_proxy
+cargo test --locked --test dhcpv4 --test nat64_udp --test nat64_tcp --test nat64_icmp --test service_ra
+cargo test --locked --test upstream_privacy
+```
+
+## Configuration and recovery
+
+`--no-stub-default` suppresses the stub IPv6 default;
+`--always-advertise-ail-routes` also emits AIL-prefix routes alongside a default.
+`--ula-policy rotate|fixed` controls attachment-driven site changes;
+`--attachment-id ID` supplies an explicit attachment identity. Valid
+SNAC-flagged stub RAs produce a topology diagnostic and participate in normal
+prefix election. Renumbering retains old address and translation promises.
+
+NAT64 can be disabled with `--nat64 disabled`. For live changes, start with
+`--nat64-config ./nat64.conf`, then atomically replace that file with:
+
+```ini
+nat64=disabled
+```
+
+Use `nat64=enabled` to re-enable. Files are checked once per second, limited
+to 4096 bytes, and rejected changes preserve the previous policy. Optional
+keys are `nat64-prefix=64:ff9b::/96` and
+`allow-infrastructure-nat64-without-pd=true`; equivalent CLI options are
+`--nat64-prefix PREFIX` and `--allow-infrastructure-nat64-without-pd`.
+The exception still requires a usable route. Disable clears local bindings,
+withdraws this router's NAT advertisements and blocks known NAT prefixes from
+generic forwarding. DNS/SRP continue; re-enable rediscovers service evidence.
+
+`--srp-zone`, `--discovery-zone`, `--discovery-host-zone`,
+`--discovery-reverse-zone` and `--dns-soa-rname` configure namespaces.
+`--srp-max-lease`, `--srp-max-key-lease`, `--srp-min-ttl` and `--srp-max-ttl`
+set checked registration policy. `--no-additional-a` disables A augmentation;
+`--discovery-include-unusable` overrides discovery address filtering.
+Explicit `--dns-upstream` servers bypass automatic privacy discovery. Otherwise
+the resolver probes available infrastructure DoT/DDR, with bounded plaintext
+fallback and later recovery. `--tsr-option-code` changes experimental code 65002.
+
+Keep the state file and its `<state>.tls` sibling. The locked atomic journal
+stores router identity, used delegations, successful advertisement deadlines,
+withdrawal progress, SRP leases/keys and replay state. Registration commits
+precede success replies. Restart subtracts downtime and repeats address/
+neighbour/IPv4 readiness checks. TLS identity replacement is private and
+atomic. Corrupt state fails explicitly. SIGINT/SIGTERM initiates paced
+withdrawal; status changes and failures go to stderr.
+
+## Resource limits
+
+| Owner | Principal limits |
+| --- | --- |
+| RAs and learned routing | One complete RA <=1280 bytes; 32 router headers/link, 128 learned prefixes/suppliers/link, 128 AIL routes/PD hints, 256 neighbours/link. Service/withdrawal space precedes new learned route growth. |
+| Service inventory | 32 owned addresses/stack, two RDNSS addresses/history slots, 32 PREF64 observations/link and eight exported/retiring NAT prefixes. Disabled-prefix history has 74 slots. |
+| DNS/SRP | 128 host/key claims, eight services/host and 1024 total, 4 MiB registry; 1024 learned RRsets/4 MiB; 128 exchanges, 256 waiters, eight/client and bounded rate tables. |
+| TCP/TLS/UDP | 64 connections across both links, four/client, <=128 KiB receive/send buffering per connection; 64 KiB packet work queues per stack and handshake/idle deadlines. |
+| mDNS | 128 questions and 128 publication datasets, <=4096 derived records, shared 4 MiB accounting. |
+| NAT64 | 4096 bindings, 8192 sessions; 128/256 per stub source and shared 4 MiB accounting, including retiring prefixes. Live sessions are not evicted to admit new flows. |
+| Reassembly/ARP | IPv4/IPv6 share 64 contexts/4 MiB and a 65535-byte datagram bound; fragment lifetime 60 seconds. ARP: 256 entries, 64 pending packets/256 KiB and four per unresolved next hop. |
+| DHCP/persistence | Eight DHCPv4 offers, one lease/candidate; bounded DHCPv6 offers/leases/releases. Total router/SRP journal <=8 MiB; TLS identity has independent checked size limits. |
+
+Capacity refusals preserve acknowledged ownership. New optional routes may be
+omitted with a diagnostic; hard routing-capacity failures withdraw claims and
+enter degradation. Three DAD identity conflicts stop the affected link until
+restart. Fragment overlap, malformed input, unknown reverse tuples and stale
+replies cannot authorize service readiness or create unbounded state.
 
 ## Needs privileged acceptance
 
-No native network backend was executed during task 6. After provisioning two
-separate links, the existing runtime still needs Linux TAP/pcap and macOS
-utun/pcap acceptance: actual packet reception/injection, scoped multicast
-membership, ND/DAD, RA/PD interoperability, forwarding, link loss/reconnect and
-paced shutdown withdrawals. utun is an L3 IPv6 backend and cannot supply the
-planned Ethernet/ARP/DHCPv4 profile.
+No real TAP, utun or pcap interface was opened for task 6. Provision separate
+peer links and test:
 
-Carrier-aware status, macOS bridge membership and external-FD provenance are
-still incomplete implementation work (S04), not completed features awaiting
-a physical test. DNS/SRP/NAT64 integration and recovery need S02–S24 before
-service-level native acceptance can be attempted.
+1. Linux TAP/pcap and macOS utun/pcap framing, carrier detection, bridge rejection,
+   descriptor provenance, multicast membership and actual injection/reception.
+2. Independent RA/ND/DAD/PD peers, renumbering, supplier loss, attachment movement,
+   reconnect and paced shutdown, including full service-option RAs.
+3. Real RDNSS/PREF64 clients, signed SRP and DoT clients, infrastructure private
+   DNS, and bidirectional mDNS/Discovery Proxy interoperability.
+4. DHCPv4/IPv4LL conflict handling and independent TCP/UDP/ICMP NAT64 peers,
+   hairpin traffic, fragmented traffic, PMTU changes and sustained overload.
+5. Abrupt power/process/filesystem failures around persistence and long-running
+   physical-device soak. Rootless tests inject durability failures; they do not
+   establish every deployed filesystem's crash behavior.
 
-## Native APIs and validation
-
-Linux uses native `ifreq`, `TUNSETIFF`/`TUNGETIFF` with `IFF_TAP | IFF_NO_PI`
-([kernel TUN/TAP API](https://docs.kernel.org/networking/tuntap.html)).
-macOS code is gated by `cfg(target_os = "macos")`: `PF_SYSTEM`/
-`SYSPROTO_CONTROL`, `CTLIOCGINFO`, `sockaddr_ctl`, `UTUN_OPT_IFNAME`, and
-network-order IPv6 family word `00 00 00 1e`
-([XNU kernel-control API](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/kern_control.h),
-[utun API](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/net/if_utun.h)).
-Darwin interface ioctl constants follow
-[XNU sockio.h](https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/sockio.h),
-with a compile-time native `ifreq` size check. The pcap backend uses the
-[upstream C API](https://raw.githubusercontent.com/the-tcpdump-group/libpcap/master/pcap/pcap.h)
-for nonblocking capture, BPF filtering and exact-length injection; on macOS
-libpcap manages `/dev/bpf`.
-
-Linux builds/tests passed with default and pcap features, along with formatting
-and warnings-free clippy. Both Apple paths passed genuine target checks:
-
-```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-cargo check --target aarch64-apple-darwin --all-targets --features pcap
-cargo check --target x86_64-apple-darwin --all-targets --features pcap
-```
-
-These checks do not link or execute macOS binaries. Actual Linux TAP/pcap and
-macOS utun/BPF runtime behavior remains subject to the manual acceptance tests.
-
-## Status
-
-See [STATUS.md](STATUS.md) for what is implemented, what was never exercised,
-and what a follow-up should pick up first.
+Both Apple architectures are cross-checked, including all-target pcap code;
+cross-compilation does not execute macOS binaries. The pure Rust
+`rustls-rustcrypto` provider is experimental and has no external audit claimed
+here. TSR interoperability still depends on agreeing on code 65002 and the
+partial-word Ed448 checksum convention in PLAN2 ADDENDUM 5. Arbitrary multi-AIL
+topologies, IPv6 jumbograms, multicast relaying and generic ND proxying are
+outside this profile. ULA reachability beyond the AIL requires upstream routing.
 
 ## License
 
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option. `draft-ietf-snac-simple-12.txt` is an IETF Internet-Draft and
-is governed by the IETF Trust Legal Provisions, not by the licenses above.
+Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your
+option. The included IETF draft is governed by the IETF Trust Legal Provisions.
