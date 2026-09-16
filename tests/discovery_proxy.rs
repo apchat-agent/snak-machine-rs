@@ -521,3 +521,210 @@ fn s15_denial_input_rejects_hostile_bitmaps_and_bounds_type_and_record_work() {
         .denial(&query, &vec![a; 4097], &Reachability::default())
         .is_err());
 }
+
+fn cached(querier: &mut snac_rs::mdns::query::Querier, records: Vec<Record>, now: u64) {
+    let mut m = Message::new(0, 0x8400);
+    m.answers = records;
+    querier
+        .cache
+        .receive(&m, now, &mut snac_rs::time::ScriptedRandom::new([]))
+        .unwrap();
+}
+#[test]
+fn s15_proxy_queries_on_demand_and_completes_first_positive_with_dns_sd_additions() {
+    use snac_rs::{discovery_proxy::Proxy, mdns::query::Querier, time::ScriptedRandom};
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let id = p.start(q("_ipp._tcp.Floor 1.example.", 12), 0).unwrap();
+    assert!(p.poll(&mut m, 0, &mut rng).unwrap().is_empty());
+    assert_eq!(m.counts().0, 1);
+    assert!(m.poll(19).unwrap().is_none());
+    let batch = m.poll(20).unwrap().unwrap();
+    assert_eq!(
+        batch.messages[0].questions[0].name,
+        name("_ipp._tcp.local.")
+    );
+    m.sent(batch.id, true, 20);
+    cached(
+        &mut m,
+        vec![
+            Record {
+                class: 1,
+                ..record(
+                    "_ipp._tcp.local.",
+                    12,
+                    Rdata::Name(name("My Printer._ipp._tcp.local.")),
+                )
+            },
+            record(
+                "My Printer._ipp._tcp.local.",
+                33,
+                Rdata::Srv {
+                    priority: 0,
+                    weight: 0,
+                    port: 631,
+                    target: name("prnt.local."),
+                },
+            ),
+            record(
+                "My Printer._ipp._tcp.local.",
+                16,
+                Rdata::Txt(vec![vec![0, 255, b'=']]),
+            ),
+            record("prnt.local.", 1, Rdata::A([192, 0, 2, 1])),
+        ],
+        21,
+    );
+    let mut done = p.poll(&mut m, 21, &mut rng).unwrap();
+    assert_eq!(done.len(), 1);
+    let done = done.pop().unwrap();
+    assert_eq!(done.id, id);
+    assert_eq!(
+        done.answer.answers[0].name,
+        name("_ipp._tcp.Floor 1.example.")
+    );
+    assert_eq!(done.answer.flags & 0x840f, 0x8400);
+    assert!(done
+        .answer
+        .additional
+        .iter()
+        .any(|r| r.data == Rdata::Txt(vec![vec![0, 255, b'=']])));
+    assert!(done
+        .answer
+        .additional
+        .iter()
+        .any(|r| r.name == name("prnt.floor-1.example.") && r.kind == 1));
+    assert!(done
+        .answer
+        .answers
+        .iter()
+        .chain(&done.answer.additional)
+        .all(|r| r.ttl <= 10 && r.class == 1));
+    assert_eq!(p.counts().0, 0);
+    assert_eq!(m.counts().0, 0);
+    p.start(q("_ipp._tcp.Floor 1.example.", 12), 22).unwrap();
+    assert_eq!(p.poll(&mut m, 22, &mut rng).unwrap().len(), 1);
+    assert_eq!(m.counts().0, 0, "cache hit emits no multicast question");
+}
+#[test]
+fn s15_proxy_negative_timeout_is_six_seconds_and_nsec_completes_earlier() {
+    use snac_rs::{discovery_proxy::Proxy, mdns::query::Querier, time::ScriptedRandom};
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let id = p.start(q("missing.floor-1.example.", 33), 0).unwrap();
+    p.poll(&mut m, 0, &mut rng).unwrap();
+    assert!(p.poll(&mut m, 5999, &mut rng).unwrap().is_empty());
+    let done = p.poll(&mut m, 6000, &mut rng).unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].id, id);
+    assert!(done[0].answer.answers.is_empty());
+    assert_eq!(done[0].answer.flags & 15, 0);
+    assert!(done[0]
+        .answer
+        .authority
+        .iter()
+        .any(|r| matches!(r.data, Rdata::Soa { minimum: 10, .. }) && r.ttl == 10));
+    assert_eq!(m.counts().0, 0);
+    p.start(q("host.floor-1.example.", 28), 7000).unwrap();
+    p.poll(&mut m, 7000, &mut rng).unwrap();
+    cached(
+        &mut m,
+        vec![record(
+            "host.local.",
+            47,
+            Rdata::Nsec {
+                next: name("host.local."),
+                bitmap: vec![0, 1, 0x40],
+            },
+        )],
+        7020,
+    );
+    let done = p.poll(&mut m, 7020, &mut rng).unwrap();
+    assert_eq!(done.len(), 1);
+    assert!(done[0].answer.answers.is_empty());
+    assert_eq!(m.counts().0, 0);
+    p.start(q("host.floor-1.example.", 47), 7021).unwrap();
+    let done = p.poll(&mut m, 7021, &mut rng).unwrap();
+    assert_eq!(done[0].answer.answers[0].kind, 47);
+}
+#[test]
+fn s15_proxy_jobs_coalesce_bound_and_cancel_without_leaving_multicast_queries() {
+    use snac_rs::{discovery_proxy::Proxy, mdns::query::Querier, time::ScriptedRandom};
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut ids = vec![];
+    for i in 0..128 {
+        let question = q(&format!("host{i}.floor-1.example."), 1);
+        let id = p.start(question.clone(), 0).unwrap();
+        assert_eq!(p.start(question, 1).unwrap(), id);
+        ids.push(id);
+    }
+    assert_eq!(p.counts().0, 128);
+    assert!(p.counts().1 <= 4 * 1024 * 1024);
+    assert!(p.start(q("overflow.floor-1.example.", 1), 0).is_err());
+    p.poll(&mut m, 0, &mut rng).unwrap();
+    assert_eq!(m.counts().0, 128);
+    for id in ids {
+        p.cancel(id);
+    }
+    assert!(p.poll(&mut m, 1, &mut rng).unwrap().is_empty());
+    assert_eq!(p.counts(), (0, 0));
+    assert_eq!(m.counts().0, 0);
+    assert!(p.start(q("external.example.net.", 1), 2).is_err());
+    assert_eq!(p.counts().0, 0);
+}
+#[test]
+fn s15_proxy_suppresses_services_with_only_unusable_addresses_until_translation_is_ready() {
+    use snac_rs::{
+        discovery_proxy::{Proxy, Reachability},
+        mdns::query::Querier,
+        time::ScriptedRandom,
+    };
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    cached(
+        &mut m,
+        vec![
+            Record {
+                class: 1,
+                ..record(
+                    "_ipp._tcp.local.",
+                    12,
+                    Rdata::Name(name("Printer._ipp._tcp.local.")),
+                )
+            },
+            record(
+                "Printer._ipp._tcp.local.",
+                33,
+                Rdata::Srv {
+                    priority: 0,
+                    weight: 0,
+                    port: 631,
+                    target: name("prnt.local."),
+                },
+            ),
+            record("prnt.local.", 1, Rdata::A([169, 254, 3, 4])),
+        ],
+        0,
+    );
+    p.start(q("_ipp._tcp.Floor 1.example.", 12), 0).unwrap();
+    let done = p.poll(&mut m, 0, &mut rng).unwrap();
+    assert!(done[0].answer.answers.is_empty());
+    p.set_reachability(Reachability {
+        ipv4_link_local: true,
+        ..Reachability::default()
+    });
+    p.start(q("_ipp._tcp.Floor 1.example.", 12), 1).unwrap();
+    let done = p.poll(&mut m, 1, &mut rng).unwrap();
+    assert_eq!(done[0].answer.answers.len(), 1);
+    assert!(done[0]
+        .answer
+        .additional
+        .iter()
+        .any(|r| r.data == Rdata::A([169, 254, 3, 4])));
+    assert_eq!(m.counts().0, 0);
+}
