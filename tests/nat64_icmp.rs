@@ -945,3 +945,55 @@ fn s21_ipv4_unexpired_source_route_generates_failure_and_other_options_are_remov
         assert!(packets::udp6_valid(&out[0].packet));
     }
 }
+#[test]
+fn s21_icmp_extensions_keep_opaque_objects_and_recompute_quote_length_units() {
+    let mut t = translator();
+    let query = packets::udp6(host(1), synthetic(7), 1234, 80, &[42; 160]);
+    let translated = send(&mut t, &query, 0).unwrap().remove(0).packet;
+    let mut ext = vec![0x20, 0, 0, 0, 0, 8, 1, 1, 1, 2, 3, 4];
+    let c = packets::sum(&ext);
+    ext[2..4].copy_from_slice(&c.to_be_bytes());
+    let mut quote = translated[..128].to_vec();
+    quote.extend(&ext);
+    let error = error4(ip(1), 11, 0, 32 << 16, &quote);
+    let b = t.inbound(&error, 1).unwrap().remove(0).packet;
+    assert_eq!(b[44], 19, "152 quote bytes in eight-byte units");
+    assert_eq!(&b[48 + 152..], &ext);
+    assert!(packets::icmp6_valid(&b));
+    assert_eq!(&b[48 + 148..48 + 152], &[0; 4]);
+    let received = t
+        .inbound(
+            &packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, &[42; 160]),
+            2,
+        )
+        .unwrap()
+        .remove(0)
+        .packet;
+    let mut quote = received[..128].to_vec();
+    quote.extend(&ext);
+    let b = send(
+        &mut t,
+        &error6(host(1), synthetic(7), 3, 0, 16 << 24, &quote),
+        3,
+    )
+    .unwrap()
+    .remove(0)
+    .packet;
+    assert_eq!(b[25], 32, "128 padded quote bytes in four-byte units");
+    assert_eq!(&b[28 + 128..], &ext);
+    assert_eq!(packets::sum(&b[20..]), 0);
+    for units in [1, 31, 255] {
+        assert!(t
+            .inbound(&error4(ip(1), 11, 0, units << 16, &translated[..128]), 4)
+            .is_err());
+    }
+    for change in [0, 2, 5] {
+        let mut quote = translated[..128].to_vec();
+        let mut bad = ext.clone();
+        bad[change] ^= 1;
+        quote.extend(bad);
+        assert!(t
+            .inbound(&error4(ip(1), 11, 0, 32 << 16, &quote), 4)
+            .is_err());
+    }
+}
