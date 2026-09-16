@@ -157,3 +157,179 @@ fn s17_browse_tables_cap_sources_contexts_probes_and_evidence_with_atomic_reject
     assert_eq!(b.counts(), (0, 0));
     assert_eq!(b.next_deadline(), None);
 }
+
+fn resolver() -> snac_rs::dns::resolver::Resolver {
+    let mut rng = snac_rs::time::ScriptedRandom::new([]);
+    let id = snac_rs::persist::Identity::load_or_create(
+        &mut snac_rs::persist::MemoryStore::default(),
+        "browse",
+        &mut rng,
+    )
+    .unwrap();
+    let mut r = snac_rs::dns::resolver::Resolver::new(true);
+    r.configure_zones(snac_rs::dns::inventory::Zones::for_identity(&id))
+        .unwrap();
+    r.configure_upstream_privacy(&[origin(53)], true, 0)
+        .unwrap();
+    r
+}
+fn enumerate(r: &mut snac_rs::dns::resolver::Resolver, now: u64) -> Message {
+    use snac_rs::dns::{
+        resolver::{Action, Client},
+        wire::{Context, Question},
+    };
+    let mut q = Message::new(77, 0x100);
+    q.questions.push(Question {
+        name: "lb._dns-sd._udp.local.".parse().unwrap(),
+        kind: 12,
+        class: 1,
+    });
+    let a = r
+        .submit(
+            Client::udp("[::1]:40000".parse().unwrap()),
+            &q.encode().unwrap(),
+            now,
+            &mut snac_rs::time::ScriptedRandom::new([]),
+        )
+        .unwrap();
+    let Action::Reply { bytes, .. } = &a[0] else {
+        panic!("local inventory");
+    };
+    Message::parse(bytes, Context::Unicast).unwrap()
+}
+#[test]
+fn s17_resolver_control_browsing_merges_live_infrastructure_domains_into_local_inventory() {
+    use snac_rs::{dns::wire::Context, time::ScriptedRandom};
+    let mut r = resolver();
+    let mut rng = ScriptedRandom::new([]);
+    r.configure_browsing(&["corp.example.".parse().unwrap()], 0)
+        .unwrap();
+    assert_eq!(enumerate(&mut r, 0).answers.len(), 2);
+    r.poll_browsing(0, &mut rng).unwrap();
+    assert_eq!(r.queries().count(), 2);
+    r.cancel_connection(999);
+    assert_eq!(r.queries().count(), 2);
+    let p = r
+        .queries()
+        .find(|p| {
+            Message::parse(&p.bytes, Context::Unicast)
+                .unwrap()
+                .questions[0]
+                .name
+                .labels()[0]
+                == b"lb"
+        })
+        .unwrap()
+        .clone();
+    let mut m = Message::parse(&p.bytes, Context::Unicast).unwrap();
+    m.flags = 0x8180;
+    m.answers.push(Record {
+        name: m.questions[0].name.clone(),
+        kind: 12,
+        class: 1,
+        ttl: 5,
+        data: Rdata::Name("browse.example.".parse().unwrap()),
+    });
+    assert!(r
+        .receive(
+            p.exchange,
+            origin(54),
+            p.source_port,
+            false,
+            &m.encode().unwrap(),
+            1,
+            &mut rng
+        )
+        .unwrap()
+        .is_empty());
+    assert_eq!(enumerate(&mut r, 1).answers.len(), 2);
+    assert!(r
+        .receive(
+            p.exchange,
+            p.server,
+            p.source_port,
+            false,
+            &m.encode().unwrap(),
+            2,
+            &mut rng
+        )
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        r.cache_sets(),
+        0,
+        "control answers are not ordinary forwarding cache entries"
+    );
+    let merged = enumerate(&mut r, 3);
+    assert_eq!(merged.answers.len(), 3);
+    assert!(merged
+        .answers
+        .iter()
+        .any(|r| r.data == Rdata::Name("browse.example.".parse().unwrap()) && r.ttl <= 5));
+    assert_eq!(enumerate(&mut r, 5002).answers.len(), 2);
+    r.configure_browsing(&[], 5003).unwrap();
+    assert_eq!(
+        r.queries().count(),
+        0,
+        "context removal cancels old control transactions"
+    );
+}
+#[test]
+fn s17_control_probes_share_pending_limits_and_removal_invalidates_late_replies() {
+    use snac_rs::{
+        dns::{
+            resolver::Client,
+            wire::{Context, Question},
+        },
+        time::ScriptedRandom,
+    };
+    let mut r = resolver();
+    let mut rng = ScriptedRandom::new([]);
+    for i in 0..128 {
+        let mut m = Message::new(i, 0x100);
+        m.questions.push(Question {
+            name: format!("q{i}.example.").parse().unwrap(),
+            kind: 1,
+            class: 1,
+        });
+        r.submit(
+            Client::udp(format!("[fd00::{}]:40000", i / 4 + 1).parse().unwrap()),
+            &m.encode().unwrap(),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    }
+    r.configure_browsing(&["corp.example.".parse().unwrap()], 0)
+        .unwrap();
+    r.poll_browsing(0, &mut rng).unwrap();
+    assert_eq!(r.pending_count(), 128);
+    assert!(r.pending_bytes() <= 4 * 1024 * 1024);
+    let mut r = resolver();
+    r.configure_browsing(&["corp.example.".parse().unwrap()], 0)
+        .unwrap();
+    r.poll_browsing(0, &mut rng).unwrap();
+    let p = r.queries().next().unwrap().clone();
+    let mut m = Message::parse(&p.bytes, Context::Unicast).unwrap();
+    m.flags = 0x8180;
+    m.answers.push(Record {
+        name: m.questions[0].name.clone(),
+        kind: 12,
+        class: 1,
+        ttl: 60,
+        data: Rdata::Name("stale.example.".parse().unwrap()),
+    });
+    r.configure_upstream_privacy(&[], true, 1).unwrap();
+    assert_eq!(r.queries().count(), 0);
+    r.receive(
+        p.exchange,
+        p.server,
+        p.source_port,
+        false,
+        &m.encode().unwrap(),
+        2,
+        &mut rng,
+    )
+    .unwrap();
+    assert_eq!(enumerate(&mut r, 3).answers.len(), 2);
+}
