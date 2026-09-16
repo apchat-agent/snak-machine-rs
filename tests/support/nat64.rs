@@ -141,3 +141,43 @@ pub fn tcp_fix(p: &mut [u8]) {
 pub fn tcp_valid(p: &[u8]) -> bool {
     tcp_sum(p) == 0
 }
+pub fn icmp6(source: Ipv6Addr, destination: Ipv6Addr, body: &[u8]) -> Vec<u8> {
+    let mut b = body.to_vec();
+    b[2..4].fill(0);
+    let mut pseudo = source.octets().to_vec();
+    pseudo.extend(destination.octets());
+    pseudo.extend((b.len() as u32).to_be_bytes());
+    pseudo.extend([0, 0, 0, 58]);
+    pseudo.extend(&b);
+    let c = sum(&pseudo);
+    b[2..4].copy_from_slice(&c.to_be_bytes());
+    let mut p = vec![0x60, 0, 0, 0];
+    p.extend((b.len() as u16).to_be_bytes());
+    p.extend([58, 64]);
+    p.extend(source.octets());
+    p.extend(destination.octets());
+    p.extend(b);
+    p
+}
+pub fn icmp4(source: Ipv4Addr, destination: Ipv4Addr, body: &[u8]) -> Vec<u8> {
+    let mut b = body.to_vec();
+    b[2..4].fill(0);
+    let c = sum(&b);
+    b[2..4].copy_from_slice(&c.to_be_bytes());
+    let mut p = vec![0x45, 0];
+    p.extend(((b.len() + 20) as u16).to_be_bytes());
+    p.extend([0, 0, 0, 0, 64, 1, 0, 0]);
+    p.extend(source.octets());
+    p.extend(destination.octets());
+    let c = sum(&p);
+    p[10..12].copy_from_slice(&c.to_be_bytes());
+    p.extend(b);
+    p
+}
+pub fn icmp6_valid(b: &[u8]) -> bool {
+    let mut p = b[8..40].to_vec();
+    p.extend(((b.len() - 40) as u32).to_be_bytes());
+    p.extend([0, 0, 0, 58]);
+    p.extend(&b[40..]);
+    sum(&p) == 0
+}
