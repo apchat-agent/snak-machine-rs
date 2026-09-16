@@ -1716,3 +1716,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Impossible IPv4 datagrams now include their header in the 65535-byte bound.
   Reserved fragment bits, repeated/post-fragment extension headers and
   inconsistent final lengths are rejected before translation. No dependency.
+- Fragment-quote RED `660bf4a` fails executably on missing inner Fragment
+  headers and untranslated live IPv4 source routes. GREEN passes **399 tests**
+  and all-feature clippy. First-fragment quotes preserve ID/MF and transport
+  tuple/checksum adjustments; noninitial quotes cannot claim a session.
+  IPv6 quoted extension headers are checked and stripped, and quoted Fragment
+  headers add eight bytes to the PMTU delta. Unexpired IPv4 source routes
+  receive Source Route Failed; exhausted routes/options are removed. No field
+  or dependency. Configuration and ICMP extension checks complete S21 next.

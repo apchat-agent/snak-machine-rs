@@ -86,7 +86,7 @@ impl Translator {
             return Ok(vec![]);
         }
         let q = Quote6::parse(&b[8..])?;
-        if !self.prefix.contains(q.source) || q.source != e.destination {
+        if q.non_initial || !self.prefix.contains(q.source) || q.source != e.destination {
             return Ok(vec![]);
         }
         let dest = extract(q.source);
@@ -104,12 +104,17 @@ impl Translator {
         else {
             return Ok(vec![]);
         };
+        let adjustment = if b[0] == 2 && q.fragment.is_some() {
+            8
+        } else {
+            0
+        };
         let Some((kind, code, value)) = icmp::v6_to_v4(
             b[0],
             b[1],
-            u32::from_be_bytes(b[4..8].try_into().unwrap()),
+            u32::from_be_bytes(b[4..8].try_into().unwrap()).saturating_sub(adjustment),
             self.mtus[0],
-            self.mtus[1],
+            self.mtus[1].saturating_sub(adjustment),
         ) else {
             return Ok(vec![]);
         };
@@ -175,24 +180,51 @@ struct Quote6<'a> {
     class: u8,
     len: usize,
     payload: &'a [u8],
+    fragment: Option<(u32, bool)>,
+    non_initial: bool,
 }
 impl<'a> Quote6<'a> {
     fn parse(b: &'a [u8]) -> io::Result<Self> {
         if b.len() < 48 || b[0] >> 4 != 6 {
             return Err(invalid());
         }
-        let len = usize::from(u16::from_be_bytes([b[4], b[5]]));
-        if !(8..=65515).contains(&len) {
+        let total = usize::from(u16::from_be_bytes([b[4], b[5]]));
+        let (mut protocol, mut offset, problem) = super::headers::transport6(b)?;
+        if problem.is_some() {
+            return Err(invalid());
+        }
+        let mut fragment = None;
+        let mut non_initial = false;
+        if protocol == 44 {
+            if offset + 8 > b.len() || b[offset + 1] != 0 {
+                return Err(invalid());
+            }
+            let flags = u16::from_be_bytes([b[offset + 2], b[offset + 3]]);
+            if flags & 6 != 0 || [0, 43, 44, 51, 60].contains(&b[offset]) {
+                return Err(invalid());
+            }
+            non_initial = flags & 0xfff8 != 0;
+            fragment = Some((
+                u32::from_be_bytes(b[offset + 4..offset + 8].try_into().unwrap()),
+                flags & 1 != 0,
+            ));
+            protocol = b[offset];
+            offset += 8;
+        }
+        let len = total.checked_sub(offset - 40).ok_or_else(invalid)?;
+        if !(8..=65515).contains(&len) || b.len() < offset + 8 {
             return Err(invalid());
         }
         Ok(Self {
             source: Ipv6Addr::from(<[u8; 16]>::try_from(&b[8..24]).unwrap()),
             dest: Ipv6Addr::from(<[u8; 16]>::try_from(&b[24..40]).unwrap()),
-            protocol: b[6],
+            protocol,
             hop: b[7],
             class: (b[0] & 15) << 4 | b[1] >> 4,
             len,
-            payload: &b[40..b.len().min(40 + len)],
+            payload: &b[offset..b.len().min(offset + len)],
+            fragment,
+            non_initial,
         })
     }
 }
@@ -277,6 +309,13 @@ fn quote4_to_6(
     out[0] |= q.traffic_class >> 4;
     out[1] = q.traffic_class << 4;
     out[4..6].copy_from_slice(&(len as u16).to_be_bytes());
+    if q.more_fragments {
+        out[6] = 44;
+        out[4..6].copy_from_slice(&u16::try_from(len + 8).map_err(|_| invalid())?.to_be_bytes());
+        let mut fragment = vec![p, 0, 0, 1];
+        fragment.extend(u32::from(q.id).to_be_bytes());
+        out.splice(40..40, fragment);
+    }
     Ok(out)
 }
 fn quote6_to_4(q: &Quote6<'_>, src: Ipv4Addr, dst: Ipv4Addr, port: u16) -> io::Result<Vec<u8>> {
@@ -299,7 +338,10 @@ fn quote6_to_4(q: &Quote6<'_>, src: Ipv4Addr, dst: Ipv4Addr, port: u16) -> io::R
     let mut out = ipv4::wire::encode(src, dst, p, q.hop, &b)?;
     out[1] = q.class;
     out[2..4].copy_from_slice(&((q.len + 20) as u16).to_be_bytes());
-    if q.len + 20 > 1260 {
+    if let Some((id, more)) = q.fragment {
+        out[4..6].copy_from_slice(&(id as u16).to_be_bytes());
+        out[6] = if more { 0x20 } else { 0 };
+    } else if q.len + 20 > 1260 {
         out[6] = 0x40;
     }
     out[10..12].fill(0);

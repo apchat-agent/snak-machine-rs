@@ -248,7 +248,11 @@ impl Translator {
             return Ok(vec![]);
         }
         let remote = SocketAddrV4::new(p.source, sport);
-        if p.ttl <= 1 || p.dont_fragment && p.payload.len() + 40 > self.mtus[1] as usize {
+        let source_route = headers::unexpired_source_route(&p)?;
+        if p.ttl <= 1
+            || source_route
+            || p.dont_fragment && p.payload.len() + 40 > self.mtus[1] as usize
+        {
             let (port, remote) = if protocol == 1 {
                 (sport, SocketAddrV4::new(p.source, 0))
             } else {
@@ -263,6 +267,8 @@ impl Translator {
             }
             return if p.ttl <= 1 {
                 self.generate4(&p, 11, 0, 0, now)
+            } else if source_route {
+                self.generate4(&p, 3, 5, 0, now)
             } else {
                 self.generate4(&p, 3, 4, self.mtus[1].saturating_sub(20).max(68), now)
             };

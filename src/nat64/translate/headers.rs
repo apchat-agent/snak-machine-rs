@@ -51,3 +51,31 @@ pub(super) fn transport6(b: &[u8]) -> io::Result<(u8, usize, Option<u32>)> {
     }
     Err(invalid())
 }
+pub(super) fn unexpired_source_route(p: &ipv4::wire::Packet<'_>) -> io::Result<bool> {
+    let mut at = 20;
+    while at < p.header_len {
+        let kind = p.bytes[at];
+        if kind == 0 {
+            break;
+        }
+        if kind == 1 {
+            at += 1;
+            continue;
+        }
+        let len = usize::from(p.bytes[at + 1]); // Packet already checked TLV bounds.
+        if [131, 137].contains(&kind) {
+            if len < 3 || (len - 3) % 4 != 0 {
+                return Err(invalid());
+            }
+            let pointer = usize::from(p.bytes[at + 2]);
+            if pointer < 4 || (pointer - 4) % 4 != 0 {
+                return Err(invalid());
+            }
+            if pointer <= len {
+                return Ok(true);
+            }
+        }
+        at += len;
+    }
+    Ok(false)
+}
