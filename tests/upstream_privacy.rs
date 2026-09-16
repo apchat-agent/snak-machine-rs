@@ -625,3 +625,207 @@ fn s17_failed_encrypted_query_retries_plaintext_and_explicit_configuration_skips
     assert!(explicit.poll_privacy(0, &mut rng).unwrap().is_empty());
     assert_eq!(explicit.queries().count(), 0);
 }
+
+struct PeerTls {
+    session: Session,
+    frames: snac_rs::dns::wire::TcpFrames,
+}
+struct Network {
+    resolver: snac_rs::dns::resolver::Resolver,
+    service: snac_rs::dns::service::Service,
+    router: [snac_rs::service_io::stack::Stack; 2],
+    peers: [snac_rs::service_io::stack::Stack; 2],
+    tls: std::collections::BTreeMap<usize, PeerTls>,
+    encrypted_queries: Vec<Message>,
+    plaintext_queries: Vec<Message>,
+    rng: snac_rs::time::ScriptedRandom,
+}
+impl Network {
+    fn new() -> Self {
+        use snac_rs::{service_io::stack::Stack, time::ScriptedRandom};
+        let mut rng = ScriptedRandom::new([]);
+        let mut router = [
+            Stack::new(0, &mut rng).unwrap(),
+            Stack::new(0, &mut rng).unwrap(),
+        ];
+        let mut peers = [
+            Stack::new(0, &mut rng).unwrap(),
+            Stack::new(0, &mut rng).unwrap(),
+        ];
+        for (stack, address) in [(&mut router[0], "fd11::1"), (&mut peers[0], "fd11::53")] {
+            stack.set_addresses(&[address.parse().unwrap()]).unwrap();
+        }
+        router[1]
+            .set_addresses(&["fd22::1".parse().unwrap()])
+            .unwrap();
+        peers[1]
+            .set_addresses(&["fd22::2".parse().unwrap()])
+            .unwrap();
+        router[1].listen_udp(53).unwrap();
+        router[1].listen_tcp(53).unwrap();
+        peers[0].listen_udp(53).unwrap();
+        peers[0].listen_tcp_buffered(853, 4096).unwrap();
+        peers[1].listen_udp(40000).unwrap();
+        let mut resolver = snac_rs::dns::resolver::Resolver::new(true);
+        resolver
+            .configure_upstream_privacy(&["[fd11::53]:53".parse().unwrap()], false, 0)
+            .unwrap();
+        Self {
+            resolver,
+            service: Default::default(),
+            router,
+            peers,
+            tls: Default::default(),
+            encrypted_queries: vec![],
+            plaintext_queries: vec![],
+            rng,
+        }
+    }
+    fn cycle(&mut self, now: u64) {
+        use std::io::Write;
+        struct Writer<'a>(&'a mut snac_rs::service_io::stack::Stack, usize);
+        impl Write for Writer<'_> {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.send_tcp(self.1, b)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for index in 0..2 {
+            self.peers[index].poll(now).unwrap();
+            while let Some(p) = self.peers[index].output() {
+                self.router[index].input(&p, now).unwrap();
+            }
+            self.router[index].poll(now).unwrap();
+        }
+        self.service
+            .poll(&mut self.resolver, &mut self.router, now, &mut self.rng)
+            .unwrap();
+        for index in 0..2 {
+            self.router[index].poll(now).unwrap();
+            while let Some(p) = self.router[index].output() {
+                self.peers[index].input(&p, now).unwrap();
+            }
+            self.peers[index].poll(now).unwrap();
+        }
+        while let Some(packet) = self.peers[0].receive_udp_on(53) {
+            let mut m = Message::parse(&packet.bytes, Context::Unicast).unwrap();
+            self.plaintext_queries.push(m.clone());
+            m.flags = 0x8180;
+            if m.questions[0].kind == 1 {
+                m.answers.push(snac_rs::dns::wire::Record {
+                    name: m.questions[0].name.clone(),
+                    kind: 1,
+                    class: 1,
+                    ttl: 30,
+                    data: snac_rs::dns::wire::Rdata::A([192, 0, 2, 1]),
+                });
+            }
+            self.peers[0]
+                .send_udp(
+                    packet.destination,
+                    53,
+                    packet.source,
+                    packet.source_port,
+                    &m.encode().unwrap(),
+                )
+                .unwrap();
+        }
+        for id in self.peers[0].connections() {
+            let peer = self.tls.entry(id).or_insert_with(|| PeerTls {
+                session: Session::new(server(), now).unwrap(),
+                frames: snac_rs::dns::wire::TcpFrames::new(65535).unwrap(),
+            });
+            self.peers[0].receive_tcp_with(id, |b| peer.session.input(b, now).unwrap_or(b.len()));
+            let plaintext = peer.session.plaintext(8192).unwrap_or_default();
+            peer.frames.input(&plaintext).unwrap();
+            while let Some(bytes) = peer.frames.pop() {
+                let mut m = Message::parse(&bytes, Context::Unicast).unwrap();
+                self.encrypted_queries.push(m.clone());
+                m.flags = 0x8180;
+                m.answers.push(snac_rs::dns::wire::Record {
+                    name: m.questions[0].name.clone(),
+                    kind: 1,
+                    class: 1,
+                    ttl: 30,
+                    data: snac_rs::dns::wire::Rdata::A([
+                        192,
+                        0,
+                        2,
+                        m.questions[0].name.labels()[0][0],
+                    ]),
+                });
+                let framed = snac_rs::dns::wire::TcpFrames::frame(&m.encode().unwrap()).unwrap();
+                assert_eq!(
+                    peer.session.send_plaintext(&framed, now).unwrap(),
+                    framed.len()
+                );
+            }
+            let _ = peer
+                .session
+                .write_tls(&mut Writer(&mut self.peers[0], id), now);
+        }
+    }
+    fn ask(&mut self, name: &str, id: u16) {
+        let mut m = Message::new(id, 0x100);
+        m.questions.push(Question {
+            name: name.parse().unwrap(),
+            kind: 1,
+            class: 1,
+        });
+        self.peers[1]
+            .send_udp(
+                "fd22::2".parse().unwrap(),
+                40000,
+                "fd22::1".parse().unwrap(),
+                53,
+                &m.encode().unwrap(),
+            )
+            .unwrap();
+    }
+}
+#[test]
+fn s17_native_service_probes_and_reuses_upstream_tls_with_distinct_pipelined_ids() {
+    let mut n = Network::new();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    assert_eq!(n.tls.len(), 1, "native service must execute the TLS probe");
+    assert!(n
+        .plaintext_queries
+        .iter()
+        .any(|m| m.questions[0].kind == 64));
+    n.ask("alpha.example.", 101);
+    n.ask("beta.example.", 102);
+    let mut replies = std::collections::BTreeMap::new();
+    for now in (2000..4000).step_by(10) {
+        n.cycle(now);
+        while let Some(packet) = n.peers[1].receive_udp() {
+            let m = Message::parse(&packet.bytes, Context::Unicast).unwrap();
+            replies.insert(m.id, m);
+        }
+        if replies.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(replies.len(), 2);
+    assert_eq!(n.encrypted_queries.len(), 2);
+    assert_ne!(
+        n.encrypted_queries[0].id, n.encrypted_queries[1].id,
+        "one TLS stream needs independent IDs even with repeated randomness"
+    );
+    assert_eq!(n.tls.len(), 1, "upstream TLS connection is reused");
+    assert!(
+        n.plaintext_queries
+            .iter()
+            .all(|m| m.questions[0].kind == 64),
+        "known working TLS wins over plaintext"
+    );
+    for (id, first) in [(101, b'a'), (102, b'b')] {
+        assert_eq!(
+            replies[&id].answers[0].data,
+            snac_rs::dns::wire::Rdata::A([192, 0, 2, first])
+        );
+    }
+}
