@@ -6,8 +6,20 @@ pub(super) struct Discovered {
     job: u64,
     pub(super) waiters: Vec<Waiter>,
     base: Option<Vec<u8>>,
+    forward_cache: bool,
 }
 impl Discovered {
+    pub(super) fn from_pending(p: Pending) -> Self {
+        Self {
+            key: p.key,
+            original: p.original,
+            question: p.question,
+            job: 0,
+            waiters: p.waiters,
+            base: p.base,
+            forward_cache: p.forward_cache,
+        }
+    }
     pub(super) fn charge(&self) -> usize {
         4096 + self.key.len()
             + 16 * self.original.original().len()
@@ -66,6 +78,7 @@ impl Resolver {
             job: 0,
             waiters: vec![waiter],
             base: None,
+            forward_cache: false,
         };
         // Credit covers the proxy's translated names and job before mutating it.
         if self.pending_bytes() + p.charge() + 8192 > BYTES {
@@ -134,29 +147,84 @@ impl Resolver {
                 } else {
                     let bytes = answer.encode()?;
                     if let Some(aq) = additional_question(&answer, &p.question, self.additional_a) {
-                        let fits =
-                            self.pending_bytes() + p.charge() + 16 * bytes.len() + 8192 <= BYTES;
-                        let d = self.discovery.as_mut().unwrap();
-                        if d.accepts(&aq) && fits {
-                            if let Ok(job) = d.start(aq.clone(), now) {
-                                p.base = Some(bytes);
-                                p.question = aq;
-                                p.job = job;
-                                self.discovered.insert(id, p);
-                                continue;
-                            }
-                        }
+                        out.extend(self.continue_additional(p, aq, bytes, now, rng)?);
+                        continue;
                     }
                     bytes
                 };
-                out.extend(
-                    p.waiters
-                        .into_iter()
-                        .map(|w| deliver(w, &bytes))
-                        .collect::<io::Result<Vec<_>>>()?,
-                );
+                out.extend(self.finish_discovered(p, bytes, now)?);
             }
         }
         Ok(out)
+    }
+    fn finish_discovered(
+        &mut self,
+        p: Discovered,
+        bytes: Vec<u8>,
+        now: u64,
+    ) -> io::Result<Vec<Action>> {
+        if p.forward_cache {
+            self.store(p.key, &bytes, now)?;
+        }
+        p.waiters.into_iter().map(|w| deliver(w, &bytes)).collect()
+    }
+    pub(super) fn continue_additional(
+        &mut self,
+        mut p: Discovered,
+        question: Question,
+        base: Vec<u8>,
+        now: u64,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Action>> {
+        if let Some(registry) = self
+            .registry()
+            .filter(|r| !r.records(&question.name, 255, now).is_empty())
+        {
+            let mut answer = Message::new(0, 0x8400);
+            answer.questions.push(question.clone());
+            answer.answers = registry.records(&question.name, question.kind, now);
+            let bytes = augment(&base, &answer, &question.name).unwrap_or(base);
+            p.forward_cache = false;
+            return self.finish_discovered(p, bytes, now);
+        }
+        if self.pending_bytes() + p.charge() + 16 * base.len() + 8192 > BYTES {
+            return self.finish_discovered(p, base, now);
+        }
+        if let Some(d) = self.discovery.as_mut().filter(|d| d.accepts(&question)) {
+            if let Ok(job) = d.start(question.clone(), now) {
+                p.job = job;
+                p.question = question;
+                p.base = Some(base);
+                p.forward_cache = false;
+                self.next = self.next.wrapping_add(1);
+                self.discovered.insert(self.next, p);
+                return Ok(vec![]);
+            }
+            return self.finish_discovered(p, base, now);
+        }
+        if in_zone(&question.name, &"service.arpa.".parse().unwrap())
+            || self.local_zones.iter().any(|z| in_zone(&question.name, z))
+            || self.upstreams.is_empty()
+        {
+            return self.finish_discovered(p, base, now);
+        }
+        let mut m = Message::new(0, 0x100 | (p.original.flags & 0x10));
+        m.questions.push(question.clone());
+        m.additional = p.original.additional.clone();
+        let query = self.make_query(&m.encode()?, self.upstreams[0], rng)?;
+        let pending = Pending {
+            key: p.key,
+            original: p.original,
+            query: query.clone(),
+            question,
+            waiters: p.waiters,
+            deadline: now.saturating_add(10000),
+            retry: now.saturating_add(1000),
+            attempt: 0,
+            base: Some(base),
+            forward_cache: p.forward_cache,
+        };
+        self.pending.insert(query.exchange, pending);
+        Ok(vec![Action::Upstream(query)])
     }
 }

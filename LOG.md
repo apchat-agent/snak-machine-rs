@@ -1253,3 +1253,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   copying them into the learned cache. Native synchronization handles source
   expiry/change before reading that view. Withdrawn publications immediately
   stop answering. This adds a callback seam, no table/field/dependency.
+- S15 cross-view RED `8b6c276` forwards a canonical local A query upstream.
+  GREEN passes **298 tests** and all-feature clippy. The Additional-A dispatcher
+  now chooses SRP, Discovery Proxy or infrastructure forwarding for the
+  canonical name, preserving the original AAAA response. A per-transaction
+  cache-origin flag keeps derived proxy/registration results outside the
+  forwarding cache. Tests retain local service.arpa isolation, exercise the
+  DS-with-DO exception, and terminate a self-referential multicast alias.
+  No dependency; the flag records answer provenance for the planned common
+  augmentation pipeline.

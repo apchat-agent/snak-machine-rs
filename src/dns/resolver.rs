@@ -72,6 +72,7 @@ struct Pending {
     retry: u64,
     attempt: u8,
     base: Option<Vec<u8>>,
+    forward_cache: bool,
 }
 impl Pending {
     fn charge(&self) -> usize {
@@ -513,6 +514,7 @@ impl Resolver {
             retry: now.saturating_add(1000),
             attempt: 0,
             base: None,
+            forward_cache: true,
         };
         if self.pending_bytes() + p.charge() > BYTES {
             return Err(capacity());
@@ -591,33 +593,20 @@ impl Resolver {
             return self.finish(p, b, now);
         }
         if let Some(aq) = additional_question(&m, &p.question, self.additional_a) {
-            // The local empty-zone lookup is negative until a view owner provides data.
-            if in_zone(&aq.name, &"service.arpa.".parse().unwrap())
-                || self.local_zones.iter().any(|z| in_zone(&aq.name, z))
-            {
-                return self.finish(p, bytes.to_vec(), now);
-            }
-            let mut q = Message::new(0, 0x100 | (p.original.flags & 0x10));
-            q.questions.push(aq);
-            q.additional = p.original.additional.clone();
-            let aq = self.make_query(&q.encode()?, server, rng)?;
-            p.query = aq.clone();
-            p.question = q.questions[0].clone();
-            p.base = Some(bytes.to_vec());
-            p.deadline = now.saturating_add(10000);
-            p.retry = now.saturating_add(1000);
-            p.attempt = 0;
-            if self.pending_bytes() + p.charge() > BYTES {
-                let b = p.base.take().unwrap();
-                return self.finish(p, b, now);
-            }
-            self.pending.insert(aq.exchange, p);
-            return Ok(vec![Action::Upstream(aq)]);
+            return self.continue_additional(
+                Discovered::from_pending(p),
+                aq,
+                bytes.to_vec(),
+                now,
+                rng,
+            );
         }
         self.finish(p, bytes.to_vec(), now)
     }
     fn finish(&mut self, p: Pending, b: Vec<u8>, now: u64) -> io::Result<Vec<Action>> {
-        self.store(p.key, &b, now)?;
+        if p.forward_cache {
+            self.store(p.key, &b, now)?;
+        }
         p.waiters.into_iter().map(|w| deliver(w, &b)).collect()
     }
     fn store(&mut self, key: Vec<u8>, b: &[u8], now: u64) -> io::Result<()> {
