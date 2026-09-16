@@ -1037,3 +1037,198 @@ fn s15_apex_nsec_and_nsec3_answer_from_owned_zone_metadata_without_multicast() {
         assert_eq!(m.counts().0, 0);
     }
 }
+
+#[test]
+fn s15_additional_a_crosses_discovery_and_forwarding_views_without_leaking_local_queries() {
+    use snac_rs::{
+        dns::resolver::{Action, Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    for outward in [false, true] {
+        let mut r = Resolver::new(true);
+        r.enable_discovery(zone()).unwrap();
+        r.set_upstreams(&["192.0.2.53:53".parse().unwrap()])
+            .unwrap();
+        let mut e = Engine::default();
+        let mut rng = ScriptedRandom::new([]);
+        let client = Client::udp("[fd11::1]:40000".parse().unwrap());
+        if outward {
+            cached(
+                &mut e.querier,
+                vec![record(
+                    "alias.local.",
+                    5,
+                    Rdata::Name(name("external.example.net.")),
+                )],
+                0,
+            );
+            r.submit(
+                client,
+                &dns_query(103, q("alias.floor-1.example.", 28)),
+                0,
+                &mut rng,
+            )
+            .unwrap();
+            let actions = r.poll_discovery(&mut e, 0, &mut rng).unwrap();
+            let Action::Upstream(up) = &actions[0] else {
+                panic!("external canonical A must be attempted");
+            };
+            let mut reply = Message::parse(&up.bytes, Context::Unicast).unwrap();
+            assert_eq!(reply.questions, [q("external.example.net.", 1)]);
+            reply.flags = 0x8180;
+            reply.answers.push(Record {
+                class: 1,
+                ..record("external.example.net.", 1, Rdata::A([192, 0, 2, 9]))
+            });
+            let result = r
+                .receive(
+                    up.exchange,
+                    up.server,
+                    up.source_port,
+                    up.tcp,
+                    &reply.encode().unwrap(),
+                    1,
+                    &mut rng,
+                )
+                .unwrap();
+            let (_, a) = response(result.into_iter().next().unwrap());
+            assert_eq!(a.additional[0].data, Rdata::A([192, 0, 2, 9]));
+            assert_eq!(a.additional[0].name, name("external.example.net."));
+        } else {
+            let actions = r
+                .submit(
+                    client,
+                    &dns_query(104, q("external.example.net.", 28)),
+                    0,
+                    &mut rng,
+                )
+                .unwrap();
+            let Action::Upstream(up) = &actions[0] else {
+                panic!("forward initial query");
+            };
+            let mut reply = Message::parse(&up.bytes, Context::Unicast).unwrap();
+            reply.flags = 0x8180;
+            reply.answers.push(Record {
+                class: 1,
+                ..record(
+                    "external.example.net.",
+                    5,
+                    Rdata::Name(name("host.floor-1.example.")),
+                )
+            });
+            let result = r
+                .receive(
+                    up.exchange,
+                    up.server,
+                    up.source_port,
+                    up.tcp,
+                    &reply.encode().unwrap(),
+                    1,
+                    &mut rng,
+                )
+                .unwrap();
+            assert!(
+                result.is_empty(),
+                "canonical local A must enter discovery, never upstream"
+            );
+            assert_eq!(r.queries().count(), 0);
+            cached(
+                &mut e.querier,
+                vec![record("host.local.", 1, Rdata::A([192, 0, 2, 10]))],
+                2,
+            );
+            let (_, a) = response(
+                r.poll_discovery(&mut e, 2, &mut rng)
+                    .unwrap()
+                    .pop()
+                    .unwrap(),
+            );
+            assert_eq!(a.additional[0].name, name("host.floor-1.example."));
+            assert_eq!(a.additional[0].data, Rdata::A([192, 0, 2, 10]));
+        }
+        assert_eq!(r.pending_count(), 0);
+        assert_eq!(
+            r.cache_sets(),
+            0,
+            "derived proxy results remain outside the forwarding cache"
+        );
+    }
+}
+#[test]
+fn s15_discovery_ds_with_do_forwards_only_the_dnssec_exception_and_cycles_terminate() {
+    use snac_rs::{
+        dns::resolver::{Action, Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    r.enable_discovery(
+        snac_rs::discovery_proxy::Zone::new(
+            name("default.service.arpa."),
+            None,
+            &[],
+            &[name("proxy.home.arpa.")],
+            name("admin.home.arpa."),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    r.set_upstreams(&["192.0.2.53:53".parse().unwrap()])
+        .unwrap();
+    let mut e = Engine::default();
+    let mut rng = ScriptedRandom::new([]);
+    let client = Client::udp("[fd11::1]:40000".parse().unwrap());
+    for do_bit in [false, true] {
+        let mut query = Message::parse(
+            &dns_query(105, q("default.service.arpa.", 43)),
+            Context::Unicast,
+        )
+        .unwrap();
+        if do_bit {
+            query.additional.push(Record {
+                name: Name::root(),
+                kind: 41,
+                class: 4096,
+                ttl: 0x8000,
+                data: Rdata::Opt(vec![]),
+            });
+        }
+        let result = r
+            .submit(client.clone(), &query.encode().unwrap(), 0, &mut rng)
+            .unwrap();
+        if do_bit {
+            assert!(matches!(result[0], Action::Upstream(_)));
+        } else {
+            assert!(result.is_empty());
+            let (_, a) = response(
+                r.poll_discovery(&mut e, 0, &mut rng)
+                    .unwrap()
+                    .pop()
+                    .unwrap(),
+            );
+            assert_eq!(a.flags & 15, 0);
+            assert_eq!(a.authority[0].kind, 6);
+        }
+    }
+    cached(
+        &mut e.querier,
+        vec![record("loop.local.", 5, Rdata::Name(name("loop.local.")))],
+        0,
+    );
+    r.submit(
+        client,
+        &dns_query(106, q("loop.default.service.arpa.", 28)),
+        1,
+        &mut rng,
+    )
+    .unwrap();
+    let (_, a) = response(
+        r.poll_discovery(&mut e, 1, &mut rng)
+            .unwrap()
+            .pop()
+            .unwrap(),
+    );
+    assert!(a.additional.is_empty());
+    assert_eq!(e.querier.counts().0, 0);
+}
