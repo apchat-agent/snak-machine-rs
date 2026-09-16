@@ -1451,3 +1451,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   stream and returns it alongside both local zones to a stub UDP client.
   No new field or dependency. Interface/certificate interoperability still
   needs privileged acceptance; remaining S17 transport-bound checks follow.
+- S17 transport policy/bound RED `87fc669` confirms missing native policy and
+  accounting seams. GREEN passes **340 tests** and all-feature clippy. The
+  upstream pool accepts an optional caller-supplied rustls verification policy
+  before streams start; a trusted certificate for the wrong identity fails in
+  the actual native transport and exposes its fallback reason. This remains
+  an opportunistic profile, not a fail-closed encryption setting. Library
+  callers can inspect the selected route and charged pool load.
+- The native fixture fills all 128 inflight entries on a shared stream, verifies
+  its 128 KiB credit and refuses further resolver admission. Eight connections
+  and explicit-policy replacement were tested earlier. No new field or
+  dependency; the existing optional client configuration carries verification.

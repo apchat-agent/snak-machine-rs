@@ -15,6 +15,25 @@ pub(super) struct Pool {
     client: Option<Arc<rustls::ClientConfig>>,
 }
 impl Pool {
+    pub fn configure(&mut self, config: Arc<rustls::ClientConfig>) -> io::Result<()> {
+        if !self.connections.is_empty() {
+            return Err(io::Error::other(
+                "cannot change active upstream TLS verification",
+            ));
+        }
+        self.client = Some(config);
+        Ok(())
+    }
+    pub fn load(&self) -> (usize, usize, usize) {
+        (
+            self.connections.len(),
+            self.connections.values().map(|c| c.inflight.len()).sum(),
+            self.connections
+                .values()
+                .map(|c| 128 * 1024 - c.stream.available())
+                .sum(),
+        )
+    }
     pub fn count(&self) -> usize {
         self.connections.len()
     }

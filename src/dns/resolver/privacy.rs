@@ -18,6 +18,14 @@ impl Resolver {
             .get_or_insert_with(Policy::default)
             .sync(origins, explicit, now)
     }
+    pub fn upstream_route(&self, origin: SocketAddr, now: u64) -> crate::dns::privacy::Route {
+        self.privacy.as_ref().map_or(
+            crate::dns::privacy::Route::Plain {
+                reason: "automatic privacy not configured",
+            },
+            |p| p.route(origin, now),
+        )
+    }
     pub fn poll_privacy(
         &mut self,
         now: u64,

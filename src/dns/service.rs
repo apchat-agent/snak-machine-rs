@@ -22,6 +22,16 @@ pub struct Service {
     tls_config: Option<std::sync::Arc<rustls::ServerConfig>>,
 }
 impl Service {
+    /// Optional authenticated TLS policy. Plaintext fallback remains opportunistic.
+    pub fn configure_upstream_tls(
+        &mut self,
+        config: std::sync::Arc<rustls::ClientConfig>,
+    ) -> io::Result<()> {
+        self.upstream_tls.configure(config)
+    }
+    pub fn upstream_tls_load(&self) -> (usize, usize, usize) {
+        self.upstream_tls.load()
+    }
     pub fn enable_tls(&mut self, config: std::sync::Arc<rustls::ServerConfig>) {
         self.tls_config = Some(config);
     }
