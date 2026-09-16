@@ -1724,3 +1724,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   headers add eight bytes to the PMTU delta. Unexpired IPv4 source routes
   receive Source Route Failed; exhausted routes/options are removed. No field
   or dependency. Configuration and ICMP extension checks complete S21 next.
+- ICMP-extension RED `f430e4b` demonstrates discarded RFC 4884 objects and
+  a zero length field after quote translation. GREEN passes **400 tests** and
+  all-feature clippy. The parser separates checked extension structures from
+  quoted payload, rejects invalid lengths/checksums/object boundaries, and
+  preserves opaque objects with translated four/eight-byte length units and
+  padding. Output remains within the existing error-size bound; extensions
+  that cannot fit or whose target ICMP type has no length field are omitted.
+  No field, table or dependency.

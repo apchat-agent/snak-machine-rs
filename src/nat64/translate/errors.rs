@@ -20,7 +20,8 @@ impl Translator {
         if self.ipv4 != Some(p.destination) || !ipv4::unicast(p.source) {
             return Ok(vec![]);
         }
-        let q = ipv4::wire::Packet::quoted(&b[8..])?;
+        let (quoted, extension) = split_extensions(b, true)?;
+        let q = ipv4::wire::Packet::quoted(quoted)?;
         if q.payload.len() < 8 {
             return Err(invalid());
         }
@@ -50,9 +51,7 @@ impl Translator {
             return Ok(vec![]);
         };
         let quote = quote4_to_6(&q, host, self.synthesize(q.destination), port)?;
-        let mut body = vec![kind, code, 0, 0];
-        body.extend(value.to_be_bytes());
-        body.extend(quote.into_iter().take(1232));
+        let body = join_extensions(kind, code, value, quote, extension, false);
         if !self.allow_error(now) {
             return Ok(vec![]);
         }
@@ -85,7 +84,8 @@ impl Translator {
         {
             return Ok(vec![]);
         }
-        let q = Quote6::parse(&b[8..])?;
+        let (quoted, extension) = split_extensions(b, false)?;
+        let q = Quote6::parse(quoted)?;
         if q.non_initial || !self.prefix.contains(q.source) || q.source != e.destination {
             return Ok(vec![]);
         }
@@ -119,13 +119,14 @@ impl Translator {
             return Ok(vec![]);
         };
         let quote = quote6_to_4(&q, dest, pool, port)?;
-        let mut body = vec![kind, code, 0, 0];
-        body.extend(if kind == 12 {
-            (value << 24).to_be_bytes()
-        } else {
-            value.to_be_bytes()
-        });
-        body.extend(quote.into_iter().take(548));
+        let body = join_extensions(
+            kind,
+            code,
+            if kind == 12 { value << 24 } else { value },
+            quote,
+            extension,
+            true,
+        );
         if dest == pool {
             // Complete exactly one hairpin pass. error4 performs the final
             // tuple validation and rate admission; no recursive input dispatch.
@@ -388,4 +389,75 @@ impl Translator {
             packet: ipv4::wire::encode(p.destination, p.source, 1, 64, &icmp4_checksum(body))?,
         }])
     }
+}
+// RFC 4884: the field's units differ by IP family. Never interpret extension
+// bytes as quoted transport payload or relocate embedded legacy addresses.
+fn split_extensions(b: &[u8], v4: bool) -> io::Result<(&[u8], &[u8])> {
+    let supported = if v4 {
+        [3, 11, 12].contains(&b[0])
+    } else {
+        [1, 3].contains(&b[0])
+    };
+    let units = if supported {
+        usize::from(b[if v4 { 5 } else { 4 }])
+    } else {
+        0
+    };
+    if units == 0 {
+        return Ok((&b[8..], &[]));
+    }
+    let len = units * if v4 { 4 } else { 8 };
+    if len < 128 || 8 + len + 8 > b.len() {
+        return Err(invalid());
+    }
+    let extension = &b[8 + len..];
+    if extension[0] >> 4 != 2
+        || extension.len() % 4 != 0
+        || (extension[2..4] != [0, 0] && ipv4::wire::checksum(extension) != 0)
+    {
+        return Err(invalid());
+    }
+    let mut at = 4;
+    while at < extension.len() {
+        if at + 4 > extension.len() {
+            return Err(invalid());
+        }
+        let n = usize::from(u16::from_be_bytes([extension[at], extension[at + 1]]));
+        if n < 4 || n % 4 != 0 || at + n > extension.len() {
+            return Err(invalid());
+        }
+        at += n;
+    }
+    Ok((&b[8..8 + len], extension))
+}
+fn join_extensions(
+    kind: u8,
+    code: u8,
+    value: u32,
+    mut quote: Vec<u8>,
+    extension: &[u8],
+    v4: bool,
+) -> Vec<u8> {
+    let mut body = vec![kind, code, 0, 0];
+    body.extend(value.to_be_bytes());
+    let cap = if v4 { 548 } else { 1232 };
+    let unit = if v4 { 4 } else { 8 };
+    let padded = quote.len().max(128).div_ceil(unit) * unit;
+    let supported = if v4 {
+        [3, 11, 12].contains(&kind)
+    } else {
+        [1, 3].contains(&kind)
+    };
+    // RFC 7915 permits truncating an extension that cannot fit. Types without
+    // an RFC 4884 length field must use the ordinary bounded quote format.
+    if supported && !extension.is_empty() && padded + extension.len() <= cap && padded / unit <= 255
+    {
+        body[if v4 { 5 } else { 4 }] = (padded / unit) as u8;
+        quote.resize(padded, 0);
+        body.extend(quote);
+        body.extend(extension);
+    } else {
+        body.extend(quote.into_iter().take(cap));
+    }
+    body
 }
