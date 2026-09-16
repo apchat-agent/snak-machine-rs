@@ -39,6 +39,13 @@ impl Translator {
             error_count: 0,
         })
     }
+    pub fn set_lowest_ipv6_mtu(&mut self, mtu: u32) -> io::Result<()> {
+        if !(1280..=65535).contains(&mtu) {
+            return Err(invalid());
+        }
+        self.lowest_ipv6_mtu = mtu;
+        Ok(())
+    }
     pub(crate) fn set_mtus(&mut self, mtus: [u32; 2]) {
         self.mtus = mtus;
     }

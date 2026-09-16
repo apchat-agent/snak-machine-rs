@@ -1732,3 +1732,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   padding. Output remains within the existing error-size bound; extensions
   that cannot fit or whose target ICMP type has no length field are omitted.
   No field, table or dependency.
+- Threshold RED `63277ce` fails on the missing configuration API. GREEN passes
+  **401 tests**, both builds, formatting, all-feature clippy and the macOS
+  all-target pcap check. The library exposes RFC 7915's checked 1280..65535
+  minimum-IPv6-MTU threshold; interface MTU still caps actual output.
+- S21 is complete. **needs privileged acceptance:** Echo and ICMP errors,
+  PMTU discovery and fragmented UDP/TCP traffic through real TAP/pcap links,
+  including constricting MTUs, zero-checksum IPv4 UDP and hairpin errors.
+  Rootless native fixtures execute DHCP/ARP/ND, shared reassembly, translation
+  and output; no physical-interface or external-stack interoperability is claimed.
