@@ -223,6 +223,12 @@ impl<I: PacketIo> Driver<I> {
             self.mdns_round = (self.mdns_round + 1) % 3;
             let (owner, destination, messages) = match round {
                 0 => {
+                    if self.mdns_query_rate.1 >= 20 {
+                        continue;
+                    }
+                    if let Some(output) = self.mdns_query_output.take() {
+                        return Ok(Some(output));
+                    }
                     if let Some(b) = self.mdns.querier.poll(now)? {
                         (Owner::Query(b.id), None, b.messages)
                     } else {
@@ -261,6 +267,9 @@ impl<I: PacketIo> Driver<I> {
     }
     pub(super) fn poll_mdns(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         self.mdns.sync_budget()?;
+        if now >= self.mdns_query_rate.0 {
+            self.mdns_query_rate.1 = 0;
+        }
         let sources = self.mdns_sources();
         self.mdns.querier.available(!sources.is_empty(), now, rng)?;
         self.mdns
@@ -268,6 +277,7 @@ impl<I: PacketIo> Driver<I> {
             .available(!sources.is_empty(), now, rng)?;
         if sources.is_empty() {
             self.mdns_output = None;
+            self.mdns_query_output = None;
             self.mdns.responder.clear();
             return Ok(());
         }
@@ -280,7 +290,23 @@ impl<I: PacketIo> Driver<I> {
                 self.mdns_complete(o.owner, false, now);
             }
         }
+        if self
+            .mdns_query_output
+            .as_ref()
+            .is_some_and(|o| o.sources != sources || !self.mdns_current(o.owner, now))
+        {
+            if let Some(o) = self.mdns_query_output.take() {
+                self.mdns_complete(o.owner, false, now);
+            }
+        }
         for _ in 0..32 {
+            if self.mdns_output.as_ref().is_some_and(|o| {
+                matches!(o.owner, Owner::Query(_))
+                    && self.mdns_query_rate.1 >= 20
+                    && (!o.messages.is_empty() || !o.packets.is_empty())
+            }) {
+                self.mdns_query_output = self.mdns_output.take();
+            }
             if self.mdns_output.is_none() {
                 self.mdns_output = self.mdns_next_output(&sources, now)?;
                 if self.mdns_output.is_none() {
@@ -354,6 +380,12 @@ impl<I: PacketIo> Driver<I> {
             };
             match self.io.send(Link::Ail, packet) {
                 Ok(()) => {
+                    if matches!(output.owner, Owner::Query(_)) {
+                        if self.mdns_query_rate.1 == 0 {
+                            self.mdns_query_rate.0 = now.saturating_add(1000);
+                        }
+                        self.mdns_query_rate.1 += 1;
+                    }
                     output.packets.pop_front();
                 }
                 Err(e)

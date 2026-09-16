@@ -1238,3 +1238,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   legal multicast name that cannot fit the longer proxy suffix returns SERVFAIL
   and stops its multicast job. Tests also exercise the 512-record output bound
   and sixteen-completion poll continuation. No new field or dependency.
+- S15 multicast-rate RED `c71a3e8` sends 32 packets in one instant. GREEN
+  passes **295 tests**. Successful query frames, including both IP families
+  and fragments, now share a twenty-per-second budget (RFC 8766 9.3).
+  One bounded continuation retains a partially sent query batch while the
+  ordinary output slot services publications/responses; completed batches are
+  acknowledged immediately. The test demonstrates both the rate boundary and
+  publication progress during throttling. The counter/deadline and single
+  continuation implement the required output limiter; no dependency.

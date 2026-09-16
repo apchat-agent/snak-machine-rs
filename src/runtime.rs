@@ -14,6 +14,8 @@ pub struct Driver<I> {
     pub dns: crate::dns::resolver::Resolver,
     pub mdns: crate::mdns::Engine,
     mdns_output: Option<mdns::Output>,
+    mdns_query_output: Option<mdns::Output>,
+    mdns_query_rate: (Time, u8),
     mdns_fragment_id: u32,
     mdns_source: mdns::Source,
     mdns_round: u8,
@@ -59,6 +61,8 @@ impl<I: PacketIo> Driver<I> {
             dns_discovery: Default::default(),
             mdns: Default::default(),
             mdns_output: None,
+            mdns_query_output: None,
+            mdns_query_rate: (0, 0),
             mdns_fragment_id: 0,
             mdns_source: Box::new(|id, now, _, resolver| resolver.advertised(id, now)),
             mdns_round: 0,
@@ -341,7 +345,16 @@ impl<I: PacketIo> Driver<I> {
     pub fn next_deadline(&mut self, now: Time) -> Time {
         let mut next = self.router.next_deadline(now);
         for deadline in [
-            self.mdns.querier.next_deadline(now),
+            self.mdns.querier.next_deadline(now).map(|t| {
+                if self.mdns_query_rate.1 >= 20 {
+                    t.max(self.mdns_query_rate.0)
+                } else {
+                    t
+                }
+            }),
+            self.mdns_query_output
+                .as_ref()
+                .map(|o| o.retry.max(self.mdns_query_rate.0)),
             self.mdns.publisher.next_deadline(),
             self.mdns.responder.next_deadline(),
             self.mdns_output.as_ref().map(|o| o.retry),
