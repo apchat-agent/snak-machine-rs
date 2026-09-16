@@ -518,3 +518,90 @@ fn s18_eight_export_and_history_slots_are_reserved_together_and_release_on_expir
     excess.push(excess[0]);
     assert!(s.advertised(&excess, 80000).is_err());
 }
+
+#[test]
+fn s18_cli_defaults_enabled_and_requires_explicit_routed_override() {
+    use snac_rs::config::Config;
+    let base = ["--backend", "tap", "--infra", "a", "--stub", "s"];
+    let c = Config::parse(base).unwrap().unwrap();
+    assert!(c.nat64.enabled);
+    assert!(!c.nat64.allow_without_pd);
+    let c = Config::parse(base.into_iter().chain([
+        "--nat64=disabled",
+        "--nat64-prefix=2001:db8:64::/96",
+        "--allow-infrastructure-nat64-without-pd",
+        "--nat64-config=/tmp/nat64.conf",
+    ]))
+    .unwrap()
+    .unwrap();
+    assert!(!c.nat64.enabled);
+    assert!(c.nat64.allow_without_pd);
+    assert_eq!(c.nat64.infrastructure, Some(prefix("2001:db8:64::", 96)));
+    assert_eq!(
+        c.nat64_config.unwrap(),
+        std::path::PathBuf::from("/tmp/nat64.conf")
+    );
+    for value in [
+        "garbage",
+        "fd00::/72",
+        "ff00::/96",
+        "fe80::/96",
+        "2001:db8::1/96",
+        "::ffff:0:0/96",
+    ] {
+        assert!(Config::parse(base.into_iter().chain(["--nat64-prefix", value])).is_err());
+    }
+    assert!(Config::parse(base.into_iter().chain(["--nat64=bad"])).is_err());
+}
+#[test]
+fn s18_reload_parser_is_bounded_strict_and_atomic() {
+    let p: Policy =
+        "nat64=disabled\nnat64-prefix=64:ff9b::/96\nallow-infrastructure-nat64-without-pd=true\n"
+            .parse()
+            .unwrap();
+    assert!(!p.enabled && p.allow_without_pd);
+    assert_eq!(p.infrastructure, Some(prefix("64:ff9b::", 96)));
+    for text in [
+        "nat64=maybe",
+        "unknown=true",
+        "nat64=enabled\nnat64=disabled",
+        "nat64-prefix=fd00::1/96",
+        "allow-infrastructure-nat64-without-pd=1",
+        "nat64-prefix=::/96",
+    ] {
+        assert!(text.parse::<Policy>().is_err());
+    }
+    assert!(format!("#{}", "x".repeat(4095)).parse::<Policy>().is_ok());
+    assert!(format!("#{}", "x".repeat(4096)).parse::<Policy>().is_err());
+}
+#[test]
+fn s18_reload_file_applies_live_changes_and_preserves_last_valid_policy_on_error() {
+    use snac_rs::nat64::Reload;
+    let path = std::env::temp_dir().join(format!(
+        "snac-nat64-{}-{}.conf",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, "nat64=disabled\n").unwrap();
+    let mut reload = Reload::new(path.clone());
+    let mut s = selector();
+    assert!(reload.poll(&mut s, 0).unwrap());
+    assert!(!s.policy().enabled);
+    std::fs::write(&path, "nat64=enabled\n").unwrap();
+    assert!(!reload.poll(&mut s, 999).unwrap());
+    assert!(!s.policy().enabled);
+    assert!(reload.poll(&mut s, 1000).unwrap());
+    assert!(s.policy().enabled);
+    std::fs::write(&path, "nat64=invalid\n").unwrap();
+    assert!(reload.poll(&mut s, 2000).is_err());
+    assert!(s.policy().enabled);
+    std::fs::write(&path, vec![0; 4097]).unwrap();
+    assert!(reload.poll(&mut s, 3000).is_err());
+    std::fs::write(&path, "nat64=disabled\n").unwrap();
+    assert!(reload.poll(&mut s, 4000).unwrap());
+    assert!(!s.policy().enabled);
+    std::fs::remove_file(&path).unwrap();
+}

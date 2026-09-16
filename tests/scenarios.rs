@@ -1229,7 +1229,7 @@ fn cli_validates_backend_and_two_link_scope_without_opening_devices() {
         "--nat64",
         "enabled"
     ])
-    .is_err());
+    .is_ok());
 }
 
 #[test]
