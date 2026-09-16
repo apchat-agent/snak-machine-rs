@@ -41,7 +41,7 @@ impl Bindings {
         rng: &mut impl RandomSource,
     ) -> io::Result<u16> {
         self.expire(now);
-        let key = (1, source, id);
+        let key = (1, source, id, self.domain);
         self.admit(key, SocketAddrV4::new(remote, 0))?;
         let assigned = if let Some(b) = self.bindings.get(&key) {
             b.port
@@ -82,6 +82,7 @@ impl Bindings {
             return Ok(None);
         }
         self.icmp_session(key, remote, now);
+        self.domain = key.3;
         Ok(Some((key.1, key.2)))
     }
 }

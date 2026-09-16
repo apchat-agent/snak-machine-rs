@@ -93,6 +93,8 @@ impl Router {
         if site[..6] == self.identity.site.address.octets()[..6] {
             return Err(io::Error::other("ULA entropy repeated current site"));
         }
+        self.nat64
+            .rotate_local(Prefix::new(site.into(), 48).unwrap(), now)?;
         for link in [Link::Ail, Link::Stub] {
             let old = self.identity.prefix(link);
             let valid = self.links[link.index()].last_valid;

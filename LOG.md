@@ -1794,3 +1794,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   discovery is cleared; repeated disabled reconfiguration rejects growth at the
   same bound. This is derived administrative history, not new peer readiness.
   Parser/capacity sweeps follow in S24. No dependency added.
+- Rotation RED `ecd871b` (fixture polling correction `6c8d9fc`, rechecked RED)
+  demonstrates an unchanged local /96 after site movement and a PREF64 exceeding
+  a newly shortened PD lease. GREEN passes **415 tests** and all-feature clippy.
+- The site rotation now changes NAT64 identity atomically, withdraws its old
+  PREF64 and services its retiring domain through the last promise. Reverse
+  tuples identify the correct old/new IPv6 prefix even for identical host,
+  port and remote tuples; one shared BIB preserves all aggregate/per-source
+  limits. The native rotation fixture fills the common 128-binding source cap.
+- PLAN2 **ADDENDUM 7** records the required translation-domain key refinement
+  with draft §§5.2.1/6/6.2 authority. Fields added are the bounded active/retiring
+  prefix projection and the BIB's prefix discriminator; the existing conservative
+  per-entry byte charges still cover those fixed-size keys. No dependency.
+- Infrastructure lifetimes now use both the successful PIO deadline and the
+  current lease validity, so a shortening takes effect in that same RA.

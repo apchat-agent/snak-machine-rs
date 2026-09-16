@@ -108,7 +108,12 @@ impl Router {
                         && self.service_until(*a, now).is_some()
                 })
             })
-            .map(|(_, p)| deadline(p.last_valid))
+            .filter_map(|(_, p)| {
+                self.pd
+                    .leases
+                    .get(&p.lease)
+                    .map(|l| deadline(p.last_valid).min(deadline(l.valid)))
+            })
             .filter(|t| *t > now)
             .max();
         let ready = Readiness {

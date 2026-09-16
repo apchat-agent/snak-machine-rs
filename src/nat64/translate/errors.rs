@@ -50,6 +50,7 @@ impl Translator {
         let Some((host, port)) = self.bindings.error_in(q.protocol, sport, remote, now) else {
             return Ok(vec![]);
         };
+        self.bindings.domain = self.bindings.domain_for(q.protocol, sport).unwrap();
         let quote = quote4_to_6(&q, host, self.synthesize(q.destination), port)?;
         let body = join_extensions(kind, code, value, quote, extension, false);
         if !self.allow_error(now) {
@@ -75,8 +76,12 @@ impl Translator {
         let Some(pool) = self.ipv4 else {
             return Ok(vec![]);
         };
-        if !self.prefix.contains(e.destination)
-            || self.prefix.contains(e.source)
+        if !crate::wire::Prefix::new(self.bindings.domain, 96)
+            .unwrap()
+            .contains(e.destination)
+            || crate::wire::Prefix::new(self.bindings.domain, 96)
+                .unwrap()
+                .contains(e.source)
             || e.source.is_multicast()
             || e.source.is_unspecified()
             || e.source.is_loopback()
@@ -86,7 +91,12 @@ impl Translator {
         }
         let (quoted, extension) = split_extensions(b, false)?;
         let q = Quote6::parse(quoted)?;
-        if q.non_initial || !self.prefix.contains(q.source) || q.source != e.destination {
+        if q.non_initial
+            || !crate::wire::Prefix::new(self.bindings.domain, 96)
+                .unwrap()
+                .contains(q.source)
+            || q.source != e.destination
+        {
             return Ok(vec![]);
         }
         let dest = extract(q.source);

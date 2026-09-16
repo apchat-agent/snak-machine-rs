@@ -21,6 +21,7 @@ impl<I: PacketIo> Driver<I> {
             )?);
         }
         if let Some(nat) = &mut self.nat64 {
+            nat.set_prefixes(&self.router.nat64.local_prefixes(now))?;
             nat.set_mtus([self.router.links[0].mtu, self.router.links[1].mtu]);
         }
         Ok(())
@@ -35,7 +36,13 @@ impl<I: PacketIo> Driver<I> {
         let Ok(e) = envelope(rx.kind, &rx.bytes) else {
             return Ok(false);
         };
-        if !self.router.nat64.local_prefix().contains(e.destination) {
+        if !self
+            .router
+            .nat64
+            .local_prefixes(now)
+            .iter()
+            .any(|p| p.contains(e.destination))
+        {
             return Ok(false);
         }
         // Consume local-prefix traffic even when unavailable. It must never
@@ -70,7 +77,12 @@ impl<I: PacketIo> Driver<I> {
             || e.source.is_multicast()
             || e.source.is_loopback()
             || crate::wire::link_local(e.source)
-            || self.router.nat64.local_prefix().contains(e.source)
+            || self
+                .router
+                .nat64
+                .local_prefixes(now)
+                .iter()
+                .any(|p| p.contains(e.source))
         {
             return Ok(true);
         }

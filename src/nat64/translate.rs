@@ -15,7 +15,7 @@ use std::{
 };
 pub struct Translator {
     pub bindings: Bindings,
-    prefix: Prefix,
+    prefixes: Vec<Prefix>,
     ipv4: Option<Ipv4Addr>,
     identification: u16,
     mtus: [u32; 2],
@@ -29,8 +29,12 @@ impl Translator {
             return Err(invalid());
         }
         Ok(Self {
-            bindings: Bindings::with_ports(ports),
-            prefix,
+            bindings: {
+                let mut b = Bindings::with_ports(ports);
+                b.domain = prefix.address;
+                b
+            },
+            prefixes: vec![prefix],
             ipv4: Some(ipv4),
             identification: 0,
             mtus: [1500; 2],
@@ -38,6 +42,16 @@ impl Translator {
             error_window: 0,
             error_count: 0,
         })
+    }
+    pub(crate) fn set_prefixes(&mut self, prefixes: &[Prefix]) -> io::Result<()> {
+        if prefixes.len() > 8 || prefixes.iter().any(|p| p.length != 96 || !usable(*p)) {
+            return Err(invalid());
+        }
+        if self.prefixes != prefixes {
+            self.bindings.retain_domains(prefixes);
+            self.prefixes = prefixes.to_vec();
+        }
+        Ok(())
     }
     pub fn set_lowest_ipv6_mtu(&mut self, mtu: u32) -> io::Result<()> {
         if !(1280..=65535).contains(&mtu) {
@@ -106,11 +120,17 @@ impl Translator {
             || e.source.is_multicast()
             || wire::link_local(e.source)
             || e.source.to_ipv4_mapped().is_some()
-            || self.prefix.contains(e.source)
-            || !self.prefix.contains(e.destination)
+            || self.prefixes.iter().any(|p| p.contains(e.source))
+            || !self.prefixes.iter().any(|p| p.contains(e.destination))
         {
             return Ok(vec![]);
         }
+        self.bindings.domain = self
+            .prefixes
+            .iter()
+            .find(|p| p.contains(e.destination))
+            .unwrap()
+            .address;
         let dest = Ipv4Addr::from(<[u8; 4]>::try_from(&e.destination.octets()[12..]).unwrap());
         if !ipv4::unicast(dest) || (dest != pool && !reachable(dest)) {
             return Ok(vec![]);
@@ -330,7 +350,8 @@ impl Translator {
             return Ok(vec![]);
         };
         let mut output = vec![];
-        for (source, port, _, remote) in self.bindings.take_tcp_probes(32) {
+        for (source, port, allocated, remote) in self.bindings.take_tcp_probes(32) {
+            self.bindings.domain = self.bindings.domain_for(6, allocated).unwrap();
             let mut tcp = vec![0; 20];
             tcp[..2].copy_from_slice(&remote.port().to_be_bytes());
             tcp[2..4].copy_from_slice(&port.to_be_bytes());
@@ -355,7 +376,7 @@ impl Translator {
         Ok(output)
     }
     fn synthesize(&self, ipv4: Ipv4Addr) -> Ipv6Addr {
-        (u128::from(self.prefix.address) | u128::from(u32::from(ipv4))).into()
+        (u128::from(self.bindings.domain) | u128::from(u32::from(ipv4))).into()
     }
 }
 fn ports(protocol: u8, b: &[u8]) -> io::Result<(u16, u16)> {

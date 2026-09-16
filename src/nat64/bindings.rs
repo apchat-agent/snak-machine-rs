@@ -10,7 +10,7 @@ use std::{
     io,
     net::{Ipv6Addr, SocketAddrV4},
 };
-type Key = (u8, Ipv6Addr, u16);
+type Key = (u8, Ipv6Addr, u16, Ipv6Addr);
 type SessionKey = (Key, SocketAddrV4);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum UdpFiltering {
@@ -30,6 +30,7 @@ struct Session {
     syn_quote: Vec<u8>,
 }
 pub struct Bindings {
+    pub(crate) domain: Ipv6Addr,
     ports: Ports,
     bindings: BTreeMap<Key, Binding>,
     reverse: BTreeMap<(u8, u16), Key>,
@@ -45,6 +46,7 @@ pub struct Bindings {
 impl Default for Bindings {
     fn default() -> Self {
         Self {
+            domain: Ipv6Addr::UNSPECIFIED,
             ports: Ports::default(),
             bindings: BTreeMap::new(),
             reverse: BTreeMap::new(),
@@ -72,6 +74,24 @@ impl Bindings {
             ..Self::default()
         }
     }
+    pub(crate) fn domain_for(&self, protocol: u8, port: u16) -> Option<Ipv6Addr> {
+        self.reverse.get(&(protocol, port)).map(|key| key.3)
+    }
+    pub(crate) fn retain_domains(&mut self, domains: &[crate::wire::Prefix]) {
+        let keep = |key: &Key| domains.iter().any(|p| p.address == key.3);
+        self.sessions.retain(|(key, _), _| keep(key));
+        self.bindings.retain(|key, _| keep(key));
+        self.reverse.retain(|_, key| keep(key));
+        self.hosts.clear();
+        for key in self.bindings.keys() {
+            self.hosts.entry(key.1).or_default().0 += 1;
+        }
+        for (key, _) in self.sessions.keys() {
+            self.hosts.entry(key.1).or_default().1 += 1;
+        }
+        self.tcp_quote_bytes = self.sessions.values().map(|s| s.syn_quote.len()).sum();
+        self.next = self.sessions.values().map(|s| s.expires).min();
+    }
     pub fn owns(&self, protocol: u8, port: u16) -> bool {
         self.reverse.contains_key(&(protocol, port))
     }
@@ -97,7 +117,7 @@ impl Bindings {
         remote: SocketAddrV4,
         now: u64,
     ) -> Option<u16> {
-        let key = (protocol, host, port);
+        let key = (protocol, host, port, self.domain);
         self.sessions
             .get(&(key, remote))
             .filter(|s| s.expires > now)?;
@@ -235,7 +255,7 @@ impl Bindings {
         occupied: impl Fn(u16) -> bool,
     ) -> io::Result<u16> {
         self.expire(now);
-        let key = (17, source, port);
+        let key = (17, source, port, self.domain);
         self.admit(key, remote)?;
         let assigned = if let Some(b) = self.bindings.get(&key) {
             b.port
@@ -276,6 +296,7 @@ impl Bindings {
         }
         self.admit(key, remote)?;
         self.udp_session(key, remote, now);
+        self.domain = key.3;
         Ok(Some((key.1, key.2)))
     }
     fn allocate(

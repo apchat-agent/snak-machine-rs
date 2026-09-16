@@ -31,7 +31,9 @@ impl Bindings {
         port: u16,
         remote: SocketAddrV4,
     ) -> Option<(State, u64)> {
-        let s = self.sessions.get(&((6, source, port), remote))?;
+        let s = self
+            .sessions
+            .get(&((6, source, port, self.domain), remote))?;
         Some((s.tcp?, s.expires))
     }
     pub fn take_tcp_probes(&mut self, limit: usize) -> Vec<(Ipv6Addr, u16, u16, SocketAddrV4)> {
@@ -85,7 +87,7 @@ impl Bindings {
         rng: &mut impl RandomSource,
     ) -> io::Result<Option<u16>> {
         self.expire(now);
-        let key = (6, source, port);
+        let key = (6, source, port, self.domain);
         // Security policy declines midstream creation. An existing session
         // still follows every retransmission/half-close transition in the RFC.
         if !self.sessions.contains_key(&(key, remote)) && flags & 2 == 0 {
@@ -160,6 +162,7 @@ impl Bindings {
         }
         self.admit(key, remote)?;
         self.tcp_session(key, remote, false, flags, now);
+        self.domain = key.3;
         Ok(Some((key.1, key.2)))
     }
 }

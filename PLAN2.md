@@ -1487,3 +1487,27 @@ registered TCP service types. Plain DNS UPDATE remains accepted over UDP
 as well as TCP. This implements draft-ietf-snac-simple-12 sections 5.5.2,
 5.5.3 and 7, which require the referenced SRP service names and DoT support;
 the spelling correction changes no listener transport support.
+
+## ADDENDUM 7 — NAT64 binding scope during site renumbering (S23)
+
+Section 4.3's source-address/port BIB key implicitly assumed a single local
+/96. Sections 4.2 and S23 also require ULA movement and continued service for
+previously advertised local prefixes. A host may use the same source port
+and IPv4 remote tuple through both the old and new /96 at once; a common
+external port would make its IPv6 return source ambiguous.
+
+The shared BIB therefore includes the local /96 as a translation-domain key.
+Mapping remains endpoint independent inside each domain. The shared reverse
+port owner, aggregate/per-source binding/session/byte limits and eight-prefix
+advertisement bound still apply across all domains. Old domains remain only
+through their successful advertisement deadline, then release their bindings;
+new /96 allocation follows the new site prefix atomically. No separate
+per-prefix capacity pool is introduced. Native tests check distinct return
+sources for identical host/port/remote tuples during rotation and the common
+128-binding per-source cap.
+
+Authority: draft-ietf-snac-simple-12 §5.2.1 recommends a different ULA site
+prefix on attachment change, §6.2 allocates the /96 from the maintained site
+prefix, and §6 explains why distinct stateful translation egresses need
+unambiguous return selection. This refines the plan's incomplete key shape;
+it does not weaken its state or advertisement limits.

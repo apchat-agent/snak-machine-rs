@@ -84,6 +84,30 @@ impl Selector {
         self.observations.expire(now);
         self.promised.retain(|_, (_, until, _)| *until > now);
     }
+    pub(crate) fn rotate_local(&mut self, site: Prefix, now: u64) -> io::Result<()> {
+        let local = Self::new(site)?.local;
+        self.expire(now);
+        if local != self.local && !self.promised.contains_key(&local) && self.promised.len() == 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "NAT64 retirement capacity",
+            ));
+        }
+        self.local = local;
+        Ok(())
+    }
+    pub(crate) fn local_prefixes(&self, now: u64) -> Vec<Prefix> {
+        let mut out = vec![self.local];
+        out.extend(
+            self.promised
+                .iter()
+                .filter(|(p, (source, until, _))| {
+                    **p != self.local && *source == Source::Local && *until > now
+                })
+                .map(|(p, _)| *p),
+        );
+        out
+    }
     pub fn local_prefix(&self) -> Prefix {
         self.local
     }
