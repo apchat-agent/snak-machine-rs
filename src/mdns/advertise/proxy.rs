@@ -22,13 +22,24 @@ pub(crate) struct Proxy {
     slots: BTreeMap<Name, Slot>,
     pending: BTreeMap<Name, Vec<Record>>,
     sequence: u64,
-}
-fn mapping() -> Mapping {
-    let zone: Name = "default.service.arpa.".parse().unwrap();
-    let digest = crate::srp::wire::fingerprint(zone.canonical());
-    Mapping::new(zone, &digest[..8]).unwrap()
+    zone: Option<Name>,
 }
 impl Proxy {
+    pub fn set_zone(&mut self, zone: Name) -> io::Result<()> {
+        if !self.slots.is_empty() || !self.pending.is_empty() || zone.labels().is_empty() {
+            return Err(invalid());
+        }
+        self.zone = Some(zone);
+        Ok(())
+    }
+    fn mapping(&self) -> Mapping {
+        let zone = self
+            .zone
+            .clone()
+            .unwrap_or_else(|| "default.service.arpa.".parse().unwrap());
+        let digest = crate::srp::wire::fingerprint(zone.canonical());
+        Mapping::new(zone, &digest[..8]).unwrap()
+    }
     pub fn next_deadline(&self) -> Option<Time> {
         self.slots.values().map(|s| s.next_change).min()
     }
@@ -51,7 +62,7 @@ impl Proxy {
                 .slots
                 .get(name)
                 .map(|s| s.mapping.clone())
-                .unwrap_or_else(mapping);
+                .unwrap_or_else(|| self.mapping());
             let records = map
                 .project(registry, name, now)
                 .map_err(|_| Error::ServFail)?;
@@ -131,7 +142,7 @@ impl Proxy {
                     .slots
                     .get(&name)
                     .map(|s| s.mapping.clone())
-                    .unwrap_or_else(mapping);
+                    .unwrap_or_else(|| self.mapping());
                 let live = !map.project(registry, &name, now)?.is_empty();
                 Ok((live, name))
             })
@@ -151,7 +162,9 @@ impl Proxy {
             } else {
                 vec![]
             };
-            let mut map = prior.map(|s| s.mapping.clone()).unwrap_or_else(mapping);
+            let mut map = prior
+                .map(|s| s.mapping.clone())
+                .unwrap_or_else(|| self.mapping());
             let mut version = prior.map_or(1, |s| s.version);
             let id = if let Some(s) = prior {
                 s.id

@@ -94,6 +94,7 @@ struct Cache {
 }
 pub struct Resolver {
     additional_a: bool,
+    zones: Option<super::inventory::Zones>,
     local_zones: Vec<Name>,
     upstreams: Vec<SocketAddr>,
     pending: BTreeMap<u64, Pending>,
@@ -112,6 +113,7 @@ impl Resolver {
     pub fn new(additional_a: bool) -> Self {
         Self {
             additional_a,
+            zones: None,
             local_zones: vec![],
             upstreams: vec![],
             pending: BTreeMap::new(),
@@ -127,6 +129,25 @@ impl Resolver {
             srp_sources: vec![],
         }
     }
+    pub fn configure_zones(&mut self, zones: super::inventory::Zones) -> io::Result<()> {
+        if self.registrar.is_some()
+            || self.pending_count() != 0
+            || self.discovery.as_ref().is_some_and(|d| d.counts().0 != 0)
+        {
+            return Err(io::Error::other("cannot change active DNS namespaces"));
+        }
+        let proxy = zones.proxy()?;
+        let validator =
+            Validator::new(std::slice::from_ref(&zones.registrar)).map_err(|_| invalid())?;
+        self.set_local_zones(&[zones.registrar.clone(), zones.hostname.clone()])?;
+        self.discovery = Some(crate::discovery_proxy::Proxy::new(proxy));
+        self.srp_validator = validator;
+        self.zones = Some(zones);
+        Ok(())
+    }
+    pub fn zones(&self) -> Option<&super::inventory::Zones> {
+        self.zones.as_ref()
+    }
     pub fn enable_srp(
         &mut self,
         store: Box<dyn crate::persist::StateStore>,
@@ -136,7 +157,10 @@ impl Resolver {
         if self.registrar.is_some() {
             return Err(io::Error::other("SRP registrar already owns a store"));
         }
-        let registrar = crate::srp::service::Registrar::open(store, now, wall)?;
+        let mut registrar = crate::srp::service::Registrar::open(store, now, wall)?;
+        if let Some(zones) = &self.zones {
+            registrar.set_zone(zones.registrar.clone())?;
+        }
         self.registrar = Some(registrar);
         self.set_srp_clock(wall, now);
         self.cache.clear();
@@ -377,14 +401,26 @@ impl Resolver {
                 .0
                 .saturating_add(now.saturating_sub(self.srp_clock.1) / 1000);
             let registrar = &self.registrar;
+            let zones = &self.zones;
             return match self
                 .srp_validator
                 .verify(bytes, wall, &mut self.crypto, |name| {
-                    registrar
-                        .as_ref()
-                        .and_then(|r| r.registry.key(name, now).cloned())
+                    registrar.as_ref().and_then(|r| {
+                        let canonical = match zones {
+                            Some(zones) => zones.registration_name(name).ok()?,
+                            None => name.clone(),
+                        };
+                        r.registry.key(&canonical, now).cloned()
+                    })
                 }) {
                 Ok(update) => {
+                    let update = match &self.zones {
+                        Some(zones) => match zones.registration(update) {
+                            Ok(update) => update,
+                            Err(_) => return Ok(vec![error(client, SrpError::ServFail)?]),
+                        },
+                        None => update,
+                    };
                     if let Some(registrar) = &mut self.registrar {
                         match registrar.apply(&update, now, wall) {
                             Ok(grant) => Ok(vec![Action::Reply {

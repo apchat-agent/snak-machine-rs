@@ -24,6 +24,18 @@ impl Registrar {
             advertising: Default::default(),
         })
     }
+    pub(crate) fn set_zone(&mut self, zone: crate::dns::wire::Name) -> io::Result<()> {
+        if self
+            .registry
+            .hosts()
+            .any(|(n, _)| !crate::mdns::advertise::within(n, &zone))
+        {
+            return Err(io::Error::other(
+                "SRP journal belongs to a different registration zone",
+            ));
+        }
+        self.advertising.set_zone(zone)
+    }
     pub fn apply(&mut self, u: &Update, now: u64, wall: u64) -> Result<Grant, Error> {
         let mut changed = std::collections::BTreeSet::from([u.host.clone()]);
         changed.extend(

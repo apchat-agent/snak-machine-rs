@@ -1275,3 +1275,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   are exercised rootlessly. **needs privileged acceptance:** external discovery
   clients and real-interface multicast/DNS/DoT interoperability. Complete
   inventory/readiness and system-wide hostile-load audits follow S16/S22–S24.
+
+### S16 — Default zones, browsing-domain inventory and SRP discovery (in progress)
+
+- S16 namespace RED `c646012` confirms missing canonical-zone configuration.
+  GREEN passes **303 tests** and all-feature clippy. Defaults derive the
+  registrar and router host zones from the persisted ULA site ID. Explicit
+  registrar/discovery overrides are validated before activation; a live
+  registrar cannot change namespace. The default.service.arpa UPDATE alias
+  is rewritten only after signature verification, including DNS-name RDATA
+  while preserving binary TXT and the original-wire retry digest/response.
+- Canonical requests authenticate their own wire names; FCFS key lookup maps
+  alias names into the canonical ownership table. Advertising Proxy dataset
+  projection uses the configured registration zone. A restored journal from a
+  different canonical namespace is rejected explicitly, not silently remapped.
+  The namespace setting and AP zone field implement PLAN2's configured views;
+  no dependency. Native defaults, inventory, readiness and CLI follow.

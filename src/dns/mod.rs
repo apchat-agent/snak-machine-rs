@@ -1,3 +1,4 @@
+pub mod inventory;
 pub mod resolver;
 pub mod service;
 pub mod upstream;
