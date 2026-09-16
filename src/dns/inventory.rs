@@ -49,12 +49,8 @@ impl Zones {
             self.mailbox.clone(),
         )
     }
-    pub(crate) fn registration_name(&self, name: &Name) -> io::Result<Name> {
-        replace_suffix(
-            name,
-            &"default.service.arpa.".parse().unwrap(),
-            &self.registrar,
-        )
+    pub(crate) fn registration_name(&self, name: &Name, request_zone: &Name) -> io::Result<Name> {
+        replace_suffix(name, request_zone, &self.registrar)
     }
     /// Called only with a successfully authenticated update. Its digest remains
     /// the original signed wire digest, so exact-retry receipt lookup is unchanged.

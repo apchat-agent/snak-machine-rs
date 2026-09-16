@@ -1481,7 +1481,7 @@ claimed for Ed448 TSR checksums.
 
 Section 2.2's `_dnssd-srp._udp` label is incorrect. The registrar publishes
 `_dnssd-srp._tcp` and `_dnssd-srp-tls._tcp`, including the direct SRV bootstrap
-owners specified by RFC 9665 section 2 and the service registrations in
+owners specified by RFC 9665 section 3.1.1 and the service registrations in
 sections 10.4.1–10.4.2. DNS-SD instance PTR/SRV/TXT records use those same
 registered TCP service types. Plain DNS UPDATE remains accepted over UDP
 as well as TCP. This implements draft-ietf-snac-simple-12 sections 5.5.2,

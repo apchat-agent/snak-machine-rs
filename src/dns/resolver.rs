@@ -452,7 +452,9 @@ impl Resolver {
                 .verify(bytes, wall, &mut self.crypto, |name| {
                     registrar.as_ref().and_then(|r| {
                         let canonical = match zones {
-                            Some(zones) => zones.registration_name(name).ok()?,
+                            Some(zones) => {
+                                zones.registration_name(name, &m.questions[0].name).ok()?
+                            }
                             None => name.clone(),
                         };
                         r.registry.key(&canonical, now).cloned()

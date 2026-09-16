@@ -1330,3 +1330,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   zone remains delegated within the router-owned namespace, and canonical
   Additional-A lookups can read the router's static address inventory.
   New Config fields correspond to PLAN2's explicit settings; no dependency.
+- S16 alias-edge RED `be6984a` exposes a canonical keyless deletion being
+  misinterpreted as an alias when its configured zone is itself below
+  default.service.arpa. GREEN passes **313 tests**, all-feature clippy, both
+  builds, formatting and the aarch64-apple-darwin all-target/pcap check.
+  Ownership lookup now uses the request's validated zone as the rewrite source.
+  Alias/canonical keyless deletion, oversized alias atomic rejection, durable
+  canonical restore/exact retry, wrong-zone journal rejection, equal-zone PTR
+  deduplication and lease-driven browsing expiry are covered. No new field or
+  dependency. ADDENDUM 6's direct-SRV reference is corrected to RFC 9665 3.1.1.
+- S16 is complete. **needs privileged acceptance:** automatic registration and
+  browsing with external SRP/DNS-SD clients, real listener/interface lifecycle
+  and configured zone deployment. Infrastructure-provided browsing domains
+  and upstream privacy follow in S17; RA announcement readiness closes in S22.
