@@ -1608,3 +1608,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   hairpin and independent-router replies through native TAP/pcap interfaces,
   and live carrier/address changes. Memory Ethernet tests exercise production
   dispatch, acquisition, address validation, port ownership and output logic.
+
+### S20 — NAT64 TCP state machine (in progress)
+
+- State RED `4e6c746` confirms missing TCP bindings/transitions. GREEN passes
+  **374 tests** and all-feature clippy. Data-driven RFC 6146 section 3.5.2
+  fixtures cover both initiation directions, simultaneous open, SYN retries,
+  independent remote sessions, both half-closes, retransmitted FIN/RST,
+  transitory recovery and every state's expiry. Closed midstream traffic and
+  IPv4 SYNs without an existing binding are rejected by security policy.
+- TCP uses endpoint-independent mapping and permits IPv4 SYN initiation only
+  through an existing binding. It shares the 4096/8192 global and 128/256 host
+  caps with UDP. TCP_EST is two hours, then TCP_TRANS four minutes, with one
+  bounded probe action per idle established session. Late polling cannot renew
+  expired grace time. At most 32 probes are taken per poll; no separate probe
+  table. State/expiry/probe bit are required RFC transport state. No dependency.
+  Wire checks, probe/error output and native integration follow.

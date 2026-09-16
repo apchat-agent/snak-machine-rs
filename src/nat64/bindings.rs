@@ -1,4 +1,5 @@
 //! Shared transport binding/session indexes. A live mapping is never evicted.
+mod tcp;
 use crate::{
     service_io::ports::{Lease, Owner, Ports},
     time::RandomSource,
@@ -23,6 +24,8 @@ struct Binding {
 }
 struct Session {
     expires: u64,
+    tcp: Option<super::tcp::State>,
+    probe: bool,
 }
 pub struct Bindings {
     ports: Ports,
@@ -74,7 +77,11 @@ impl Bindings {
             + self.hosts.len() * 128
     }
     pub fn next_deadline(&self) -> Option<u64> {
-        self.next
+        if self.sessions.values().any(|s| s.probe) {
+            Some(0)
+        } else {
+            self.next
+        }
     }
     pub fn set_udp_filtering(&mut self, filter: UdpFiltering) {
         self.udp_filtering = filter;
@@ -92,6 +99,13 @@ impl Bindings {
     pub fn expire(&mut self, now: u64) -> Vec<(u8, u16)> {
         if self.next.is_none_or(|t| t > now) {
             return vec![];
+        }
+        for s in self.sessions.values_mut() {
+            if s.expires <= now && s.tcp == Some(super::tcp::State::Established) {
+                s.tcp = Some(super::tcp::State::Transitory);
+                s.expires = s.expires.saturating_add(super::tcp::TRANSITORY);
+                s.probe = s.expires > now;
+            }
         }
         let old: Vec<_> = self
             .sessions
@@ -143,7 +157,14 @@ impl Bindings {
         let expires = now.saturating_add(u64::from(self.udp_seconds) * 1000);
         if self
             .sessions
-            .insert((key, remote), Session { expires })
+            .insert(
+                (key, remote),
+                Session {
+                    expires,
+                    tcp: None,
+                    probe: false,
+                },
+            )
             .is_none()
         {
             self.bindings.get_mut(&key).unwrap().sessions += 1;
