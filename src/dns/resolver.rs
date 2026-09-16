@@ -702,7 +702,11 @@ impl Resolver {
         let Some(p) = self.pending.get(&exchange) else {
             return Ok(vec![]);
         };
-        if server != p.query.server
+        if self.privacy.is_some() && !self.upstreams.contains(&p.query.origin)
+            || p.query.tls.as_ref().is_some_and(|t| {
+                !self.live_tls(p.query.origin, p.query.server, &t.server_name, now)
+            })
+            || server != p.query.server
             || source_port != p.query.source_port
             || tcp != p.query.tcp
             || now >= p.deadline
@@ -866,6 +870,11 @@ impl Resolver {
         let mut out = vec![];
         for id in ids {
             let mut p = self.pending.remove(&id).unwrap();
+            if self.privacy.is_some() && !self.upstreams.contains(&p.query.origin) {
+                self.pending.insert(id, p);
+                out.extend(self.fail_upstream(id, now, rng)?);
+                continue;
+            }
             if now >= p.deadline {
                 let b = match p.base.take() {
                     Some(b) => b,

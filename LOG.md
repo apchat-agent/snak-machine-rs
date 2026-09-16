@@ -1462,3 +1462,18 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   its 128 KiB credit and refuses further resolver admission. Eight connections
   and explicit-policy replacement were tested earlier. No new field or
   dependency; the existing optional client configuration carries verification.
+- S17 stale-origin RED `5adb50c` demonstrates late plaintext replies being
+  accepted after a configured discovery-origin change. GREEN passes **342
+  tests**, both builds, formatting, all-feature clippy and the macOS all-target
+  pcap check. The discovery-aware resolver rejects removed-origin replies and
+  immediately retries outstanding client work using current origins. The
+  standalone legacy set_upstreams selector retains its per-request behavior,
+  preserving the S09 transport-saturation fixture; native configuration always
+  uses the discovery-aware API. IPv6 hint at/over-bound coverage complements
+  the earlier IPv4/parameter tests. No field or dependency.
+- S17 is complete. **needs privileged acceptance:** real RDNSS/DHCP resolver
+  acquisition, DoT/DDR interoperability and fallback/recovery across native
+  interface changes; infrastructure DNS-SD browsing with external clients.
+  The default transport is opportunistic DoT with plaintext fallback; verified
+  TLS can be supplied through the library API, and DoH/DoQ are outside this
+  profile. Whole-router restart/attachment integration closes in S23.
