@@ -931,3 +931,109 @@ fn s15_resolver_disconnect_cancels_multicast_only_after_last_waiter() {
     assert_eq!(engine.querier.counts().0, 0);
     assert!(!r.connection_pending(2));
 }
+
+#[test]
+fn s15_proxy_caps_output_and_completion_work_and_survives_unrepresentable_peer_names() {
+    use snac_rs::{discovery_proxy::Proxy, mdns::query::Querier, time::ScriptedRandom};
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    let records: Vec<_> = (0..513)
+        .map(|i| Record {
+            class: 1,
+            ..record(
+                "_many._tcp.local.",
+                12,
+                Rdata::Name(name(&format!("instance{i}._many._tcp.local."))),
+            )
+        })
+        .collect();
+    p.start(q("_many._tcp.Floor 1.example.", 12), 0).unwrap();
+    let result = p
+        .poll_with_local(
+            &mut m,
+            &|query| {
+                if query.kind == 12 {
+                    records.clone()
+                } else {
+                    vec![]
+                }
+            },
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(result[0].answer.answers.len(), 512);
+    assert_ne!(result[0].answer.flags & 0x200, 0);
+    for i in 0..17 {
+        p.start(q(&format!("host{i}.floor-1.example."), 1), 1)
+            .unwrap();
+    }
+    let local = |query: &Question| {
+        vec![Record {
+            name: query.name.clone(),
+            ..record("unused.local.", 1, Rdata::A([192, 0, 2, 8]))
+        }]
+    };
+    assert_eq!(
+        p.poll_with_local(&mut m, &local, 1, &mut rng)
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(p.next_deadline(1), Some(1));
+    assert_eq!(
+        p.poll_with_local(&mut m, &local, 1, &mut rng)
+            .unwrap()
+            .len(),
+        1
+    );
+    let mut long = vec![
+        vec![b'x'; 63],
+        vec![b'y'; 63],
+        vec![b'z'; 63],
+        vec![b'a'; 55],
+        b"local".to_vec(),
+    ];
+    let target = Name::from_labels(long.clone()).unwrap();
+    assert_eq!(target.canonical().len(), 255);
+    long[3].pop();
+    p.start(q("_bad._tcp.Floor 1.example.", 12), 2).unwrap();
+    p.poll(&mut m, 2, &mut rng).unwrap();
+    assert_eq!(m.counts().0, 1);
+    cached(
+        &mut m,
+        vec![Record {
+            class: 1,
+            ..record("_bad._tcp.local.", 12, Rdata::Name(target))
+        }],
+        3,
+    );
+    let result = p
+        .poll(&mut m, 3, &mut rng)
+        .expect("peer name expansion must not tear down the service");
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].answer.flags & 15, 2);
+    assert_eq!((p.counts().0, m.counts().0), (0, 0));
+}
+#[test]
+fn s15_apex_nsec_and_nsec3_answer_from_owned_zone_metadata_without_multicast() {
+    use snac_rs::{discovery_proxy::Proxy, mdns::query::Querier, time::ScriptedRandom};
+    let mut p = Proxy::new(zone());
+    let mut m = Querier::default();
+    let mut rng = ScriptedRandom::new([]);
+    for kind in [47, 50] {
+        p.start(q("Floor 1.example.", kind), 0).unwrap();
+        let a = p.poll(&mut m, 0, &mut rng).unwrap().pop().unwrap().answer;
+        assert_eq!(a.answers.len(), 1);
+        assert_eq!(a.answers[0].kind, kind);
+        let bitmap = match &a.answers[0].data {
+            Rdata::Nsec { bitmap, .. } => bitmap.as_slice(),
+            Rdata::Bytes(b) => &b[26..],
+            _ => panic!("proof type"),
+        };
+        assert_eq!(bitmap[0], 0);
+        assert_eq!(bitmap[2] & 0x22, 0x22, "NS and SOA are present at the apex");
+        assert_eq!(m.counts().0, 0);
+    }
+}
