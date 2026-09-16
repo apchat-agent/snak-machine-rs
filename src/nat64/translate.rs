@@ -18,6 +18,8 @@ pub struct Translator {
     prefix: Prefix,
     ipv4: Option<Ipv4Addr>,
     identification: u16,
+    mtus: [u32; 2],
+    lowest_ipv6_mtu: u32,
     error_window: u64,
     error_count: u8,
 }
@@ -31,9 +33,14 @@ impl Translator {
             prefix,
             ipv4: Some(ipv4),
             identification: 0,
+            mtus: [1500; 2],
+            lowest_ipv6_mtu: 1280,
             error_window: 0,
             error_count: 0,
         })
+    }
+    pub(crate) fn set_mtus(&mut self, mtus: [u32; 2]) {
+        self.mtus = mtus;
     }
     pub fn set_ipv4(&mut self, ipv4: Option<Ipv4Addr>) -> io::Result<()> {
         if ipv4.is_some_and(|a| !ipv4::unicast(a)) {
@@ -53,6 +60,26 @@ impl Translator {
         source_allowed: impl Fn(Ipv6Addr) -> bool,
         reachable: impl Fn(Ipv4Addr) -> bool,
     ) -> io::Result<Vec<Tx>> {
+        self.outbound_datagram(
+            &crate::ip_reassembly::Datagram {
+                packet: packet.to_vec(),
+                fragment_id: None,
+            },
+            now,
+            rng,
+            source_allowed,
+            reachable,
+        )
+    }
+    pub(crate) fn outbound_datagram(
+        &mut self,
+        d: &crate::ip_reassembly::Datagram,
+        now: u64,
+        rng: &mut impl RandomSource,
+        source_allowed: impl Fn(Ipv6Addr) -> bool,
+        reachable: impl Fn(Ipv4Addr) -> bool,
+    ) -> io::Result<Vec<Tx>> {
+        let packet = d.packet.as_slice();
         let mut e = wire::envelope(FrameKind::RawIpv6, packet).map_err(|_| invalid())?;
         if e.packet.len() != packet.len() {
             return Err(invalid());
@@ -102,8 +129,12 @@ impl Translator {
         if e.hop_limit <= 1 {
             return self.generate6(&e, 3, 0, 0, now);
         }
-        if e.payload.len() + 20 > 1500 && dest != pool {
-            return self.generate6(&e, 2, 0, 1520, now);
+        if e.payload.len() + 20 > self.mtus[0] as usize
+            && e.payload.len() + 20 > 1260
+            && dest != pool
+            && d.fragment_id.is_none()
+        {
+            return self.generate6(&e, 2, 0, self.mtus[0].saturating_add(20).max(1280), now);
         }
         let remote = SocketAddrV4::new(dest, dport);
         let assigned = if protocol == 17 {
@@ -170,18 +201,26 @@ impl Translator {
         payload[at..at + 2].copy_from_slice(&transport_sum(protocol, sum).to_be_bytes());
         let mut out = ipv4::wire::encode(pool, dest, protocol, e.hop_limit - 1, &payload)?;
         out[1] = class;
-        out[4..6].copy_from_slice(&self.identification.to_be_bytes());
+        out[4..6].copy_from_slice(
+            &(d.fragment_id.map_or(self.identification, |id| id as u16)).to_be_bytes(),
+        );
         self.identification = self.identification.wrapping_add(1);
-        if out.len() > 1260 {
+        if out.len() > 1260 && d.fragment_id.is_none() {
             out[6] = 0x40;
         }
         out[10..12].fill(0);
         let sum = ipv4::wire::checksum(&out[..20]);
         out[10..12].copy_from_slice(&sum.to_be_bytes());
-        Ok(vec![Tx {
-            link: Link::Ail,
-            packet: out,
-        }])
+        let id = u32::from(u16::from_be_bytes([out[4], out[5]]));
+        Ok(
+            crate::ip_reassembly::fragment(&out, self.mtus[0] as usize, id)?
+                .into_iter()
+                .map(|packet| Tx {
+                    link: Link::Ail,
+                    packet,
+                })
+                .collect(),
+        )
     }
     pub fn inbound(&mut self, packet: &[u8], now: u64) -> io::Result<Vec<Tx>> {
         let p = ipv4::wire::Packet::parse(packet)?;
@@ -209,7 +248,7 @@ impl Translator {
             return Ok(vec![]);
         }
         let remote = SocketAddrV4::new(p.source, sport);
-        if p.ttl <= 1 {
+        if p.ttl <= 1 || p.dont_fragment && p.payload.len() + 40 > self.mtus[1] as usize {
             let (port, remote) = if protocol == 1 {
                 (sport, SocketAddrV4::new(p.source, 0))
             } else {
@@ -222,7 +261,11 @@ impl Translator {
             {
                 return Ok(vec![]);
             }
-            return self.generate4(&p, 11, 0, 0, now);
+            return if p.ttl <= 1 {
+                self.generate4(&p, 11, 0, 0, now)
+            } else {
+                self.generate4(&p, 3, 4, self.mtus[1].saturating_sub(20).max(68), now)
+            };
         }
         let target = if protocol == 17 {
             self.bindings.udp_in(dport, remote, now)?
@@ -244,18 +287,30 @@ impl Translator {
             payload[2..4].copy_from_slice(&port.to_be_bytes());
             protocol
         };
-        Ok(vec![Tx {
-            link: Link::Stub,
-            packet: encode6(
-                protocol,
-                self.synthesize(p.source),
-                target,
-                p.traffic_class,
-                p.ttl - 1,
-                payload,
-            )?,
-        }])
+        let out = encode6(
+            protocol,
+            self.synthesize(p.source),
+            target,
+            p.traffic_class,
+            p.ttl - 1,
+            payload,
+        )?;
+        let mtu = if p.dont_fragment {
+            self.mtus[1]
+        } else {
+            self.mtus[1].min(self.lowest_ipv6_mtu)
+        };
+        Ok(
+            crate::ip_reassembly::fragment(&out, mtu as usize, u32::from(p.id))?
+                .into_iter()
+                .map(|packet| Tx {
+                    link: Link::Stub,
+                    packet,
+                })
+                .collect(),
+        )
     }
+
     pub fn poll(&mut self, now: u64) -> io::Result<Vec<Tx>> {
         self.bindings.expire(now);
         let Some(pool) = self.ipv4 else {

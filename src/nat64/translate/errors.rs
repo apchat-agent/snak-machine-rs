@@ -34,8 +34,8 @@ impl Translator {
             b[1],
             value,
             u32::from(u16::from_be_bytes([b[10], b[11]])),
-            1500,
-            1500,
+            self.mtus[0],
+            self.mtus[1],
         ) else {
             return Ok(vec![]);
         };
@@ -108,8 +108,8 @@ impl Translator {
             b[0],
             b[1],
             u32::from_be_bytes(b[4..8].try_into().unwrap()),
-            1500,
-            1500,
+            self.mtus[0],
+            self.mtus[1],
         ) else {
             return Ok(vec![]);
         };

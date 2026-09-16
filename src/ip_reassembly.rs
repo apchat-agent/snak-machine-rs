@@ -5,6 +5,10 @@ use crate::{
 };
 use std::{collections::BTreeMap, io, net::IpAddr};
 const CAP: usize = 4 * 1024 * 1024;
+pub(crate) struct Datagram {
+    pub packet: Vec<u8>,
+    pub fragment_id: Option<u32>,
+}
 type Key = (IpAddr, IpAddr, u8, u32);
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid IP fragment")
@@ -45,12 +49,24 @@ impl Reassembler {
         self.contexts.retain(|_, c| now < c.deadline);
     }
     pub fn input(&mut self, b: &[u8], now: u64) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.input_datagram(b, now)?.map(|d| d.packet))
+    }
+    pub(crate) fn input_datagram(&mut self, b: &[u8], now: u64) -> io::Result<Option<Datagram>> {
         self.expire(now);
         let Some(f) = parse(b)? else {
-            return Ok(Some(b.to_vec()));
+            return Ok(Some(Datagram {
+                packet: b.to_vec(),
+                fragment_id: None,
+            }));
         };
+        let id = f.key.3;
         if f.offset == 0 && !f.more {
-            return complete(f.header, f.payload).map(Some);
+            return complete(f.header, f.payload).map(|packet| {
+                Some(Datagram {
+                    packet,
+                    fragment_id: Some(id),
+                })
+            });
         }
         let end = f.offset.checked_add(f.payload.len()).ok_or_else(invalid)?;
         if f.payload.is_empty() || end > 65535 || (f.more && f.payload.len() % 8 != 0) {
@@ -101,7 +117,12 @@ impl Reassembler {
         for bytes in c.parts.into_values() {
             data.extend(bytes);
         }
-        complete(c.header, &data).map(Some)
+        complete(c.header, &data).map(|packet| {
+            Some(Datagram {
+                packet,
+                fragment_id: Some(id),
+            })
+        })
     }
 }
 fn complete(mut header: Vec<u8>, data: &[u8]) -> io::Result<Vec<u8>> {

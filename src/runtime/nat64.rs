@@ -20,6 +20,9 @@ impl<I: PacketIo> Driver<I> {
                 stacks[0].ports(),
             )?);
         }
+        if let Some(nat) = &mut self.nat64 {
+            nat.set_mtus([self.router.links[0].mtu, self.router.links[1].mtu]);
+        }
         Ok(())
     }
     pub(super) fn receive_nat64(
@@ -55,26 +58,31 @@ impl<I: PacketIo> Driver<I> {
                 return Ok(true);
             }
         }
-        let Some(nat) = &mut self.nat64 else {
+        let router = &self.router;
+        let source_allowed = |source| {
+            !router.owned.contains_key(&(Link::Stub, source))
+                && router.on_link.iter().any(|((link, p), v)| {
+                    *link == Link::Stub && p.routable() && p.contains(source) && v.valid.live(now)
+                })
+        };
+        if !source_allowed(e.source)
+            || e.source.is_unspecified()
+            || e.source.is_multicast()
+            || e.source.is_loopback()
+            || crate::wire::link_local(e.source)
+            || self.router.nat64.local_prefix().contains(e.source)
+        {
+            return Ok(true);
+        }
+        let (Some(nat), Some(stacks)) = (&mut self.nat64, &mut self.stacks) else {
             return Ok(true);
         };
-        let router = &self.router;
-        let ipv4 = &self.ipv4;
-        let output = nat.outbound(
-            e.packet,
-            now,
-            rng,
-            |source| {
-                !router.owned.contains_key(&(Link::Stub, source))
-                    && router.on_link.iter().any(|((link, p), v)| {
-                        *link == Link::Stub
-                            && p.routable()
-                            && p.contains(source)
-                            && v.valid.live(now)
-                    })
-            },
-            |destination| ipv4.next_hop(destination).is_some(),
-        );
+        let Ok(Some(datagram)) = stacks[1].reassemble_nat(e.packet, now) else {
+            return Ok(true);
+        };
+        let output = nat.outbound_datagram(&datagram, now, rng, source_allowed, |dest| {
+            self.ipv4.next_hop(dest).is_some()
+        });
         if let Ok(output) = output {
             self.dispatch_nat64(output, now, rng)?;
         }
@@ -85,6 +93,13 @@ impl<I: PacketIo> Driver<I> {
         // Keep the existing endpoint input queue and its aggregate bound.
         // Distribute validated IPv4 datagrams before the local stack polls.
         while let Some(packet) = self.ipv4.take_packet() {
+            let Some(stacks) = &mut self.stacks else {
+                continue;
+            };
+            let Ok(Some(datagram)) = stacks[0].reassemble_nat(&packet, now) else {
+                continue;
+            };
+            let packet = datagram.packet;
             let translated = crate::ipv4::wire::Packet::parse(&packet)
                 .ok()
                 .is_some_and(|p| {

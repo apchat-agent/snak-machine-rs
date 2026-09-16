@@ -1694,3 +1694,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   transports generate checked, rate-limited ICMP without allocating bindings;
   errors about errors are suppressed. Oversized DF output reports adjusted MTU.
   No new state or dependency. Actual interface MTUs and reassembly follow.
+- Fragment RED `de8b1ba` fails executably on absent reassembly, fixed-MTU
+  decisions and missing post-expiry translation. GREEN passes **395 tests**
+  and all-feature clippy. Native NAT and local endpoints use the same per-link
+  reassembler; out-of-order completion, overlap invalidation, 64-context
+  pressure and 60-second expiry run through Driver. Reassembled IPv4 zero-UDP-
+  checksum replies get a valid IPv6 checksum before output fragmentation.
+- Completed datagrams carry their existing fragment ID as transient metadata:
+  IPv6-to-IPv4 preserves its low sixteen bits and clears DF, including atomic
+  fragments. IPv4-to-IPv6 uses the IPv4 ID and the default 1280 threshold.
+  Both directions use actual link MTUs; DF/Packet Too Big errors consult live
+  sessions without refresh. MTU pair and IPv6 fragmentation threshold implement
+  PLAN2's PMTU state; no new table or dependency. Cross-link aggregate capacity
+  and additional hostile fragment/header cases follow before S21 closure.
