@@ -988,3 +988,77 @@ fn s17_ddr_parameter_byte_and_hint_bounds_do_not_apply_service_semantics_to_alia
         );
     }
 }
+
+#[test]
+fn s17_stub_resolver_arpa_queries_never_leak_infrastructure_designations() {
+    use snac_rs::dns::resolver::{Action, Client, Resolver};
+    let mut r = Resolver::new(true);
+    let mut rng = snac_rs::time::ScriptedRandom::new([]);
+    r.configure_upstream_privacy(&["192.168.1.53:53".parse().unwrap()], false, 0)
+        .unwrap();
+    for (name, kind) in [
+        ("_dns.resolver.arpa.", 64),
+        ("_dns.resolver.arpa.", 1),
+        ("resolver.arpa.", 6),
+        ("other.resolver.arpa.", 28),
+    ] {
+        let mut m = Message::new(100, 0x100);
+        m.questions.push(Question {
+            name: name.parse().unwrap(),
+            kind,
+            class: 1,
+        });
+        let a = r
+            .submit(
+                Client::udp("[::1]:40000".parse().unwrap()),
+                &m.encode().unwrap(),
+                0,
+                &mut rng,
+            )
+            .unwrap();
+        let Action::Reply { bytes, .. } = &a[0] else {
+            panic!("forwarder must locally answer resolver.arpa per RFC 9462 section 6.1");
+        };
+        let reply = Message::parse(bytes, Context::Unicast).unwrap();
+        assert_eq!(reply.flags & 15, 0);
+        assert!(reply.answers.is_empty());
+    }
+    assert_eq!(r.queries().count(), 0);
+    r.poll_privacy(0, &mut rng).unwrap();
+    assert_eq!(
+        r.queries().count(),
+        1,
+        "router's own DDR control query is still allowed"
+    );
+}
+#[test]
+fn s17_native_tls_failure_falls_back_then_recovers_on_a_fresh_stream() {
+    let mut n = Network::new();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    let old = n.peers[0].connections()[0];
+    n.peers[0].abort(old);
+    for now in (2000..2200).step_by(10) {
+        n.cycle(now);
+    }
+    n.ask("fallback.example.", 120);
+    for now in (2200..3000).step_by(10) {
+        n.cycle(now);
+    }
+    assert!(n
+        .plaintext_queries
+        .iter()
+        .any(|q| q.questions[0].name == "fallback.example.".parse().unwrap()));
+    for now in (32000..34000).step_by(10) {
+        n.cycle(now);
+    }
+    n.ask("recovered.example.", 121);
+    for now in (34000..35000).step_by(10) {
+        n.cycle(now);
+    }
+    assert!(n
+        .encrypted_queries
+        .iter()
+        .any(|q| q.questions[0].name == "recovered.example.".parse().unwrap()));
+}
