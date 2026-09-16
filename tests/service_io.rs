@@ -523,8 +523,16 @@ fn s07_loopback_udp_tcp_exchange_same_bytes_and_half_close_rootlessly() {
         udp.set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
         udp.send_to(b"byte handler", server.local_addr()).unwrap();
-        server.poll(0).unwrap();
-        let (peer, bytes) = server.receive_udp().unwrap();
+        let mut datagram = None;
+        for _ in 0..200 {
+            server.poll(0).unwrap();
+            datagram = server.receive_udp();
+            if datagram.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let (peer, bytes) = datagram.expect("loopback UDP datagram not delivered within 2 s");
         assert_eq!(bytes, b"byte handler");
         server.send_udp(peer, &bytes).unwrap();
         let mut b = [0; 32];
@@ -535,12 +543,24 @@ fn s07_loopback_udp_tcp_exchange_same_bytes_and_half_close_rootlessly() {
         tcp.write_all(b"byte ").unwrap();
         tcp.write_all(b"handler").unwrap();
         tcp.shutdown(Shutdown::Write).unwrap();
-        server.poll(1).unwrap();
-        let id = server.connections()[0];
+        let mut id = None;
+        for _ in 0..200 {
+            server.poll(1).unwrap();
+            if let Some(connection) = server.connections().first().copied() {
+                id = Some(connection);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let id = id.expect("loopback TCP connection not accepted within 2 s");
         let mut got = vec![];
-        for now in 2..20 {
-            server.poll(now).unwrap();
+        for _ in 0..200 {
+            server.poll(2).unwrap();
             got.extend(server.receive_tcp(id));
+            if server.eof(id) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(got, b"byte handler");
         assert_eq!(server.send_tcp(id, &got).unwrap(), 12);
