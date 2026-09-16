@@ -1667,3 +1667,10 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   configurable through 86400 with RFC 5508's 60-second minimum. Truncation,
   invalid code/checksum and IPv4 loss are covered. The configurable ICMP
   timer is planned state; no dependency. Error mapping/reassembly follows.
+- Error-table RED `425d931` was rechecked with `cargo test --locked`: the
+  missing ICMP mapping API fails compilation. GREEN passes **386 tests** and
+  formatting. Exhaustive type/code and parameter-pointer fixtures cover both
+  directions; PMTU uses both interface limits, IPv6's 1280 minimum, saturating
+  arithmetic and RFC 1191's unknown-MTU plateaus. The resumed uncommitted
+  mapping patch agrees with RFC 7915 sections 4.2/5.2. No field or dependency.
+  Quoted-packet translation, native error dispatch and fragments remain next.
