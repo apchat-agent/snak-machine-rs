@@ -39,6 +39,16 @@ impl Proxy {
             again: false,
         }
     }
+    pub fn accepts(&self, question: &Question) -> bool {
+        self.zone.question(question).is_ok_and(|q| q.is_some())
+    }
+    pub fn retain_jobs(&mut self, mut active: impl FnMut(u64) -> bool) {
+        for (id, job) in &mut self.jobs {
+            if !active(*id) {
+                job.cancelled = true;
+            }
+        }
+    }
     pub fn set_reachability(&mut self, reachability: Reachability) {
         self.reachability = reachability;
     }

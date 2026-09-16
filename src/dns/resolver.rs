@@ -1,9 +1,11 @@
 //! Bounded forwarding transactions. Packet and stream adapters execute the returned actions.
+mod discovery;
 use super::wire::{Context, Message, Name, Question, Rdata, Record};
 use crate::{
     srp::wire::{CryptoBudget, Error as SrpError, Update, Validator},
     time::RandomSource,
 };
+use discovery::Discovered;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -92,6 +94,8 @@ pub struct Resolver {
     local_zones: Vec<Name>,
     upstreams: Vec<SocketAddr>,
     pending: BTreeMap<u64, Pending>,
+    discovered: BTreeMap<u64, Discovered>,
+    discovery: Option<crate::discovery_proxy::Proxy>,
     cache: BTreeMap<Vec<u8>, Cache>,
     next: u64,
     rates: BTreeMap<IpAddr, (u64, u8)>,
@@ -108,6 +112,8 @@ impl Resolver {
             local_zones: vec![],
             upstreams: vec![],
             pending: BTreeMap::new(),
+            discovered: BTreeMap::new(),
+            discovery: None,
             cache: BTreeMap::new(),
             next: 0,
             rates: BTreeMap::new(),
@@ -262,24 +268,32 @@ impl Resolver {
             p.waiters.retain(|w| w.client.connection != Some(id));
         }
         self.pending.retain(|_, p| !p.waiters.is_empty());
+        for p in self.discovered.values_mut() {
+            p.waiters.retain(|w| w.client.connection != Some(id));
+        }
+        self.discovered.retain(|_, p| !p.waiters.is_empty());
+        self.cancel_unused_discovery();
     }
     pub fn connection_pending(&self, id: usize) -> bool {
-        self.pending
-            .values()
-            .flat_map(|p| &p.waiters)
-            .any(|w| w.client.connection == Some(id))
+        self.waiters().any(|w| w.client.connection == Some(id))
     }
     pub fn rate_entries(&self) -> usize {
         self.rates.len()
     }
     pub fn pending_count(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.discovered.len()
     }
     pub fn waiter_count(&self) -> usize {
-        self.pending.values().map(|p| p.waiters.len()).sum()
+        self.waiters().count()
     }
     pub fn pending_bytes(&self) -> usize {
-        self.pending.values().map(Pending::charge).sum()
+        self.pending.values().map(Pending::charge).sum::<usize>()
+            + self
+                .discovered
+                .values()
+                .map(Discovered::charge)
+                .sum::<usize>()
+            + self.discovery.as_ref().map_or(0, |d| d.counts().1)
     }
     pub fn cache_sets(&self) -> usize {
         self.cache.values().map(|c| c.sets).sum()
@@ -298,6 +312,7 @@ impl Resolver {
             .values()
             .map(|p| p.retry.min(p.deadline))
             .chain(self.cache.values().map(|c| c.expires))
+            .chain(self.discovery.as_ref().and_then(|d| d.next_deadline(0)))
             .chain(self.registry().and_then(|r| r.next_deadline()))
             .chain(
                 self.registrar
@@ -445,6 +460,14 @@ impl Resolver {
                 .iter()
                 .any(|r| r.kind == 41 && r.ttl & 0x8000 != 0);
         if !ds_exception
+            && self
+                .discovery
+                .as_ref()
+                .is_some_and(|d| d.accepts(&m.questions[0]))
+        {
+            return self.submit_discovery(m, key, waiter, now);
+        }
+        if !ds_exception
             && (service_arpa
                 || self
                     .local_zones
@@ -461,9 +484,7 @@ impl Resolver {
         }
         if self.waiter_count() >= WAITERS
             || self
-                .pending
-                .values()
-                .flat_map(|p| &p.waiters)
+                .waiters()
                 .filter(|w| w.client.address.ip() == waiter.client.address.ip())
                 .count()
                 >= 8
@@ -478,7 +499,7 @@ impl Resolver {
         if self.upstreams.is_empty() {
             return Ok(vec![deliver(waiter, &failure(&m, 2)?)?]);
         }
-        if self.pending.len() >= PENDING {
+        if self.pending_count() >= PENDING {
             return Err(capacity());
         }
         let query = self.make_query(bytes, self.upstreams[0], rng)?;

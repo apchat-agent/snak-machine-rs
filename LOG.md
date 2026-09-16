@@ -1213,3 +1213,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   remaining work. These query ID/deadline/cancellation/credit fields implement
   the planned scheduler; no dependency. Native/shared-resolver admission and
   additional output/rate-bound fixtures follow.
+- S15 resolver RED `92db397` confirms the missing shared resolver integration.
+  GREEN passes **290 tests** (sum of the full Cargo result lines; this corrects
+  the previous running count, which was one high) and all-feature clippy.
+  Forwarded and Discovery Proxy work share the 128-transaction, 256-waiter,
+  eight-waiters-per-source and 4 MiB limits. Coalesced UDP/TCP clients retain
+  their IDs and local reply endpoints; the last disconnect cancels multicast.
+  Proxy responses remain outside the forwarding cache. Empty AAAA answers
+  perform an A lookup and append its records to Additional, with the existing
+  administrative disable honored. Per-transaction job/original/base fields
+  preserve asynchronous reply and A-lookup state; no dependency.
