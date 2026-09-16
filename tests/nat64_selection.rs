@@ -22,7 +22,7 @@ fn ra(source: &str, snac: bool, opts: &[u8]) -> Vec<u8> {
     common::nd_packet(
         source,
         "ff02::1",
-        common::ra(if snac { 0x10 } else { 0 }, 0, opts),
+        common::ra(if snac { 2 } else { 0 }, 0, opts),
     )
 }
 #[test]
@@ -604,4 +604,30 @@ fn s18_reload_file_applies_live_changes_and_preserves_last_valid_policy_on_error
     assert!(reload.poll(&mut s, 4000).unwrap());
     assert!(!s.policy().enabled);
     std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn s18_an_empty_reload_file_is_an_initial_default_policy_not_an_unchanged_read() {
+    use snac_rs::nat64::Reload;
+    let path = std::env::temp_dir().join(format!(
+        "snac-empty-nat64-{}-{}.conf",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, []).unwrap();
+    let mut s = selector();
+    s.configure(
+        Policy {
+            enabled: false,
+            ..Policy::default()
+        },
+        0,
+    )
+    .unwrap();
+    assert!(Reload::new(path.clone()).poll(&mut s, 0).unwrap());
+    assert!(s.policy().enabled);
+    std::fs::remove_file(path).unwrap();
 }
