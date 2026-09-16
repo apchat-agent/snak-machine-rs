@@ -39,17 +39,17 @@ fn s18_router_native_ra_entry_feeds_selection_and_clears_evidence_on_link_loss()
     r.receive(Link::Ail, &packet("2001:db8::1", "ff02::1"), 0, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 0), Mode::None);
-    r.receive(Link::Ail, &packet("fe80::1", "2001:db8::99"), 0, &mut rng)
+    r.receive(Link::Ail, &packet("fe80::99", "2001:db8::99"), 0, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 0), Mode::None);
     let mut own = vec![0x33, 0x33, 0, 0, 0, 1];
     own.extend(r.links[0].mac.unwrap_or(r.identity.macs[0]));
     own.extend([0x86, 0xdd]);
-    own.extend(packet("fe80::1", "ff02::1"));
+    own.extend(packet("fe80::99", "ff02::1"));
     r.receive_frame(Link::Ail, FrameKind::Ethernet, &own, 0, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 0), Mode::None);
-    r.receive(Link::Ail, &packet("fe80::1", "ff02::1"), 0, &mut rng)
+    r.receive(Link::Ail, &packet("fe80::99", "ff02::1"), 0, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 0), Mode::Infrastructure);
     assert_eq!(r.nat64.next_deadline(), Some(80000));
@@ -66,12 +66,12 @@ fn s18_router_native_ra_entry_feeds_selection_and_clears_evidence_on_link_loss()
         &mut rng,
     )
     .unwrap();
-    r.receive(Link::Ail, &packet("fe80::1", "ff02::1"), 3, &mut rng)
+    r.receive(Link::Ail, &packet("fe80::99", "ff02::1"), 3, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 3), Mode::Disabled);
     r.configure_nat64(Policy::default(), 4, &mut rng).unwrap();
     assert_eq!(selected(&mut r, 4), Mode::None);
-    r.receive(Link::Ail, &packet("fe80::1", "ff02::1"), 5, &mut rng)
+    r.receive(Link::Ail, &packet("fe80::99", "ff02::1"), 5, &mut rng)
         .unwrap();
     assert_eq!(selected(&mut r, 5), Mode::Infrastructure);
     r.tick(80005, &mut rng).unwrap();
