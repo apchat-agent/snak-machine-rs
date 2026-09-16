@@ -1223,3 +1223,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   perform an A lookup and append its records to Additional, with the existing
   administrative disable honored. Per-transaction job/original/base fields
   preserve asynchronous reply and A-lookup state; no dependency.
+- S15 native RED `980c382` receives the obsolete empty-zone result instead of
+  discovery data. GREEN passes **292 tests** and all-feature clippy. Driver
+  enables default.service.arpa and polls discovery alongside the real service
+  queues. Native UDP sends an AIL multicast question and completes on NSEC plus
+  A; a real TLS session receives the same translated Additional-A response.
+  The default SOA/NS target uses the persisted IID outside the proxy zone;
+  full configurable zone/inventory composition follows in S16. No dependency.
+  **needs privileged acceptance:** external DNS/DoT clients and AIL multicast
+  reception on actual interfaces; these tests use the real stacks with MemoryIo.

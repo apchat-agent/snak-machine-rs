@@ -42,11 +42,20 @@ impl<I: PacketIo> Driver<I> {
             }
         }
         let ipv4 = crate::ipv4::Ipv4::new(router.links[0].mac.unwrap_or(router.identity.macs[0]));
+        let mut dns = crate::dns::resolver::Resolver::new(true);
+        let hostname = format!("snac-{:016x}.home.arpa.", router.identity.iids[1]);
+        dns.enable_discovery(crate::discovery_proxy::Zone::new(
+            "default.service.arpa.".parse().unwrap(),
+            None,
+            &[],
+            &[hostname.parse().unwrap()],
+            "hostmaster.home.arpa.".parse().unwrap(),
+        )?)?;
         Ok(Self {
             router,
             io,
             ipv4,
-            dns: crate::dns::resolver::Resolver::new(true),
+            dns,
             dns_discovery: Default::default(),
             mdns: Default::default(),
             mdns_output: None,
@@ -459,8 +468,12 @@ impl<I: PacketIo> Driver<I> {
             .map(|((_, p), _)| *p)
             .collect();
         self.dns.set_srp_sources(&sources)?;
+        let replies = self.dns.poll_discovery(&mut self.mdns, now, rng)?;
+        self.dns_service.queue(replies);
         self.dns_service
             .poll(&mut self.dns, self.stacks.as_mut().unwrap(), now, rng)?;
+        let replies = self.dns.poll_discovery(&mut self.mdns, now, rng)?;
+        self.dns_service.queue(replies);
         for link in [Link::Ail, Link::Stub] {
             let stack = &mut self.stacks.as_mut().unwrap()[link.index()];
             stack.poll(now)?;
