@@ -31,6 +31,7 @@ supersedes the S01-only report in commit `842cba8`.
   perform real signatures, TLS negotiation, DNS/SRP/mDNS exchanges and
   bidirectional UDP/TCP/ICMP translation. Seeded hostile-input corpora and
   count/byte-bound soak tests cover admission, rejection and reclamation.
+- 2026-09-16 macOS run on an Apple Silicon Mac (macOS 26, rustc 1.97): cargo test --all-features --no-fail-fast 434 passed, 0 failed; cargo fmt --check and cargo clippy --all-targets --all-features -- -D warnings clean; the two s07 loopback tests were made macOS-safe (kernel delivery waits, client SO_SNDBUF) with assertions unchanged.
 - The complete conformance auditor passes: **103 requirements**, ten
   supplemental commitments, **112 covered keyword lines**, no unfinished
   rows. The independent task 7 review ([REVIEW2.md](REVIEW2.md)) returned
