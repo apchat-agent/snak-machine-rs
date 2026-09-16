@@ -1,4 +1,5 @@
 pub mod inventory;
+pub mod privacy;
 pub mod resolver;
 pub mod service;
 pub mod upstream;

@@ -579,7 +579,9 @@ impl Parser<'_> {
                 let priority = self.u16(at, end)?;
                 let target = self.name(at, end, false)?;
                 let params = self.options(at, end, true)?;
-                svcb_valid(&params)?;
+                if priority != 0 {
+                    svcb_valid(&params)?;
+                }
                 Rdata::Svcb {
                     priority,
                     target,

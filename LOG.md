@@ -1354,3 +1354,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   hostname and rejects a different name, and malformed/stalled handshakes fail.
   The connection enum records client/server role; no dependency. DDR policy,
   native upstream integration and browsing-domain learning follow.
+- S17 DDR-parser RED `0b20dd1` confirms missing service-binding validation.
+  GREEN passes **318 tests** and all-feature clippy. DoT candidates retain the
+  original private/local resolver address, use advertised ports/priorities,
+  cap TTL at one day and honor shorter matching address evidence. Unauthenticated
+  evidence cannot redirect to another IP; public DDR designations require a
+  separate verified policy. Unknown mandatory keys/unusable protocols are
+  skipped, while malformed wire structure fails safely.
+- Tested limits are eight candidates, sixteen parameters and sixty-four
+  response records; parameter bytes are capped at 4096 and address hints at
+  eight per family. Duplicate endpoint/name candidates coalesce. AliasMode
+  overrides ServiceMode, chooses among aliases using the injected randomness,
+  and ignores parameter-value semantics as required by RFC 9460 2.4.2. The
+  generic decoder now follows that rule. Candidate/alias objects are bounded
+  transient parser results; no persistent table or new dependency.
