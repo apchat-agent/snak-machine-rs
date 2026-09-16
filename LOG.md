@@ -1491,3 +1491,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   reachability filtering, link loss, expiry and the thirty-two observations
   per link bound with atomic failed admission. The bounded observation map
   implements PLAN2's evidence owner; no dependency. Selection/reload follow.
+- S18 selector RED `0670437` confirms the missing pure selection reducer.
+  GREEN passes **349 tests** and all-feature clippy. All eight PD/infrastructure/
+  IPv4 combinations run in enabled mode. Export requires a live stub, usable
+  return path and infrastructure route; local service additionally requires
+  explicit translator/IPv4 readiness. The allocator uses the ULA's highest
+  /64 and returns a /96 plus its required explicit route.
+- Reachability, lease/PD expiry, peer takeover, already-active coexistence,
+  admission-failure suppression and explicit disable/re-enable are covered.
+  Administrative infrastructure selection still requires a usable route;
+  the without-PD exception requires explicit configuration. Policy/readiness,
+  bounded successful-advertisement history and suppression fields implement
+  PLAN2's reducer owner; no dependency. Retirement/history bounds and native
+  configuration/reload follow before this step is complete.
