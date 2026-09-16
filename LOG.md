@@ -1609,7 +1609,7 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   and live carrier/address changes. Memory Ethernet tests exercise production
   dispatch, acquisition, address validation, port ownership and output logic.
 
-### S20 — NAT64 TCP state machine (in progress)
+### S20 — NAT64 TCP state machine
 
 - State RED `4e6c746` confirms missing TCP bindings/transitions. GREEN passes
   **374 tests** and all-feature clippy. Data-driven RFC 6146 section 3.5.2
@@ -1638,3 +1638,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   pending-error queue holds at most 32, and combined probe/error output is at
   most 32 per poll. Quote/error state is required by RFC 6146 section 3.5.2.2;
   its charge is included in the shared byte budget. No dependency.
+- Byte-budget RED `2e1118a` fails executably because retained SYN quote
+  bytes were omitted from the memory charge. GREEN passes **379 tests**,
+  both builds, formatting, all-feature clippy and macOS all-target pcap check.
+  The 4096-source fixture fills maximum-size IPv4-option quotes; aggregate
+  byte capacity now rejects new sessions atomically before the count limit,
+  leaves existing sessions usable, and releases quote bytes on establishment.
+- A cached retained-quote byte count avoids rescanning every session on each
+  admission; it is required resource accounting beyond the RFC's session
+  fields. Pending errors remain capped at 32 and charged separately. No
+  dependency. S20 is complete; full ICMP error translation, hairpin error
+  quotes, fragments and PMTU are S21.
+- **needs privileged acceptance:** translated TCP establishment, half-close,
+  idle probes/recovery and timeout errors on real native interfaces. Rootless
+  tests exercise the same Driver packet and timer paths without a TCP proxy.

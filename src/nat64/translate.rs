@@ -164,14 +164,12 @@ impl Translator {
         let target = if protocol == 17 {
             self.bindings.udp_in(dport, remote, now)?
         } else {
-            self.bindings.tcp_in(dport, remote, p.payload[13], now)?
+            self.bindings
+                .tcp_in_packet(dport, remote, p.payload[13], now, p.bytes)?
         };
         let Some((target, port)) = target else {
             return Ok(vec![]);
         };
-        if protocol == 6 && p.payload[13] & 2 != 0 {
-            self.bindings.remember_tcp_syn(dport, remote, p.bytes);
-        }
         let mut payload = p.payload.to_vec();
         payload[2..4].copy_from_slice(&port.to_be_bytes());
         Ok(vec![Tx {

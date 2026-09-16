@@ -38,6 +38,7 @@ pub struct Bindings {
     udp_filtering: UdpFiltering,
     udp_seconds: u32,
     tcp_timeouts: VecDeque<Vec<u8>>,
+    tcp_quote_bytes: usize,
 }
 impl Default for Bindings {
     fn default() -> Self {
@@ -51,6 +52,7 @@ impl Default for Bindings {
             udp_filtering: UdpFiltering::default(),
             udp_seconds: 300,
             tcp_timeouts: VecDeque::new(),
+            tcp_quote_bytes: 0,
         }
     }
 }
@@ -79,6 +81,7 @@ impl Bindings {
             + self.sessions.len() * 256
             + self.hosts.len() * 128
             + self.tcp_timeouts.len() * 128
+            + self.tcp_quote_bytes
     }
     pub fn next_deadline(&self) -> Option<u64> {
         if !self.tcp_timeouts.is_empty() || self.sessions.values().any(|s| s.probe) {
@@ -120,6 +123,7 @@ impl Bindings {
         let mut released = vec![];
         for key in old {
             let s = self.sessions.remove(&key).unwrap();
+            self.tcp_quote_bytes -= s.syn_quote.len();
             if s.tcp == Some(super::tcp::State::V4Init)
                 && !s.syn_quote.is_empty()
                 && self.tcp_timeouts.len() < 32
@@ -152,11 +156,16 @@ impl Bindings {
         self.hosts.clear();
         self.next = None;
         self.tcp_timeouts.clear();
+        self.tcp_quote_bytes = 0;
         ports
     }
     fn admit(&self, key: Key, remote: SocketAddrV4) -> io::Result<()> {
         let (bindings, sessions) = self.hosts.get(&key.1).copied().unwrap_or_default();
-        if !self.bindings.contains_key(&key) && (self.bindings.len() >= 4096 || bindings >= 128)
+        let bytes = usize::from(!self.bindings.contains_key(&key)) * 288
+            + usize::from(!self.hosts.contains_key(&key.1)) * 128
+            + usize::from(!self.sessions.contains_key(&(key, remote))) * 256;
+        if self.charged_bytes() + bytes > 4 * 1024 * 1024
+            || !self.bindings.contains_key(&key) && (self.bindings.len() >= 4096 || bindings >= 128)
             || !self.sessions.contains_key(&(key, remote))
                 && (self.sessions.len() >= 8192 || sessions >= 256)
         {

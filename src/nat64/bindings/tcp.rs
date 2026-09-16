@@ -22,6 +22,7 @@ impl Bindings {
         if session.tcp == Some(State::V4Init) && session.syn_quote.is_empty() {
             let header = usize::from(packet[0] & 15) * 4;
             session.syn_quote = packet[..(header + 8).min(packet.len()).min(68)].to_vec();
+            self.tcp_quote_bytes += session.syn_quote.len();
         }
     }
     pub fn tcp_state(
@@ -50,7 +51,8 @@ impl Bindings {
         let expires = if let Some(s) = self.sessions.get_mut(&(key, remote)) {
             let (state, expires) = s.tcp.unwrap().packet(v6, flags, s.expires, now);
             if state != State::V4Init {
-                s.syn_quote.clear();
+                self.tcp_quote_bytes -= s.syn_quote.len();
+                s.syn_quote = vec![];
             }
             s.tcp = Some(state);
             s.expires = expires;
@@ -109,6 +111,36 @@ impl Bindings {
         };
         self.tcp_session(key, remote, true, flags, now);
         Ok(Some(assigned))
+    }
+    pub(crate) fn tcp_in_packet(
+        &mut self,
+        port: u16,
+        remote: SocketAddrV4,
+        flags: u8,
+        now: u64,
+        packet: &[u8],
+    ) -> io::Result<Option<(Ipv6Addr, u16)>> {
+        self.expire(now);
+        let Some(key) = self.reverse.get(&(6, port)).copied() else {
+            return Ok(None);
+        };
+        let session = self.sessions.get(&(key, remote));
+        let needs_quote = flags & 2 != 0
+            && session.is_none_or(|s| s.tcp == Some(State::V4Init) && s.syn_quote.is_empty());
+        if needs_quote {
+            let quote = (usize::from(packet[0] & 15) * 4 + 8)
+                .min(packet.len())
+                .min(68);
+            let added = quote + usize::from(session.is_none()) * 256;
+            if self.charged_bytes() + added > 4 * 1024 * 1024 {
+                return Err(full());
+            }
+        }
+        let result = self.tcp_in(port, remote, flags, now)?;
+        if needs_quote && result.is_some() {
+            self.remember_tcp_syn(port, remote, packet);
+        }
+        Ok(result)
     }
     pub fn tcp_in(
         &mut self,
