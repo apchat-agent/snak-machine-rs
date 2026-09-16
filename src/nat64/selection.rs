@@ -78,6 +78,10 @@ impl Selector {
             suppressed: false,
         })
     }
+    pub fn expire(&mut self, now: u64) {
+        self.observations.expire(now);
+        self.promised.retain(|_, (_, until, _)| *until > now);
+    }
     pub fn local_prefix(&self) -> Prefix {
         self.local
     }

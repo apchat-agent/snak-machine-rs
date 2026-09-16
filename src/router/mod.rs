@@ -67,6 +67,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    pub nat64: crate::nat64::Selector,
     pub ail_frames: crate::io::families::AilFrames,
     pub attachment: attachment::Attachment,
     pub retired_ulas: BTreeMap<(Link, Prefix), Lifetime>,
@@ -109,6 +110,7 @@ impl Router {
             })
         }
         Ok(Self {
+            nat64: crate::nat64::Selector::new(identity.site)?,
             ail_frames: Default::default(),
             attachment: attachment::Attachment {
                 discovering: true,
@@ -259,6 +261,11 @@ impl Router {
         }
         if nd.kind == 134 {
             self.admit_ra(link, &e, &nd, now, rng)?;
+            if e.destination == "ff02::1".parse::<Ipv6Addr>().unwrap()
+                || self.address_ready(link, e.destination)
+            {
+                let _ = self.nat64.receive(link, e.packet, now);
+            }
             if link == Link::Ail && self.attachment.discovering {
                 self.attachment.observe(&e.source.octets())?;
             }
@@ -526,7 +533,21 @@ impl Router {
             rios,
         }
     }
+    pub fn configure_nat64(
+        &mut self,
+        policy: crate::nat64::Policy,
+        now: Time,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<()> {
+        let changed = self.nat64.policy() != &policy;
+        self.nat64.configure(policy, now)?;
+        if changed {
+            self.links[1].scheduler.changed(now, rng)?;
+        }
+        Ok(())
+    }
     pub fn tick(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<Vec<Tx>> {
+        self.nat64.expire(now);
         if self.lifecycle == Lifecycle::Stopped {
             return Ok(vec![]);
         }

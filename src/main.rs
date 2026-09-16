@@ -63,6 +63,11 @@ fn run() -> io::Result<()> {
     router.no_stub_default = config.no_stub_default;
     router.always_advertise_ail_routes = config.always_advertise_ail_routes;
     let dns_zones = config.dns_zones(&router.identity)?;
+    router.configure_nat64(config.nat64.clone(), 0, &mut random)?;
+    let mut nat64_reload = config.nat64_config.clone().map(snac_rs::nat64::Reload::new);
+    if let Some(reload) = &mut nat64_reload {
+        reload.poll(&mut router.nat64, 0)?;
+    }
     let backend = match config.backend {
         BackendKind::Tap => {
             if let Some((a, s, f)) = config.fds {
@@ -128,6 +133,13 @@ fn run() -> io::Result<()> {
     loop {
         let now = clock.elapsed().as_millis() as u64;
         let wall_now = wall()?;
+        if let Some(reload) = &mut nat64_reload {
+            match reload.poll(&mut driver.router.nat64, now) {
+                Ok(true) => driver.router.links[1].scheduler.changed(now, &mut random)?,
+                Ok(false) => {}
+                Err(error) => eprintln!("{now}ms NAT64 reload rejected: {error}"),
+            }
+        }
         if wall_now >= tls_renew_at {
             let identity = snac_rs::service_io::identity::TlsIdentity::load_file(
                 &tls_path,
@@ -159,7 +171,7 @@ fn run() -> io::Result<()> {
             })
             .collect();
         let status = format!(
-            "{:?}; AIL {:?} up={}; stub {:?} up={}; PD {:?}; default={}; prefixes={prefixes:?}",
+            "{:?}; AIL {:?} up={}; stub {:?} up={}; PD {:?}; default={}; prefixes={prefixes:?}; NAT64 policy={:?}",
             r.lifecycle,
             r.state(Link::Ail),
             r.links[0].up,
@@ -167,6 +179,7 @@ fn run() -> io::Result<()> {
             r.links[1].up,
             r.pd.state,
             r.default_lifetime(now) > 0,
+            r.nat64.policy(),
         );
         if status != last_status {
             eprintln!("{now}ms {status}");

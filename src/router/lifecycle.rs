@@ -175,6 +175,9 @@ impl Router {
                 next = next.min(t);
             }
         };
+        if let Some(t) = self.nat64.next_deadline() {
+            add(t);
+        }
         for s in &self.links {
             if s.up {
                 if s.state == AilState::Unknown {

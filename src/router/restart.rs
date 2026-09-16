@@ -22,6 +22,7 @@ impl Router {
         }
         let prior = self.stub_routes(now);
         self.links[link.index()].up = up;
+        self.nat64.link_lost(link);
         if link == Link::Ail
             && matches!(
                 self.lifecycle,

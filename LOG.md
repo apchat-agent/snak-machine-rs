@@ -1531,3 +1531,23 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   implemented by PLAN2 section 4.2/S18. Config policy/path and reload deadline/
   last validated bytes are planned administration state; no dependency.
   Main/router wiring follows; selecting a mode alone does not claim readiness.
+- S18 native RED `b610629`, corrected fixture RED `dec321b`, and the separate
+  executable empty-file regression confirm missing router integration and
+  initial reload state. GREEN passes **356 tests**, both builds, formatting,
+  all-feature clippy and the macOS all-target pcap check. Router's validated RA
+  entry feeds its NAT64 owner; own frames, invalid sources and unrelated
+  unicast destinations do not. Link transitions discard scoped evidence and
+  tick expires it. Main applies initial file configuration before opening
+  interfaces, polls live changes, and reports policy/reload failures.
+- Fixture correction: the scripted RNG makes the router's address fe80::1;
+  the original native test accidentally used that as its peer. Production
+  changes were temporarily removed, the distinct-peer fixture was rerun RED,
+  and then the production patch was restored. The SNAC flag fixture now uses
+  bit 0x02 rather than 0x10. No retained baseline assertion was changed here.
+  Router owns the planned selector; Reload's optional last-file value
+  distinguishes no read yet from a valid empty/default file. No dependency.
+- S18 is complete. **needs privileged acceptance:** native PREF64 observation
+  and administrative reload during real interface changes. Readiness remains
+  explicit: actual translated packets arrive in S19–S21; unified ready-only
+  PREF64/RIO emission and disable withdrawals close in S22–S23. No advertisement
+  claims a translator merely because administrative policy is enabled.

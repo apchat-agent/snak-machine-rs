@@ -62,14 +62,14 @@ impl FromStr for Policy {
 pub struct Reload {
     path: PathBuf,
     next: u64,
-    last: Vec<u8>,
+    last: Option<Vec<u8>>,
 }
 impl Reload {
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             next: 0,
-            last: vec![],
+            last: None,
         }
     }
     pub fn poll(&mut self, selector: &mut Selector, now: u64) -> io::Result<bool> {
@@ -84,13 +84,13 @@ impl Reload {
         if bytes.len() > 4096 {
             return Err(invalid());
         }
-        if bytes == self.last {
+        if self.last.as_ref() == Some(&bytes) {
             return Ok(false);
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| invalid())?;
         let policy = text.parse::<Policy>()?;
         selector.configure(policy, now)?;
-        self.last = bytes;
+        self.last = Some(bytes);
         Ok(true)
     }
 }
