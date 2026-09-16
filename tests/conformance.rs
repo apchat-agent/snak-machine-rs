@@ -533,3 +533,253 @@ fn s23_shortened_pd_lease_caps_pref64_in_the_same_advertisement() {
         );
     }
 }
+fn fresh_native(seed: u64) -> snac_rs::runtime::Driver<snac_rs::io::MemoryIo> {
+    use snac_rs::{
+        io::{LinkInfo, MemoryIo},
+        runtime::Driver,
+    };
+    let infos = [1, 2].map(|index| LinkInfo {
+        name: format!("mem{index}"),
+        index,
+        kind: FrameKind::Ethernet,
+        mtu: 1500,
+        mac: Some([2, 0, 0, 0, seed as u8, index as u8]),
+    });
+    let mut d = Driver::new(router(seed), MemoryIo::new(infos)).unwrap();
+    d.start(0, &mut ScriptedRandom::new([])).unwrap();
+    d.step(1000, &mut ScriptedRandom::new([])).unwrap();
+    d
+}
+fn dns_question(name: &str, kind: u16) -> Vec<u8> {
+    use snac_rs::dns::wire::{Message, Question};
+    let mut q = Message::new(777, 0x100);
+    q.questions.push(Question {
+        name: name.parse().unwrap(),
+        kind,
+        class: 1,
+    });
+    q.encode().unwrap()
+}
+fn native_dns(
+    d: &mut snac_rs::runtime::Driver<snac_rs::io::MemoryIo>,
+    source: Ipv6Addr,
+    destination: Ipv6Addr,
+    bytes: &[u8],
+    now: u64,
+) -> snac_rs::dns::wire::Message {
+    native::learn(d, source, now);
+    d.io.output.clear();
+    native::packet(
+        d,
+        Link::Stub,
+        &packets::udp6(source, destination, 40500, 53, bytes),
+        now + 1,
+    );
+    let mut responses = vec![];
+    for t in now + 1..now + 20 {
+        d.step(t, &mut ScriptedRandom::new([])).unwrap();
+        responses.extend(native::translated(d, Link::Stub, 17));
+    }
+    let p = responses
+        .iter()
+        .find(|p| p[40..42] == 53u16.to_be_bytes() && p[42..44] == 40500u16.to_be_bytes())
+        .expect("native DNS response");
+    snac_rs::dns::wire::Message::parse(&p[48..], snac_rs::dns::wire::Context::Unicast).unwrap()
+}
+fn acquire_pd(d: &mut snac_rs::runtime::Driver<snac_rs::io::MemoryIo>, now: u64) {
+    let extra = ia(1, 900, 1500, &[("2001:db8:100::", 64, 3600, 7200)]);
+    for (kind, at) in [(2, now), (7, now + 1)] {
+        let mut opts = extra.clone();
+        if kind == 2 {
+            opts.extend(option(7, &[255]));
+        }
+        let p = dhcp_packet(
+            &d.router.identity.link_local(Link::Ail).to_string(),
+            kind,
+            d.router.pd.exchange.as_ref().unwrap().xid,
+            &d.router.identity.duid,
+            b"server",
+            &opts,
+        );
+        native::packet(d, Link::Ail, &p, at);
+    }
+    assert_eq!(d.router.pd.state, PdState::Bound);
+}
+#[test]
+fn s23_no_pd_infrastructure_waits_for_ipv4_then_announces_local_mode_and_reason() {
+    use snac_rs::{nat64::Mode, wire::Pref64};
+    let mut d = fresh_native(75);
+    infrastructure(&mut d, 1001);
+    let emitted = service_ras(&mut d, 15000);
+    assert!(d.ipv4.address.is_none());
+    assert!(!emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.lifetime > 0)));
+    assert_eq!(d.router.nat64.status().0, Mode::None);
+    native::dhcp(&mut d, 2, 0, [192, 0, 2, 10].into(), 20001);
+    d.step(21001, &mut ScriptedRandom::new([])).unwrap();
+    native::dhcp(&mut d, 5, 0, [192, 0, 2, 10].into(), 21002);
+    let emitted = service_ras(&mut d, 25000);
+    assert!(emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.prefix == d.router.nat64.local_prefix() && p.lifetime > 0)));
+    let (mode, reason) = d.router.nat64.status();
+    assert_eq!(mode, Mode::Local);
+    assert!(reason.contains("IPv4"));
+}
+#[test]
+fn s23_pd_infrastructure_forwards_through_a_translator_peer_and_returns_to_pd_osnr() {
+    use snac_rs::{
+        nat64::{Mode, Translator},
+        service_io::ports::Ports,
+        wire::Pref64,
+    };
+    let mut d = native::driver(76, [192, 0, 2, 10].into());
+    acquire_pd(&mut d, 21000);
+    infrastructure(&mut d, 21002);
+    let emitted = service_ras(&mut d, 22000);
+    let prefix = emitted
+        .iter()
+        .flat_map(|b| service_options(b))
+        .filter_map(|o| Pref64::decode(&o))
+        .find(|p| p.lifetime > 0 && p.prefix.address == ip("64:ff9b::"))
+        .unwrap()
+        .prefix;
+    assert_eq!(d.router.nat64.status().0, Mode::Infrastructure);
+    let host = ip("2001:db8:100::99");
+    native::learn(&mut d, host, 27000);
+    let destination = ip("64:ff9b::c633:6407");
+    d.io.output.clear();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(host, destination, 40100, 9000, b"pd-transit"),
+        27001,
+    );
+    let forwarded = native::translated(&mut d, Link::Ail, 17).pop().unwrap();
+    assert_eq!(forwarded[0] >> 4, 6);
+    assert_eq!(&forwarded[24..40], &destination.octets());
+    assert_eq!(
+        d.nat64.as_ref().unwrap().bindings.counts().0,
+        0,
+        "infrastructure flow never enters local translation"
+    );
+    let mut peer = Translator::new(prefix, [203, 0, 113, 10].into(), Ports::default()).unwrap();
+    let translated = peer
+        .outbound(
+            &forwarded,
+            27001,
+            &mut ScriptedRandom::new([]),
+            |s| s == host,
+            |_| true,
+        )
+        .unwrap();
+    let port = u16::from_be_bytes([translated[0].packet[20], translated[0].packet[21]]);
+    let reply = peer
+        .inbound(
+            &packets::udp4(
+                [198, 51, 100, 7].into(),
+                [203, 0, 113, 10].into(),
+                9000,
+                port,
+                b"pd-reply",
+            ),
+            27002,
+        )
+        .unwrap();
+    native::packet(&mut d, Link::Ail, &reply[0].packet, 27002);
+    let delivered = native::translated(&mut d, Link::Stub, 17).pop().unwrap();
+    assert_eq!(&delivered[24..40], &host.octets());
+    assert_eq!(&delivered[48..], b"pd-reply");
+    assert!(packets::udp6_valid(&delivered));
+}
+#[test]
+fn s23_ipv4ll_only_ail_reaches_link_local_service_and_keeps_local_dns_without_default() {
+    let mut d = fresh_native(77);
+    for t in (1100..=70000).step_by(100) {
+        d.step(t, &mut ScriptedRandom::new([])).unwrap();
+    }
+    let (address, length) = d.ipv4.address.expect("IPv4LL after DHCP absence");
+    assert_eq!(address.octets()[..2], [169, 254]);
+    assert_eq!(length, 16);
+    assert!(d.ipv4.next_hop([198, 51, 100, 7].into()).is_none());
+    let emitted = service_ras(&mut d, 71000);
+    assert!(emitted.iter().all(|b| b[46..48] == [0, 0]));
+    let host = native::host(&d, 99);
+    let resolver = d.router.identity.link_local(Link::Stub);
+    let answer = native_dns(
+        &mut d,
+        host,
+        resolver,
+        &dns_question("lb._dns-sd._udp.local.", 12),
+        76000,
+    );
+    assert!(!answer.answers.is_empty());
+    let remote = [169, 254, 3, 4].into();
+    let dest = native::synth(&d, remote);
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(host, dest, 40200, 9000, b"linklocal"),
+        77000,
+    );
+    native::arp(&mut d, remote, 77001);
+    let out = native::translated(&mut d, Link::Ail, 17).pop().unwrap();
+    assert_eq!(&out[16..20], &[169, 254, 3, 4]);
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::udp4(remote, address, 9000, 40200, b"ok"),
+        77002,
+    );
+    d.step(77002, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 17)
+        .iter()
+        .any(|p| p[48..] == *b"ok"));
+}
+#[test]
+fn s23_native_carrier_loss_withdraws_nat_while_dns_srp_and_durable_claims_continue() {
+    use snac_rs::{dns::wire::Rdata, wire::Pref64};
+    let mut d = native::driver(78, [192, 0, 2, 10].into());
+    let disk = common::srp::Store::default();
+    d.dns
+        .enable_srp(Box::new(disk.clone()), 20000, common::srp::NOW)
+        .unwrap();
+    service_ras(&mut d, 21000);
+    d.io.up[0] = false;
+    let emitted = service_ras(&mut d, 26000);
+    assert!(emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.lifetime == 0)));
+    let host = native::host(&d, 99);
+    let resolver = d.router.identity.link_local(Link::Stub);
+    let mut update = common::srp::update();
+    update.authority[2].kind = 1;
+    update.authority[2].data = Rdata::A([192, 0, 2, 99]);
+    let answer = native_dns(&mut d, host, resolver, &common::srp::sign(update), 31000);
+    assert_eq!(answer.flags & 15, 0);
+    assert!(disk.bytes.borrow().is_some());
+    let registered = d.dns.registry().unwrap().hosts().next().unwrap().0.clone();
+    let mut question = snac_rs::dns::wire::Message::new(778, 0x100);
+    question.questions.push(snac_rs::dns::wire::Question {
+        name: registered.clone(),
+        kind: 28,
+        class: 1,
+    });
+    let answer = native_dns(&mut d, host, resolver, &question.encode().unwrap(), 32000);
+    assert!(answer.answers.is_empty());
+    assert!(answer
+        .additional
+        .iter()
+        .any(|r| r.data == Rdata::A([192, 0, 2, 99])));
+    let restored = snac_rs::srp::registry::Registry::restore(
+        disk.bytes.borrow().as_ref().unwrap(),
+        0,
+        common::srp::NOW + 13,
+    )
+    .unwrap();
+    assert!(restored.key(&registered, 0).is_some());
+}
