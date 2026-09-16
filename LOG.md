@@ -1186,3 +1186,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   fails safely. Zone/scope/reachability fields implement the planned view and
   readiness inputs. No dependency. Query scheduling, denial conversion, common
   A augmentation and native DNS/DoT integration follow.
+- S15 denial RED `ffe4a15` confirms missing NSEC/NSEC3 synthesis. GREEN passes
+  **283 tests** and all-feature clippy. ANY queries collect type information;
+  unicast NSEC uses a next name immediately after the queried owner, including
+  253–255-byte and ASCII-folding boundaries. NSEC3 uses the existing pinned
+  SHA-1 crate, zero iterations/salt and the next hash value; independent bytes
+  check its owner hash, wire layout and bitmap. These unsigned records never
+  claim authenticated DNSSEC validation.
+- Proof work is bounded at 4096 records, 1024 distinct types and 262144 bitmap
+  work bytes; malformed windows/lengths and truncated DNS messages fail safely.
+  The fixed bitmap spans the DNS type space without another dynamic table.
+  Reviewing RFC 8766 5.5.3 exposed the multicast publisher's erroneous NSEC bit:
+  RFC 6762 6.1 forbids it, so generated mDNS NSEC now clears that bit while
+  unicast NSEC includes it. Every prior assertion remains unchanged and passes.
+  No new dependency; proof work/type state implements the planned conversion.

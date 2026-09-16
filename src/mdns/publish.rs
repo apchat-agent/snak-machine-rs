@@ -133,7 +133,7 @@ impl Prepared {
                 .filter(|r| r.name == *name && r.class & 0x7fff == *class)
                 .collect();
             let mut blocks: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
-            for kind in own.iter().map(|r| r.kind).chain([47]) {
+            for kind in own.iter().map(|r| r.kind).filter(|kind| *kind != 47) {
                 let b = blocks.entry((kind / 256) as u8).or_default();
                 let at = usize::from(kind % 256 / 8);
                 b.resize(b.len().max(at + 1), 0);
