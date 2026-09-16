@@ -1354,3 +1354,43 @@ fn s17_native_ra_and_dhcp_resolvers_start_privacy_probes_and_explicit_servers_do
     assert_eq!(d.dns.queries().count(), 0);
     assert_eq!(d.stack_mut(Link::Ail).unwrap().connections().len(), 0);
 }
+
+#[test]
+fn s17_driver_dnssl_context_starts_live_browsing_and_withdrawal_cancels_it() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    d.step(1000, &mut rng).unwrap();
+    let mut opts = vec![25, 3, 0, 0, 0, 0, 0, 60];
+    opts.extend(common::ip("fe80::53").octets());
+    let mut suffix = vec![31, 0, 0, 0, 0, 0, 0, 60];
+    suffix.extend(b"\x04corp\x07example\x00");
+    while suffix.len() % 8 != 0 {
+        suffix.push(0);
+    }
+    suffix[1] = (suffix.len() / 8) as u8;
+    opts.extend(&suffix);
+    let packet = common::nd_packet("fe80::99", "ff02::1", common::ra(0, 1800, &opts));
+    d.accept(rx(Link::Ail, packet), 1001, &mut rng).unwrap();
+    d.step(1001, &mut rng).unwrap();
+    assert!(d
+        .dns
+        .queries()
+        .any(|q| Message::parse(&q.bytes, Context::Unicast)
+            .unwrap()
+            .questions[0]
+            .name
+            == "lb._dns-sd._udp.corp.example.".parse().unwrap()));
+    suffix[4..8].fill(0);
+    let packet = common::nd_packet("fe80::99", "ff02::1", common::ra(0, 1800, &suffix));
+    d.accept(rx(Link::Ail, packet), 1002, &mut rng).unwrap();
+    d.step(1002, &mut rng).unwrap();
+    assert!(!d
+        .dns
+        .queries()
+        .any(|q| Message::parse(&q.bytes, Context::Unicast)
+            .unwrap()
+            .questions[0]
+            .kind
+            == 12));
+}

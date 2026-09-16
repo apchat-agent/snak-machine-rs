@@ -746,15 +746,19 @@ impl Network {
                 m.flags = 0x8180;
                 m.answers.push(snac_rs::dns::wire::Record {
                     name: m.questions[0].name.clone(),
-                    kind: 1,
+                    kind: m.questions[0].kind,
                     class: 1,
                     ttl: 30,
-                    data: snac_rs::dns::wire::Rdata::A([
-                        192,
-                        0,
-                        2,
-                        m.questions[0].name.labels()[0][0],
-                    ]),
+                    data: if m.questions[0].kind == 12 {
+                        snac_rs::dns::wire::Rdata::Name("browse.example.".parse().unwrap())
+                    } else {
+                        snac_rs::dns::wire::Rdata::A([
+                            192,
+                            0,
+                            2,
+                            m.questions[0].name.labels()[0][0],
+                        ])
+                    },
                 });
                 let framed = snac_rs::dns::wire::TcpFrames::frame(&m.encode().unwrap()).unwrap();
                 assert_eq!(
@@ -1061,4 +1065,64 @@ fn s17_native_tls_failure_falls_back_then_recovers_on_a_fresh_stream() {
         .encrypted_queries
         .iter()
         .any(|q| q.questions[0].name == "recovered.example.".parse().unwrap()));
+}
+
+#[test]
+fn s17_native_browsing_uses_known_tls_then_answers_stub_legacy_enumeration() {
+    use snac_rs::dns::wire::Rdata;
+    let mut n = Network::new();
+    let id = snac_rs::persist::Identity::load_or_create(
+        &mut snac_rs::persist::MemoryStore::default(),
+        "native-browse",
+        &mut n.rng,
+    )
+    .unwrap();
+    n.resolver
+        .configure_zones(snac_rs::dns::inventory::Zones::for_identity(&id))
+        .unwrap();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    n.resolver
+        .configure_browsing(&["corp.example.".parse().unwrap()], 2000)
+        .unwrap();
+    for now in (2000..3000).step_by(10) {
+        n.cycle(now);
+    }
+    assert!(
+        n.encrypted_queries
+            .iter()
+            .any(|m| m.questions[0].name == "lb._dns-sd._udp.corp.example.".parse().unwrap()),
+        "native service must schedule infrastructure enumeration over working DoT"
+    );
+    let mut q = Message::new(122, 0x100);
+    q.questions.push(Question {
+        name: "lb._dns-sd._udp.local.".parse().unwrap(),
+        kind: 12,
+        class: 1,
+    });
+    n.peers[1]
+        .send_udp(
+            "fd22::2".parse().unwrap(),
+            40000,
+            "fd22::1".parse().unwrap(),
+            53,
+            &q.encode().unwrap(),
+        )
+        .unwrap();
+    for now in (3000..3500).step_by(10) {
+        n.cycle(now);
+    }
+    let p = n.peers[1].receive_udp().expect("stub enumeration answer");
+    let m = Message::parse(&p.bytes, Context::Unicast).unwrap();
+    assert_eq!(m.id, 122);
+    assert_eq!(m.answers.len(), 3);
+    assert!(m
+        .answers
+        .iter()
+        .any(|r| r.data == Rdata::Name("browse.example.".parse().unwrap())));
+    assert!(n
+        .plaintext_queries
+        .iter()
+        .all(|m| m.questions[0].kind == 64));
 }
