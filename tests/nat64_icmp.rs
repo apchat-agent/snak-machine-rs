@@ -177,3 +177,119 @@ fn s21_native_echo_uses_translation_bindings_without_consuming_router_local_echo
     assert_eq!(out[0][40], 129);
     assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (1, 1, 1));
 }
+
+#[test]
+fn s21_every_rfc7915_error_type_code_and_parameter_pointer_mapping() {
+    use snac_rs::nat64::icmp::{v4_to_v6, v6_to_v4};
+    for code in 0..=255 {
+        let expected = match code {
+            0 | 1 | 5 | 6 | 7 | 8 | 11 | 12 => Some((1, 0, 0)),
+            2 => Some((4, 1, 6)),
+            3 => Some((1, 4, 0)),
+            4 => Some((2, 0, 1420)),
+            9 | 10 | 13 | 15 => Some((1, 1, 0)),
+            _ => None,
+        };
+        assert_eq!(
+            v4_to_v6(3, code, 1400, 1500, 9000, 9000),
+            expected,
+            "IPv4 unreachable {code}"
+        );
+        let expected = match code {
+            0 | 2 | 3 => Some((3, 1, 0)),
+            1 => Some((3, 10, 0)),
+            4 => Some((3, 3, 0)),
+            _ => None,
+        };
+        assert_eq!(
+            v6_to_v4(1, code, 0, 9000, 9000),
+            expected,
+            "IPv6 unreachable {code}"
+        );
+        assert_eq!(
+            v4_to_v6(11, code, 0, 1500, 9000, 9000),
+            if code <= 1 { Some((3, code, 0)) } else { None }
+        );
+        assert_eq!(
+            v6_to_v4(3, code, 0, 9000, 9000),
+            if code <= 1 { Some((11, code, 0)) } else { None }
+        );
+    }
+    for pointer in 0..=255 {
+        let expected = match pointer {
+            0 => Some(0),
+            1 => Some(1),
+            2 | 3 => Some(4),
+            8 => Some(7),
+            9 => Some(6),
+            12..=15 => Some(8),
+            16..=19 => Some(24),
+            _ => None,
+        };
+        for code in [0, 2] {
+            assert_eq!(
+                v4_to_v6(12, code, pointer, 1500, 9000, 9000),
+                expected.map(|p| (4, 0, p)),
+                "v4 pointer {pointer}"
+            );
+        }
+        assert_eq!(v4_to_v6(12, 1, pointer, 1500, 9000, 9000), None);
+        let expected = match pointer {
+            0 => Some(0),
+            1 => Some(1),
+            4 | 5 => Some(2),
+            6 => Some(9),
+            7 => Some(8),
+            8..=23 => Some(12),
+            24..=39 => Some(16),
+            _ => None,
+        };
+        assert_eq!(
+            v6_to_v4(4, 0, pointer, 9000, 9000),
+            expected.map(|p| (12, 0, p)),
+            "v6 pointer {pointer}"
+        );
+        assert_eq!(v6_to_v4(4, 1, pointer, 9000, 9000), Some((3, 2, 0)));
+        assert_eq!(v6_to_v4(4, 2, pointer, 9000, 9000), None);
+    }
+    for kind in 0..=255 {
+        if ![3, 11, 12].contains(&kind) {
+            assert_eq!(v4_to_v6(kind, 0, 0, 1500, 9000, 9000), None);
+        }
+        if ![1, 2, 3, 4].contains(&kind) {
+            assert_eq!(v6_to_v4(kind, 0, 0, 9000, 9000), None);
+        }
+    }
+}
+#[test]
+fn s21_mtu_translation_uses_both_interfaces_ipv6_minimum_and_legacy_plateaus() {
+    use snac_rs::nat64::icmp::{v4_to_v6, v6_to_v4};
+    for (reported, length, mtu4, mtu6, want) in [
+        (0, 1500, 9000, 9000, 1512),
+        (0, 1492, 9000, 9000, 1280),
+        (0, 65535, 65535, 65535, 32020),
+        (1400, 1500, 9000, 9000, 1420),
+        (1400, 1500, 1280, 9000, 1300),
+        (1400, 1500, 9000, 1280, 1280),
+        (68, 1500, 9000, 9000, 1280),
+        (u32::MAX, 1500, 1500, 1500, 1500),
+    ] {
+        assert_eq!(
+            v4_to_v6(3, 4, reported, length, mtu4, mtu6),
+            Some((2, 0, want))
+        );
+    }
+    for (reported, mtu4, mtu6, want) in [
+        (1500, 9000, 9000, 1480),
+        (1500, 1400, 9000, 1400),
+        (1500, 9000, 1280, 1260),
+        (1280, 9000, 9000, 1260),
+        (0, 9000, 9000, 68),
+        (19, 9000, 9000, 68),
+        (u32::MAX, 1500, 1500, 1480),
+    ] {
+        assert_eq!(v6_to_v4(2, 0, reported, mtu4, mtu6), Some((3, 4, want)));
+    }
+    assert_eq!(v6_to_v4(2, 1, 1500, 9000, 9000), None);
+    assert_eq!(v6_to_v4(4, 0, u32::MAX, 9000, 9000), None);
+}
