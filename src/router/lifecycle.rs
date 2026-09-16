@@ -36,8 +36,8 @@ impl Router {
                 } else {
                     out.push(Tx {
                         link,
-                        packet: snap
-                            .encode()
+                        packet: self
+                            .encode_services(snap, now)
                             .map_err(|_| io::Error::other("shutdown RA capacity"))?,
                     });
                 }

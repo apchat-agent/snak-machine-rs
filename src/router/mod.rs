@@ -3,6 +3,7 @@ pub use on_link::{OnLink, OnLinkTable};
 pub mod attachment;
 mod budget;
 mod lifecycle;
+mod services;
 pub use lifecycle::Lifecycle;
 mod forward;
 pub mod pd;
@@ -67,6 +68,7 @@ pub struct Header {
     pub header_lifetime: Option<Lifetime>,
 }
 pub struct Router {
+    services: services::Services,
     pub nat64: crate::nat64::Selector,
     pub ail_frames: crate::io::families::AilFrames,
     pub attachment: attachment::Attachment,
@@ -110,6 +112,7 @@ impl Router {
             })
         }
         Ok(Self {
+            services: Default::default(),
             nat64: crate::nat64::Selector::new(identity.site)?,
             ail_frames: Default::default(),
             attachment: attachment::Attachment {
@@ -696,12 +699,11 @@ impl Router {
                 if link == Link::Stub || !snap.pios.is_empty() || !snap.rios.is_empty() {
                     out.push(Tx {
                         link,
-                        packet: match snap.encode() {
+                        packet: match self.encode_services(snap, now) {
                             Ok(p) => p,
                             Err(WireError::Capacity) => {
                                 self.degrade(now, rng)?;
-                                self.snapshot(link, now)
-                                    .encode()
+                                self.encode_services(self.snapshot(link, now), now)
                                     .map_err(|_| io::Error::other("degraded RA capacity"))?
                             }
                             Err(_) => return Err(io::Error::other("invalid RA snapshot")),
@@ -782,6 +784,7 @@ impl Router {
                 self.lifecycle = Lifecycle::Stopped;
             }
         }
+        self.services_transmitted(tx.link, &nd, now)?;
         let state = &mut self.links[tx.link.index()];
         state.scheduler.sent(now, rng)?;
         if state.state == AilState::BeginAdvertising {

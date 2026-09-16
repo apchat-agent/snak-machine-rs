@@ -1741,3 +1741,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   including constricting MTUs, zero-checksum IPv4 UDP and hairpin errors.
   Rootless native fixtures execute DHCP/ARP/ND, shared reassembly, translation
   and output; no physical-interface or external-stack interoperability is claimed.
+
+### S22 — native service RA inventory (initial readiness slice)
+
+- RED `cb510c9` fails on absent RDNSS/PREF64 and absent successful NAT RIO
+  history. GREEN passes **404 tests** and all-feature clippy. Native advertisements
+  now contain installed, DAD-ready resolver addresses and selected NAT64 options,
+  with an explicit /96 RIO even when IPv4 supplies no IPv6 default route.
+- Lifetimes are capped by installed stub addresses and the IPv4 lease; policy
+  disable withdraws NAT while DNS continues. Only successful sends record
+  PREF64/RDNSS promises. Shutdown uses the same service encoder.
+- Service inventory and two-entry resolver promise history implement PLAN2's
+  readiness and withdrawal requirements; no field beyond the plan or dependency.
+  Combined capacity, infrastructure/PD and transition coverage follow within S22.

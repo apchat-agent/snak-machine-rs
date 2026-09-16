@@ -505,6 +505,25 @@ impl<I: PacketIo> Driver<I> {
             stub.port_owned(6, 53).then_some(53),
             (stub.port_owned(6, 853) && self.dns_service.tls_enabled()).then_some(853),
         )?;
+        let resolvers: Vec<_> = if stub.port_owned(6, 53) && stub.port_owned(17, 53) {
+            stub.addresses()
+                .iter()
+                .filter_map(|a| match a {
+                    std::net::IpAddr::V6(a) => Some(*a),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+        let ipv4 = self.ipv4.address.map(|_| {
+            self.dhcp
+                .as_ref()
+                .and_then(|c| c.lease())
+                .map_or(u64::MAX, |l| l.expires)
+        });
+        self.router
+            .service_inventory(&resolvers, ipv4, self.nat64.is_some(), now, rng)?;
         let contexts = self.dns_discovery.domains(now);
         self.dns.set_inventory_contexts(&contexts)?;
         self.dns.configure_browsing(&contexts, now)?;

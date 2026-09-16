@@ -434,6 +434,19 @@ pub struct Advertisement {
 }
 impl Advertisement {
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        self.encode_services(&[], &[])
+    }
+    pub fn encode_services(
+        &self,
+        resolvers: &[(Ipv6Addr, u32)],
+        pref64: &[Pref64],
+    ) -> Result<Vec<u8>, WireError> {
+        if resolvers.len() > 2 || pref64.len() > 8 {
+            return Err(WireError::Capacity);
+        }
+        if self.link == crate::Link::Ail && (!resolvers.is_empty() || !pref64.is_empty()) {
+            return Err(WireError::Invalid);
+        }
         if self.mtu < 1280 || !link_local(self.source) {
             return Err(WireError::Invalid);
         }
@@ -466,6 +479,17 @@ impl Advertisement {
         rios.dedup_by_key(|r| r.prefix);
         for r in rios {
             b.extend(r.encode());
+        }
+        for (address, lifetime) in resolvers {
+            if address.is_unspecified() || address.is_multicast() || address.is_loopback() {
+                return Err(WireError::Invalid);
+            }
+            b.extend([25, 3, 0, 0]);
+            b.extend(lifetime.to_be_bytes());
+            b.extend(address.octets());
+        }
+        for p in pref64 {
+            b.extend(p.encode()?);
         }
         if b.len() + 40 > 1280 {
             return Err(WireError::Capacity);
