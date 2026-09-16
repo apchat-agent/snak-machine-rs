@@ -1072,3 +1072,67 @@ fn s15_native_dot_queries_the_same_discovery_view() {
     }
     panic!("DoT Discovery Proxy reply missing");
 }
+
+#[test]
+fn s15_native_discovery_answers_own_ready_publications_without_looping_multicast() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    let records = vec![Record {
+        name: "own.local.".parse().unwrap(),
+        kind: 1,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::A([192, 0, 2, 10]),
+    }];
+    let source = records.clone();
+    d.set_mdns_source(move |_, _, _, _| source.clone());
+    d.mdns
+        .publisher
+        .replace(3, &[], &records, 0, &mut rng)
+        .unwrap();
+    d.start(0, &mut rng).unwrap();
+    for now in [1000, 1250, 1500, 1750, 2750] {
+        d.step(now, &mut rng).unwrap();
+    }
+    assert!(d.mdns.publisher.ready(3));
+    learn(&mut d, Link::Stub, &mut rng);
+    let mut hosts = [stack(peer(Link::Ail)), stack(peer(Link::Stub))];
+    hosts[1].listen_udp(40000).unwrap();
+    hosts[1]
+        .send_udp(
+            peer(Link::Stub),
+            40000,
+            d.router.identity.link_local(Link::Stub).into(),
+            53,
+            &query("own.default.service.arpa.", 28, 93),
+        )
+        .unwrap();
+    for now in 3000..3005 {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    let reply = hosts[1]
+        .receive_udp()
+        .expect("own publication is a local discovery answer");
+    let reply = Message::parse(&reply.bytes, Context::Unicast).unwrap();
+    assert_eq!(reply.flags & 15, 0);
+    assert_eq!(reply.additional[0].data, records[0].data);
+    assert_eq!(d.mdns.querier.counts().0, 0);
+    d.mdns
+        .publisher
+        .replace(3, &records, &[], 3005, &mut rng)
+        .unwrap();
+    hosts[1]
+        .send_udp(
+            peer(Link::Stub),
+            40000,
+            d.router.identity.link_local(Link::Stub).into(),
+            53,
+            &query("own.default.service.arpa.", 1, 94),
+        )
+        .unwrap();
+    for now in 3005..3010 {
+        cycle(&mut d, &mut hosts, now, &mut rng);
+    }
+    assert!(hosts[1].receive_udp().is_none());
+    assert_eq!(d.mdns.querier.counts().0, 1);
+}
