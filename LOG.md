@@ -1551,3 +1551,20 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   explicit: actual translated packets arrive in S19–S21; unified ready-only
   PREF64/RIO emission and disable withdrawals close in S22–S23. No advertisement
   claims a translator merely because administrative policy is enabled.
+
+### S19 — NAT64 UDP bindings, sessions and hairpin (in progress)
+
+- S19 binding RED `370938c` confirms the missing transport state owner.
+  GREEN passes **360 tests** and all-feature clippy. UDP mappings are endpoint
+  independent, default filtering is address dependent, and the optional
+  endpoint-independent filter still requires an existing binding. Port
+  allocation preserves free ports, then uses a bounded random search favoring
+  range/parity while respecting externally occupied ports.
+- Tests fill all 4096 binding/8192 session slots and 128/256 per-source limits,
+  reject excess atomically, retain existing traffic at capacity, and reclaim
+  ports only after the last session expires. Default UDP lifetime is 300 seconds;
+  configurable bounds are 120..86400 seconds. Reverse/source indexes and
+  conservative owned-byte charges stay bounded; unrelated inbound floods
+  cannot create mappings. Protocol-keyed indexes, source counts and a cached
+  expiry wakeup implement the planned shared state. No dependency. Shared
+  native port ownership, wire translation, hairpin and ARP integration follow.
