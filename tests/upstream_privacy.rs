@@ -829,3 +829,109 @@ fn s17_native_service_probes_and_reuses_upstream_tls_with_distinct_pipelined_ids
         );
     }
 }
+
+#[test]
+fn s17_removed_resolvers_cancel_control_queries_and_release_bounded_connections() {
+    let mut n = Network::new();
+    let origins: Vec<_> = (1..=8)
+        .map(|i| format!("[fd11::{i}]:53").parse().unwrap())
+        .collect();
+    n.resolver
+        .configure_upstream_privacy(&origins, false, 0)
+        .unwrap();
+    n.service
+        .poll(&mut n.resolver, &mut n.router, 0, &mut n.rng)
+        .unwrap();
+    assert_eq!(n.service.counts().2, 8);
+    assert_eq!(n.resolver.queries().count(), 8);
+    let mut excess = origins.clone();
+    excess.push("[fd11::9]:53".parse().unwrap());
+    assert!(n
+        .resolver
+        .configure_upstream_privacy(&excess, false, 1)
+        .is_err());
+    assert_eq!(n.resolver.upstreams(), origins);
+    n.resolver
+        .configure_upstream_privacy(&[], false, 1)
+        .unwrap();
+    assert_eq!(
+        n.resolver.queries().count(),
+        0,
+        "removed origins must stop DDR immediately"
+    );
+    n.service
+        .poll(&mut n.resolver, &mut n.router, 1, &mut n.rng)
+        .unwrap();
+    assert_eq!(
+        n.service.counts().2,
+        0,
+        "stale probes must release their connections"
+    );
+    n.resolver
+        .configure_upstream_privacy(&origins, false, 2)
+        .unwrap();
+    n.service
+        .poll(&mut n.resolver, &mut n.router, 2, &mut n.rng)
+        .unwrap();
+    assert_eq!(
+        n.service.counts().2,
+        8,
+        "churn must not strand the pool at its bound"
+    );
+}
+#[test]
+fn s17_policy_and_native_pool_invalidate_working_tls_when_explicit_mode_replaces_discovery() {
+    let mut n = Network::new();
+    for now in (0..2000).step_by(10) {
+        n.cycle(now);
+    }
+    assert_eq!(n.service.counts().2, 1);
+    n.resolver
+        .configure_upstream_privacy(&["[fd11::53]:53".parse().unwrap()], true, 2000)
+        .unwrap();
+    n.service
+        .poll(&mut n.resolver, &mut n.router, 2000, &mut n.rng)
+        .unwrap();
+    assert_eq!(
+        n.service.counts().2,
+        0,
+        "explicit DNS choice must discard automatic transport evidence"
+    );
+    n.ask("plain.example.", 112);
+    for now in (2010..2500).step_by(10) {
+        n.cycle(now);
+    }
+    assert!(n.plaintext_queries.iter().any(|q| q.questions[0].kind == 1));
+}
+#[test]
+fn s17_tls_buffered_plaintext_and_complete_frames_expose_ready_work() {
+    let mut c = Session::client(
+        opportunistic_client().unwrap().into(),
+        "test.example".try_into().unwrap(),
+        0,
+    )
+    .unwrap();
+    let mut s = Session::new(server(), 0).unwrap();
+    for now in 0..20 {
+        pump(&mut c, &mut s, now).unwrap();
+    }
+    let bytes = vec![42; 6000];
+    assert_eq!(s.send_plaintext(&bytes, 20).unwrap(), bytes.len());
+    let wire = s.take_tls(8192, 21).unwrap();
+    let mut at = 0;
+    while at < wire.len() {
+        at += c.input(&wire[at..], 21).unwrap();
+    }
+    assert!(c.readable());
+    assert_eq!(c.plaintext(2048).unwrap().len(), 2048);
+    assert!(c.readable());
+    assert_eq!(c.plaintext(8192).unwrap().len(), 3952);
+    assert!(!c.readable());
+    let mut frames = snac_rs::dns::wire::TcpFrames::new(65535).unwrap();
+    frames.input(&[0, 12, 1]).unwrap();
+    assert!(!frames.ready(), "partial frames must not cause a busy loop");
+    frames.input(&[1; 11]).unwrap();
+    assert!(frames.ready());
+    frames.pop().unwrap();
+    assert!(!frames.ready());
+}
