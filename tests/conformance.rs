@@ -476,6 +476,7 @@ fn s23_attachment_rotation_retires_nat_prefix_and_preserves_both_return_tuples()
             ),
             28001,
         );
+        d.step(28001, &mut ScriptedRandom::new([])).unwrap();
         let replies = native::translated(&mut d, Link::Stub, 17);
         assert!(replies
             .iter()
