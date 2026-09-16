@@ -96,6 +96,23 @@ impl<I: PacketIo> Driver<I> {
                             && [0, 8].contains(&p.payload[0])
                         {
                             Some(u16::from_be_bytes([p.payload[4], p.payload[5]]))
+                        } else if p.protocol == 1 && p.payload.len() >= 36 {
+                            return crate::ipv4::wire::Packet::quoted(&p.payload[8..])
+                                .ok()
+                                .is_some_and(|q| {
+                                    let port =
+                                        if [6, 17].contains(&q.protocol) && q.payload.len() >= 8 {
+                                            Some(u16::from_be_bytes([q.payload[0], q.payload[1]]))
+                                        } else if q.protocol == 1
+                                            && q.payload.len() >= 8
+                                            && [0, 8].contains(&q.payload[0])
+                                        {
+                                            Some(u16::from_be_bytes([q.payload[4], q.payload[5]]))
+                                        } else {
+                                            None
+                                        };
+                                    port.is_some_and(|port| n.bindings.owns(q.protocol, port))
+                                });
                         } else {
                             None
                         };

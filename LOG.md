@@ -1674,3 +1674,15 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   arithmetic and RFC 1191's unknown-MTU plateaus. The resumed uncommitted
   mapping patch agrees with RFC 7915 sections 4.2/5.2. No field or dependency.
   Quoted-packet translation, native error dispatch and fragments remain next.
+- Quote RED `e63fbe4` fails executably on ICMP errors rejected by the Echo-only
+  parser and native errors reaching no translator. GREEN passes **390 tests**
+  and all-feature clippy. Both directions restore TCP/UDP/Echo quoted tuples,
+  including remapped ports/IDs and partial TCP headers; checksum adjustment
+  preserves unavailable payload and the inner hop count. Native IPv4 errors
+  dispatch by the quoted binding. A single hairpin pass returns errors to the
+  original stub host. Exact live-session lookup never opens or renews state.
+- Short/corrupt/recursive/unrelated quotes are rejected or dropped without
+  admission. Errors are capped at 32 per second and 1280/576 output bytes;
+  successful translation alone consumes rate credit. The fixed window/count
+  fields implement PLAN2's required error rate bound; no per-sender table or
+  dependency. Interface MTUs, extension headers and fragment integration follow.

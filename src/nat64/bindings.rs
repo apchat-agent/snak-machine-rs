@@ -75,6 +75,34 @@ impl Bindings {
     pub fn owns(&self, protocol: u8, port: u16) -> bool {
         self.reverse.contains_key(&(protocol, port))
     }
+    // ICMP errors consult an existing exact session without renewing it.
+    pub(crate) fn error_in(
+        &self,
+        protocol: u8,
+        port: u16,
+        remote: SocketAddrV4,
+        now: u64,
+    ) -> Option<(Ipv6Addr, u16)> {
+        let key = self.reverse.get(&(protocol, port))?;
+        self.sessions
+            .get(&(*key, remote))
+            .filter(|s| s.expires > now)?;
+        Some((key.1, key.2))
+    }
+    pub(crate) fn error_out(
+        &self,
+        protocol: u8,
+        host: Ipv6Addr,
+        port: u16,
+        remote: SocketAddrV4,
+        now: u64,
+    ) -> Option<u16> {
+        let key = (protocol, host, port);
+        self.sessions
+            .get(&(key, remote))
+            .filter(|s| s.expires > now)?;
+        self.bindings.get(&key).map(|b| b.port)
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.bindings.len(), self.sessions.len(), self.hosts.len())
     }

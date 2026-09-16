@@ -1,3 +1,4 @@
+mod errors;
 use super::{bindings::Bindings, invalid, usable};
 use crate::{
     ipv4,
@@ -16,6 +17,8 @@ pub struct Translator {
     prefix: Prefix,
     ipv4: Option<Ipv4Addr>,
     identification: u16,
+    error_window: u64,
+    error_count: u8,
 }
 impl Translator {
     pub fn new(prefix: Prefix, ipv4: Ipv4Addr, ports: Ports) -> io::Result<Self> {
@@ -27,6 +30,8 @@ impl Translator {
             prefix,
             ipv4: Some(ipv4),
             identification: 0,
+            error_window: 0,
+            error_count: 0,
         })
     }
     pub fn set_ipv4(&mut self, ipv4: Option<Ipv4Addr>) -> io::Result<()> {
@@ -56,6 +61,12 @@ impl Translator {
             return Err(invalid());
         }
         let protocol = e.next_header;
+        if protocol == 58 && e.payload.first().is_some_and(|kind| *kind < 128) {
+            if !source_allowed(e.source) {
+                return Ok(vec![]);
+            }
+            return self.error6(&e, now);
+        }
         let (sport, dport) = ports(protocol, e.payload)?;
         if (protocol == 17 && e.payload[6..8] == [0, 0])
             || wire::checksum(e.source, e.destination, protocol, e.payload) != 0
@@ -169,6 +180,9 @@ impl Translator {
             return Err(invalid());
         }
         let protocol = p.protocol;
+        if protocol == 1 && p.payload.first().is_some_and(|kind| ![0, 8].contains(kind)) {
+            return self.error4(&p, now);
+        }
         let (sport, dport) = ports(protocol, p.payload)?;
         if (protocol != 17 || p.payload[6..8] != [0, 0])
             && checksum4(p.source, p.destination, protocol, p.payload) != 0
