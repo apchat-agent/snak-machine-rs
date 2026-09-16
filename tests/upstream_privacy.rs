@@ -340,3 +340,161 @@ fn s17_ddr_alias_mode_ignores_parameter_semantics_and_overrides_service_mode() {
     );
     assert!(found.candidates.is_empty());
 }
+
+#[test]
+fn s17_privacy_probes_without_blocking_plaintext_prefers_known_tls_and_retries_failures() {
+    use snac_rs::dns::privacy::{Policy, Probe, Route};
+    let origin = "192.168.1.53:53".parse().unwrap();
+    let mut p = Policy::default();
+    p.sync(&[origin], false, 0).unwrap();
+    assert!(matches!(p.route(origin, 0), Route::Plain { .. }));
+    let actions = p.poll(0).unwrap();
+    assert_eq!(actions.len(), 2);
+    let tls = actions
+        .iter()
+        .find_map(|a| {
+            if let Probe::Tls(t) = a {
+                Some(t.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(tls.endpoint, "192.168.1.53:853".parse().unwrap());
+    assert!(actions.iter().any(|a| matches!(a,Probe::Ddr(d) if d.origin==origin && d.name=="_dns.resolver.arpa.".parse().unwrap())));
+    p.complete_tls(tls.id, true, 20);
+    assert!(matches!(p.route(origin,20),Route::Tls(t) if t.endpoint==tls.endpoint));
+    p.failed(origin, tls.endpoint, 21);
+    assert!(matches!(p.route(origin,21),Route::Plain { reason } if !reason.is_empty()));
+    assert!(p
+        .poll(30020)
+        .unwrap()
+        .iter()
+        .all(|a| !matches!(a, Probe::Tls(_))));
+    let retry = p
+        .poll(30021)
+        .unwrap()
+        .into_iter()
+        .find_map(|a| if let Probe::Tls(t) = a { Some(t) } else { None })
+        .unwrap();
+    assert_ne!(retry.id, tls.id);
+    p.complete_tls(tls.id, true, 30022);
+    assert!(
+        matches!(p.route(origin, 30022), Route::Plain { .. }),
+        "late old handshake cannot overwrite failed state"
+    );
+    p.complete_tls(retry.id, true, 30022);
+    assert!(matches!(p.route(origin, 30022), Route::Tls(_)));
+    p.sync(&[origin], true, 30023).unwrap();
+    assert!(p.poll(30023).unwrap().is_empty());
+    assert!(
+        matches!(p.route(origin,30023),Route::Plain { reason } if reason.contains("configured"))
+    );
+}
+#[test]
+fn s17_ddr_upgrade_keeps_working_tls_until_replacement_succeeds_and_rejects_stale_tokens() {
+    use snac_rs::{
+        dns::privacy::{Policy, Probe, Route},
+        time::ScriptedRandom,
+    };
+    let origin = "192.168.1.53:53".parse().unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let mut p = Policy::default();
+    p.sync(&[origin], false, 0).unwrap();
+    let actions = p.poll(0).unwrap();
+    let tls = actions
+        .iter()
+        .find_map(|a| {
+            if let Probe::Tls(t) = a {
+                Some(t.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    let ddr_id = actions
+        .iter()
+        .find_map(|a| {
+            if let Probe::Ddr(d) = a {
+                Some(d.id)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    p.complete_tls(tls.id, true, 1);
+    let mut m = ddr();
+    m.answers.push(designation(1, 8853));
+    p.complete_ddr(ddr_id, &m, 2, &mut rng).unwrap();
+    let next = p
+        .poll(2)
+        .unwrap()
+        .into_iter()
+        .find_map(|a| if let Probe::Tls(t) = a { Some(t) } else { None })
+        .unwrap();
+    assert_eq!(next.endpoint.port(), 8853);
+    assert!(matches!(p.route(origin,3),Route::Tls(t) if t.endpoint.port()==853));
+    p.complete_tls(next.id, true, 4);
+    assert!(matches!(p.route(origin,4),Route::Tls(t) if t.endpoint.port()==8853));
+    assert!(
+        matches!(p.route(origin, 120002), Route::Plain { .. }),
+        "expired designation is not used"
+    );
+    p.sync(&[], false, 5).unwrap();
+    p.sync(&[origin], false, 6).unwrap();
+    assert_eq!(p.count(), 1);
+    assert!(p.complete_ddr(ddr_id, &m, 7, &mut rng).is_err());
+    p.complete_tls(next.id, true, 7);
+    assert!(matches!(p.route(origin, 7), Route::Plain { .. }));
+}
+#[test]
+fn s17_privacy_bounds_endpoints_alias_chains_and_probe_deadlines() {
+    use snac_rs::{
+        dns::{
+            privacy::{Policy, Probe, Route},
+            wire::Rdata,
+        },
+        time::ScriptedRandom,
+    };
+    let mut p = Policy::default();
+    let mut rng = ScriptedRandom::new([]);
+    let mut endpoints: Vec<_> = (1..=8)
+        .map(|n| format!("192.168.1.{n}:53").parse().unwrap())
+        .collect();
+    p.sync(&endpoints, false, 0).unwrap();
+    assert_eq!(p.count(), 8);
+    assert_eq!(p.poll(0).unwrap().len(), 16);
+    endpoints.push("192.168.1.9:53".parse().unwrap());
+    assert!(p.sync(&endpoints, false, 0).is_err());
+    assert_eq!(p.count(), 8);
+    p.poll(10000).unwrap();
+    assert!(
+        matches!(p.route(endpoints[0],10000),Route::Plain { reason } if reason.contains("timeout"))
+    );
+    let origin = endpoints[0];
+    let mut p = Policy::default();
+    p.sync(&[origin], false, 0).unwrap();
+    for step in 0..17 {
+        let probe = p
+            .poll(step)
+            .unwrap()
+            .into_iter()
+            .find_map(|a| if let Probe::Ddr(d) = a { Some(d) } else { None })
+            .expect("bounded alias continuation");
+        let mut m = ddr();
+        m.questions[0].name = probe.name.clone();
+        let mut alias = designation(0, 853);
+        alias.name = probe.name;
+        if let Rdata::Svcb { target, .. } = &mut alias.data {
+            *target = format!("_dns.a{step}.example.").parse().unwrap();
+        }
+        m.answers.push(alias);
+        let result = p.complete_ddr(probe.id, &m, step, &mut rng);
+        assert_eq!(result.is_ok(), step < 16);
+    }
+    assert!(p
+        .poll(17)
+        .unwrap()
+        .iter()
+        .all(|a| !matches!(a, Probe::Ddr(_))));
+}
