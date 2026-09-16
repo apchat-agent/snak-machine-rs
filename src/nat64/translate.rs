@@ -1,4 +1,5 @@
 mod errors;
+mod headers;
 use super::{bindings::Bindings, invalid, usable};
 use crate::{
     ipv4,
@@ -52,25 +53,14 @@ impl Translator {
         source_allowed: impl Fn(Ipv6Addr) -> bool,
         reachable: impl Fn(Ipv4Addr) -> bool,
     ) -> io::Result<Vec<Tx>> {
-        let e = wire::envelope(FrameKind::RawIpv6, packet).map_err(|_| invalid())?;
-        if e.packet.len() != packet.len()
-            || ![6, 17, 58].contains(&e.next_header)
-            || e.hop_limit <= 1
-            || e.payload.len() > 65515
-        {
+        let mut e = wire::envelope(FrameKind::RawIpv6, packet).map_err(|_| invalid())?;
+        if e.packet.len() != packet.len() {
             return Err(invalid());
         }
-        let protocol = e.next_header;
-        if protocol == 58 && e.payload.first().is_some_and(|kind| *kind < 128) {
-            if !source_allowed(e.source) {
-                return Ok(vec![]);
-            }
-            return self.error6(&e, now);
-        }
-        let (sport, dport) = ports(protocol, e.payload)?;
-        if (protocol == 17 && e.payload[6..8] == [0, 0])
-            || wire::checksum(e.source, e.destination, protocol, e.payload) != 0
-        {
+        let (protocol, offset, problem) = headers::transport6(packet)?;
+        e.next_header = protocol;
+        e.payload = &packet[offset..];
+        if e.payload.len() > 65515 {
             return Err(invalid());
         }
         let Some(pool) = self.ipv4 else {
@@ -90,6 +80,30 @@ impl Translator {
         let dest = Ipv4Addr::from(<[u8; 4]>::try_from(&e.destination.octets()[12..]).unwrap());
         if !ipv4::unicast(dest) || (dest != pool && !reachable(dest)) {
             return Ok(vec![]);
+        }
+        if protocol == 58 && e.payload.first().is_some_and(|kind| *kind < 128) {
+            if e.hop_limit <= 1 || problem.is_some() {
+                return Ok(vec![]);
+            }
+            return self.error6(&e, now);
+        }
+        if let Some(pointer) = problem {
+            return self.generate6(&e, 4, 0, pointer, now);
+        }
+        if ![6, 17, 58].contains(&protocol) {
+            return self.generate6(&e, 1, 4, 0, now);
+        }
+        let (sport, dport) = ports(protocol, e.payload)?;
+        if (protocol == 17 && e.payload[6..8] == [0, 0])
+            || wire::checksum(e.source, e.destination, protocol, e.payload) != 0
+        {
+            return Err(invalid());
+        }
+        if e.hop_limit <= 1 {
+            return self.generate6(&e, 3, 0, 0, now);
+        }
+        if e.payload.len() + 20 > 1500 && dest != pool {
+            return self.generate6(&e, 2, 0, 1520, now);
         }
         let remote = SocketAddrV4::new(dest, dport);
         let assigned = if protocol == 17 {
@@ -175,12 +189,14 @@ impl Translator {
             || ![1, 6, 17].contains(&p.protocol)
             || p.fragment_offset != 0
             || p.more_fragments
-            || p.ttl <= 1
         {
             return Err(invalid());
         }
         let protocol = p.protocol;
         if protocol == 1 && p.payload.first().is_some_and(|kind| ![0, 8].contains(kind)) {
+            if p.ttl <= 1 {
+                return Ok(vec![]);
+            }
             return self.error4(&p, now);
         }
         let (sport, dport) = ports(protocol, p.payload)?;
@@ -193,6 +209,21 @@ impl Translator {
             return Ok(vec![]);
         }
         let remote = SocketAddrV4::new(p.source, sport);
+        if p.ttl <= 1 {
+            let (port, remote) = if protocol == 1 {
+                (sport, SocketAddrV4::new(p.source, 0))
+            } else {
+                (dport, remote)
+            };
+            if self
+                .bindings
+                .error_in(protocol, port, remote, now)
+                .is_none()
+            {
+                return Ok(vec![]);
+            }
+            return self.generate4(&p, 11, 0, 0, now);
+        }
         let target = if protocol == 17 {
             self.bindings.udp_in(dport, remote, now)?
         } else if protocol == 1 {

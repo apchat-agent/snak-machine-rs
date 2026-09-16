@@ -1686,3 +1686,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   successful translation alone consumes rate credit. The fixed window/count
   fields implement PLAN2's required error rate bound; no per-sender table or
   dependency. Interface MTUs, extension headers and fragment integration follow.
+- Header RED `3b97fcd` fails executably because extension headers and expired
+  hops are rejected without translation/error output. GREEN passes **392 tests**
+  and all-feature clippy. Bounded extension traversal validates lengths, option
+  boundaries and ordering, skips permitted headers and reports nonzero Routing
+  Segments Left with the correct pointer. Hop expiry and unsupported IPv6
+  transports generate checked, rate-limited ICMP without allocating bindings;
+  errors about errors are suppressed. Oversized DF output reports adjusted MTU.
+  No new state or dependency. Actual interface MTUs and reassembly follow.

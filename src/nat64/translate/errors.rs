@@ -307,3 +307,43 @@ fn quote6_to_4(q: &Quote6<'_>, src: Ipv4Addr, dst: Ipv4Addr, port: u16) -> io::R
     out[10..12].copy_from_slice(&c.to_be_bytes());
     Ok(out)
 }
+impl Translator {
+    pub(super) fn generate6(
+        &mut self,
+        e: &wire::Envelope<'_>,
+        kind: u8,
+        code: u8,
+        value: u32,
+        now: u64,
+    ) -> io::Result<Vec<Tx>> {
+        if !self.allow_error(now) {
+            return Ok(vec![]);
+        }
+        let mut body = vec![kind, code, 0, 0];
+        body.extend(value.to_be_bytes());
+        body.extend(e.packet.iter().take(1232));
+        Ok(vec![Tx {
+            link: Link::Stub,
+            packet: encode6(58, e.destination, e.source, 0, 64, body)?,
+        }])
+    }
+    pub(super) fn generate4(
+        &mut self,
+        p: &ipv4::wire::Packet<'_>,
+        kind: u8,
+        code: u8,
+        value: u32,
+        now: u64,
+    ) -> io::Result<Vec<Tx>> {
+        if !self.allow_error(now) {
+            return Ok(vec![]);
+        }
+        let mut body = vec![kind, code, 0, 0];
+        body.extend(value.to_be_bytes());
+        body.extend(p.bytes.iter().take(548));
+        Ok(vec![Tx {
+            link: Link::Ail,
+            packet: ipv4::wire::encode(p.destination, p.source, 1, 64, &icmp4_checksum(body))?,
+        }])
+    }
+}
