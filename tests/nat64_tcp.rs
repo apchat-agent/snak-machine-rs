@@ -481,3 +481,69 @@ fn s20_native_tcp_handshake_data_and_half_close_use_translation_without_endpoint
     assert!(d.stack_mut(Link::Ail).unwrap().connections().is_empty());
     assert!(d.stack_mut(Link::Stub).unwrap().connections().is_empty());
 }
+
+#[test]
+fn s20_tcp_saved_syn_quotes_count_toward_the_shared_byte_budget_before_admission() {
+    let mut t = translator();
+    let mut rng = ScriptedRandom::new([]);
+    let mut ports = vec![];
+    for h in 1..=4096 {
+        ports.push(
+            t.bindings
+                .tcp_out(host(h), 40000, remote(443), SYN, 0, &mut rng)
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let initial = t.bindings.charged_bytes();
+    let packet = |assigned, remote_port| {
+        let mut p = packets::tcp4(
+            [198, 51, 100, 7].into(),
+            [192, 0, 2, 10].into(),
+            remote_port,
+            assigned,
+            SYN,
+            &[],
+        );
+        p.splice(20..20, [1; 40]);
+        p[0] = 0x4f;
+        p[2..4].copy_from_slice(&80u16.to_be_bytes());
+        p[10..12].fill(0);
+        let c = packets::sum(&p[..60]);
+        p[10..12].copy_from_slice(&c.to_be_bytes());
+        p
+    };
+    for (n, p) in ports.iter().enumerate() {
+        t.inbound(&packet(*p, 1000), 1).unwrap();
+        assert_eq!(
+            t.bindings.charged_bytes(),
+            initial + (n + 1) * (256 + 68),
+            "saved IPv4 option bytes must be charged"
+        );
+    }
+    t.bindings.expire(TRANS);
+    assert_eq!(t.bindings.counts(), (4096, 4096, 4096));
+    let mut rejected = 0;
+    for p in &ports {
+        let before = t.bindings.counts();
+        if t.inbound(&packet(*p, 1001), TRANS).is_err() {
+            rejected += 1;
+            assert_eq!(t.bindings.counts(), before, "byte-cap refusal is atomic");
+        }
+        assert!(t.bindings.charged_bytes() <= 4 * 1024 * 1024);
+    }
+    assert!(
+        rejected > 0,
+        "byte cap must limit maximum-size SYN quotes before count caps"
+    );
+    t.bindings.expire(TRANS + 1);
+    assert!(t.bindings.charged_bytes() <= 4 * 1024 * 1024);
+    // An existing surviving session still progresses and releases its quote.
+    let p = ports[0];
+    let before = t.bindings.charged_bytes();
+    t.bindings
+        .tcp_out(host(1), 40000, remote(1001), SYN | ACK, TRANS + 2, &mut rng)
+        .unwrap();
+    assert_eq!(t.bindings.charged_bytes(), before - 68);
+    assert!(t.bindings.owns(6, p));
+}
