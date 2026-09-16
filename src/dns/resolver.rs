@@ -95,6 +95,7 @@ struct Cache {
 pub struct Resolver {
     additional_a: bool,
     zones: Option<super::inventory::Zones>,
+    inventory: Option<super::inventory::Inventory>,
     local_zones: Vec<Name>,
     upstreams: Vec<SocketAddr>,
     pending: BTreeMap<u64, Pending>,
@@ -114,6 +115,7 @@ impl Resolver {
         Self {
             additional_a,
             zones: None,
+            inventory: None,
             local_zones: vec![],
             upstreams: vec![],
             pending: BTreeMap::new(),
@@ -136,13 +138,37 @@ impl Resolver {
         {
             return Err(io::Error::other("cannot change active DNS namespaces"));
         }
+        let inventory = super::inventory::Inventory::new(zones.clone())?;
         let proxy = zones.proxy()?;
         let validator =
             Validator::new(std::slice::from_ref(&zones.registrar)).map_err(|_| invalid())?;
         self.set_local_zones(&[zones.registrar.clone(), zones.hostname.clone()])?;
         self.discovery = Some(crate::discovery_proxy::Proxy::new(proxy));
         self.srp_validator = validator;
+        self.inventory = Some(inventory);
         self.zones = Some(zones);
+        Ok(())
+    }
+    pub fn set_service_ready(
+        &mut self,
+        addresses: &[IpAddr],
+        dns: Option<u16>,
+        tls: Option<u16>,
+    ) -> io::Result<()> {
+        if let Some(i) = &mut self.inventory {
+            let registered = self.registrar.is_some();
+            i.set_ready(
+                addresses,
+                dns.filter(|_| registered),
+                tls.filter(|_| registered),
+            )?;
+        }
+        Ok(())
+    }
+    pub fn set_inventory_contexts(&mut self, contexts: &[Name]) -> io::Result<()> {
+        if let Some(i) = &mut self.inventory {
+            i.set_contexts(contexts)?;
+        }
         Ok(())
     }
     pub fn zones(&self) -> Option<&super::inventory::Zones> {
@@ -484,6 +510,24 @@ impl Resolver {
                     &answer(q)?,
                     answer,
                 )?]);
+            }
+        }
+        let ds_exception = in_zone(&m.questions[0].name, &"service.arpa.".parse().unwrap())
+            && m.questions[0].kind == 43
+            && m.additional
+                .iter()
+                .any(|r| r.kind == 41 && r.ttl & 0x8000 != 0);
+        if !ds_exception {
+            if let Some(inventory) = &self.inventory {
+                if let Some(mut answer) = inventory.answer(&m.questions[0], now)? {
+                    answer.flags |= m.flags & 0x110;
+                    return Ok(vec![self.answer_local(
+                        client,
+                        bytes,
+                        &answer.encode()?,
+                        |q| inventory.answer(q, now)?.ok_or_else(invalid)?.encode(),
+                    )?]);
+                }
             }
         }
         let key = query_key(&m)?;

@@ -45,14 +45,7 @@ impl<I: PacketIo> Driver<I> {
         }
         let ipv4 = crate::ipv4::Ipv4::new(router.links[0].mac.unwrap_or(router.identity.macs[0]));
         let mut dns = crate::dns::resolver::Resolver::new(true);
-        let hostname = format!("snac-{:016x}.home.arpa.", router.identity.iids[1]);
-        dns.enable_discovery(crate::discovery_proxy::Zone::new(
-            "default.service.arpa.".parse().unwrap(),
-            None,
-            &[],
-            &[hostname.parse().unwrap()],
-            "hostmaster.home.arpa.".parse().unwrap(),
-        )?)?;
+        dns.configure_zones(crate::dns::inventory::Zones::for_identity(&router.identity))?;
         Ok(Self {
             router,
             io,
@@ -481,6 +474,14 @@ impl<I: PacketIo> Driver<I> {
             .map(|((_, p), _)| *p)
             .collect();
         self.dns.set_srp_sources(&sources)?;
+        let stub = &self.stacks.as_ref().unwrap()[1];
+        self.dns.set_service_ready(
+            stub.addresses(),
+            stub.port_owned(6, 53).then_some(53),
+            (stub.port_owned(6, 853) && self.dns_service.tls_enabled()).then_some(853),
+        )?;
+        self.dns
+            .set_inventory_contexts(&self.dns_discovery.domains(now))?;
         self.dns.sync_advertising(&mut self.mdns, now, rng)?;
         let replies = self.dns.poll_discovery_with_source(
             &mut self.mdns,

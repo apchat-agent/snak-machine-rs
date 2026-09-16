@@ -1305,3 +1305,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - PLAN2 ADDENDUM 6 corrects `_dnssd-srp._udp` to `_dnssd-srp._tcp`, citing
   draft sections 5.5.2/5.5.3/7 and RFC 9665's registered service transports.
   UDP UPDATE remains supported. Native resolver/readiness integration follows.
+- S16 native RED `6305950` exposes missing inventory and obsolete native zone
+  assumptions. GREEN passes **307 tests** and all-feature clippy. Driver now
+  activates canonical defaults and derives registrar publication readiness from
+  its actual stub addresses, TCP listeners, TLS configuration and enabled SRP
+  registrar. Native UDP legacy browsing/direct SRV discovery supplies the DoT
+  port used by a real TLS session and signed registration. Stub-link loss
+  removes the advertised endpoint. The resolver serves inventory locally.
+- Obsolete test expectations changed in that RED, per the lane-owner rule:
+  `s10_driver_dot_pipeline_large_query_and_update_dispatch` and
+  `s12_driver_udp_and_tcp_commit_before_ack_and_keep_local_dns_during_ail_loss`
+  formerly queried/looked up persisted host/service records under
+  default.service.arpa; they now use srp.snac-<site-id>.home.arpa. Signed UPDATE
+  requests still use the original alias. All other assertions are retained.
+  Basis: PLAN2 section 2.2 and draft sections 5.5.2/8 (RFC 9665 3.1.2's update
+  alias, complementary Discovery Proxy QUERY). No dependency; the inventory
+  owner stores the planned static configuration/readiness, deriving responses.
