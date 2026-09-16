@@ -480,8 +480,9 @@ impl<I: PacketIo> Driver<I> {
             stub.port_owned(6, 53).then_some(53),
             (stub.port_owned(6, 853) && self.dns_service.tls_enabled()).then_some(853),
         )?;
-        self.dns
-            .set_inventory_contexts(&self.dns_discovery.domains(now))?;
+        let contexts = self.dns_discovery.domains(now);
+        self.dns.set_inventory_contexts(&contexts)?;
+        self.dns.configure_browsing(&contexts, now)?;
         self.dns.sync_advertising(&mut self.mdns, now, rng)?;
         let replies = self.dns.poll_discovery_with_source(
             &mut self.mdns,

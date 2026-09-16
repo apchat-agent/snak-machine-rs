@@ -1443,3 +1443,11 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   forwarding cache; endpoint/context removal cancels pending evidence. The
   new transaction-purpose variant records the planned internal owner. No
   dependency. Native scheduling and end-to-end encrypted browsing follow.
+- S17 native enumeration RED `b0e9009` confirms missing scheduling/context
+  wiring. GREEN passes **338 tests** and all-feature clippy. Live DNSSL/DHCP
+  search contexts now start enumeration and cancel it on withdrawal; the shared
+  service executes these queries using the selected upstream transport. A
+  native packet/TLS fixture learns a legacy domain over a reused encrypted
+  stream and returns it alongside both local zones to a stub UDP client.
+  No new field or dependency. Interface/certificate interoperability still
+  needs privileged acceptance; remaining S17 transport-bound checks follow.

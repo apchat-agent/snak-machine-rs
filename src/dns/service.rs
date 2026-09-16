@@ -87,6 +87,7 @@ impl Service {
         r.reset_crypto_budget();
         self.queue(r.tick(now, rng)?);
         let probes = r.poll_privacy(now, rng)?;
+        r.poll_browsing(now, rng)?;
         let actions = self.upstream_tls.poll(r, &mut stacks[0], now, rng)?;
         self.queue(actions);
         for probe in probes {
