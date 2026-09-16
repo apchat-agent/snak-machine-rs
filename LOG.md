@@ -1379,3 +1379,12 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   sixteen alias edges/seventeen names and fixed probe deadlines. Endpoint
   state stores desired/working evidence separately from pending probes;
   these token/deadline/path fields implement PLAN2's scoped policy. No dependency.
+- S17 resolver RED `2cbb269` confirms missing policy/transaction integration.
+  GREEN passes **323 tests** and all-feature clippy. Resolver-owned DDR control
+  transactions share pending/byte limits, survive unrelated client cancellation
+  and feed only their bound policy token. Normal queries select the validated
+  encrypted endpoint and retain the original resolver identity. A failed TLS
+  exchange updates policy and issues a fresh plaintext retry; explicit alternate
+  configuration creates no probes. Query transport/provenance and transaction
+  purpose fields implement the planned upstream owner; no dependency. Native
+  transport execution follows.

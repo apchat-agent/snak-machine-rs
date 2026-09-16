@@ -1,5 +1,6 @@
 //! Bounded forwarding transactions. Packet and stream adapters execute the returned actions.
 mod discovery;
+mod privacy;
 use super::wire::{Context, Message, Name, Question, Rdata, Record};
 use crate::{
     srp::wire::{CryptoBudget, Error as SrpError, Update, Validator},
@@ -46,6 +47,8 @@ impl Client {
 #[derive(Clone, Debug)]
 pub struct UpstreamQuery {
     pub exchange: u64,
+    pub origin: SocketAddr,
+    pub tls: Option<super::privacy::Designation>,
     pub server: SocketAddr,
     pub source_port: u16,
     pub tcp: bool,
@@ -62,7 +65,12 @@ struct Waiter {
     id: u16,
     limit: usize,
 }
+enum Purpose {
+    Client,
+    Ddr(u64),
+}
 struct Pending {
+    purpose: Purpose,
     key: Vec<u8>,
     original: Message,
     query: UpstreamQuery,
@@ -94,6 +102,7 @@ struct Cache {
 }
 pub struct Resolver {
     additional_a: bool,
+    privacy: Option<super::privacy::Policy>,
     zones: Option<super::inventory::Zones>,
     inventory: Option<super::inventory::Inventory>,
     local_zones: Vec<Name>,
@@ -114,6 +123,7 @@ impl Resolver {
     pub fn new(additional_a: bool) -> Self {
         Self {
             additional_a,
+            privacy: None,
             zones: None,
             inventory: None,
             local_zones: vec![],
@@ -339,7 +349,8 @@ impl Resolver {
         for p in self.pending.values_mut() {
             p.waiters.retain(|w| w.client.connection != Some(id));
         }
-        self.pending.retain(|_, p| !p.waiters.is_empty());
+        self.pending
+            .retain(|_, p| !p.waiters.is_empty() || !matches!(p.purpose, Purpose::Client));
         for p in self.discovered.values_mut() {
             p.waiters.retain(|w| w.client.connection != Some(id));
         }
@@ -384,6 +395,7 @@ impl Resolver {
             .values()
             .map(|p| p.retry.min(p.deadline))
             .chain(self.cache.values().map(|c| c.expires))
+            .chain(self.privacy.as_ref().and_then(|p| p.next_deadline()))
             .chain(self.discovery.as_ref().and_then(|d| d.next_deadline(0)))
             .chain(self.registry().and_then(|r| r.next_deadline()))
             .chain(
@@ -604,8 +616,9 @@ impl Resolver {
         if self.pending_count() >= PENDING {
             return Err(capacity());
         }
-        let query = self.make_query(bytes, self.upstreams[0], rng)?;
+        let query = self.make_query(bytes, self.upstreams[0], now, rng)?;
         let p = Pending {
+            purpose: Purpose::Client,
             key,
             question: m.questions[0].clone(),
             original: m,
@@ -627,9 +640,18 @@ impl Resolver {
     fn make_query(
         &mut self,
         bytes: &[u8],
-        server: SocketAddr,
+        origin: SocketAddr,
+        now: u64,
         rng: &mut impl RandomSource,
     ) -> io::Result<UpstreamQuery> {
+        let tls = self
+            .privacy
+            .as_ref()
+            .and_then(|p| match p.route(origin, now) {
+                super::privacy::Route::Tls(t) => Some(t),
+                _ => None,
+            });
+        let server = tls.as_ref().map_or(origin, |t| t.endpoint);
         let mut random = [0; 4];
         rng.fill(&mut random)?;
         let id = u16::from_le_bytes([random[0], random[1]]);
@@ -644,9 +666,11 @@ impl Resolver {
         bytes[3] &= !0x20;
         Ok(UpstreamQuery {
             exchange: self.next,
+            origin,
+            tcp: tls.is_some() || bytes.len() > 4096,
+            tls,
             server,
             source_port,
-            tcp: bytes.len() > 4096,
             bytes,
         })
     }
@@ -695,7 +719,7 @@ impl Resolver {
                 return self.continue_additional(Discovered::from_pending(p), next, base, now, rng);
             }
             let b = augment(&base, &m, &p.question.name).unwrap_or(base);
-            return self.finish(p, b, now);
+            return self.finish(p, b, now, rng);
         }
         if let Some(aq) = additional_question(&m, &p.question, self.additional_a) {
             return self.continue_additional(
@@ -706,9 +730,23 @@ impl Resolver {
                 rng,
             );
         }
-        self.finish(p, bytes.to_vec(), now)
+        self.finish(p, bytes.to_vec(), now, rng)
     }
-    fn finish(&mut self, p: Pending, b: Vec<u8>, now: u64) -> io::Result<Vec<Action>> {
+    fn finish(
+        &mut self,
+        p: Pending,
+        b: Vec<u8>,
+        now: u64,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Action>> {
+        if let Purpose::Ddr(token) = p.purpose {
+            if let Some(policy) = &mut self.privacy {
+                if let Ok(m) = Message::parse(&b, Context::Unicast) {
+                    let _ = policy.complete_ddr(token, &m, now, rng);
+                }
+            }
+            return Ok(vec![]);
+        }
         if p.forward_cache {
             self.store(p.key, &b, now)?;
         }
@@ -813,14 +851,14 @@ impl Resolver {
                     Some(b) => b,
                     None => failure(&p.original, 2)?,
                 };
-                out.extend(self.finish(p, b, now)?);
+                out.extend(self.finish(p, b, now, rng)?);
                 continue;
             }
             if now >= p.retry && !p.query.tcp {
                 p.attempt += 1;
                 let index = usize::from(p.attempt) % self.upstreams.len().max(1);
                 let server = self.upstreams.get(index).copied().unwrap_or(p.query.server);
-                let q = self.make_query(&p.query.bytes, server, rng)?;
+                let q = self.make_query(&p.query.bytes, server, now, rng)?;
                 p.query = q.clone();
                 p.retry = now
                     .saturating_add(1000u64 << p.attempt.min(3))

@@ -227,8 +227,9 @@ impl Resolver {
         let mut m = Message::new(0, 0x100 | (p.original.flags & 0x10));
         m.questions.push(question.clone());
         m.additional = p.original.additional.clone();
-        let query = self.make_query(&m.encode()?, self.upstreams[0], rng)?;
+        let query = self.make_query(&m.encode()?, self.upstreams[0], now, rng)?;
         let pending = Pending {
+            purpose: Purpose::Client,
             key: p.key,
             original: p.original,
             query: query.clone(),
