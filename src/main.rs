@@ -171,7 +171,7 @@ fn run() -> io::Result<()> {
             })
             .collect();
         let status = format!(
-            "{:?}; AIL {:?} up={}; stub {:?} up={}; PD {:?}; default={}; prefixes={prefixes:?}; NAT64 policy={:?}",
+            "{:?}; AIL {:?} up={}; stub {:?} up={}; PD {:?}; default={}; prefixes={prefixes:?}; NAT64 policy={:?} selection={:?}",
             r.lifecycle,
             r.state(Link::Ail),
             r.links[0].up,
@@ -180,6 +180,7 @@ fn run() -> io::Result<()> {
             r.pd.state,
             r.default_lifetime(now) > 0,
             r.nat64.policy(),
+            r.nat64.status(),
         );
         if status != last_status {
             eprintln!("{now}ms {status}");

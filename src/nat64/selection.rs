@@ -62,6 +62,7 @@ pub struct Selector {
     local: Prefix,
     promised: BTreeMap<Prefix, (Source, u64, bool)>,
     suppressed: bool,
+    status: (Mode, &'static str),
     blocked: std::collections::BTreeSet<Prefix>,
 }
 impl Selector {
@@ -77,6 +78,7 @@ impl Selector {
             local,
             promised: BTreeMap::new(),
             suppressed: false,
+            status: (Mode::None, "awaiting service readiness"),
             blocked: Default::default(),
         })
     }
@@ -107,6 +109,11 @@ impl Selector {
                 .map(|(p, _)| *p),
         );
         out
+    }
+    /// Last selection made for a native service advertisement. Diagnostic only;
+    /// successful advertisement history remains the authority for promises.
+    pub fn status(&self) -> (Mode, &'static str) {
+        self.status
     }
     pub fn local_prefix(&self) -> Prefix {
         self.local
@@ -259,6 +266,7 @@ impl Selector {
                 lifetime: life.min(u64::from(u32::MAX)) as u32,
             });
         }
+        self.status = (decision.mode, decision.reason);
         decision
     }
     fn select_active(

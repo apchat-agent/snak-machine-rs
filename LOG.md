@@ -1808,3 +1808,28 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   per-entry byte charges still cover those fixed-size keys. No dependency.
 - Infrastructure lifetimes now use both the successful PIO deadline and the
   current lease validity, so a shortening takes effect in that same RA.
+- Scenario RED `ea747c0` and `ba73903` require missing mode diagnostics and
+  compose the production paths; `d1ec6ac` corrects the client fixture to wait
+  for TCP establishment before TLS (RED rechecked without implementation).
+  GREEN passes **421 tests** and all-feature clippy. Bounded status now reports
+  the last RA selection mode/reason alongside policy; it does not replace
+  successful advertisement history or authorize forwarding.
+- The complete IPv4-only native scenario discovers RDNSS and the DoT registrar,
+  negotiates TLS, commits a signed SRP update, observes IPv4 AIL mDNS, obtains
+  A-in-Additional, synthesizes /96 on the host and exchanges UDP/TCP/Echo.
+  Another scenario completes DHCPv6 PD, exports infrastructure PREF64 and
+  forwards through an in-process translator peer to the PD OSNR. No-PD mode
+  stays silent until DHCPv4 and conflict detection establish IPv4 readiness.
+- Additional native scenarios cover DHCP absence/IPv4LL-only service access
+  without an invented Internet route; two-router peer suppression and takeover;
+  carrier loss with zero NAT lifetime while signed registration, durable claims
+  and local DNS remain available. Earlier S07/S10–S17/S19–S22 fixtures remain
+  the detailed queue, DAD, TCP, TLS fallback/recovery, TSR coexistence, failed-send,
+  PD T2, lease refresh and administrative-policy regressions. Together they cover
+  S23's eight scenario groups, with the new compositions in conformance.rs.
+- S23 is complete. **needs privileged acceptance:** all composed scenarios on
+  physical links with independent DHCP/DNS/SRP/DoT/mDNS and NAT64 peers, including
+  crash durability on deployed filesystems and real carrier/MTU changes. The
+  rootless suite uses actual signatures/TLS/wire packets through Driver, not
+  signature or translation bypasses. No dependency added; mode/reason is the
+  bounded diagnostic state planned in §4.2.
