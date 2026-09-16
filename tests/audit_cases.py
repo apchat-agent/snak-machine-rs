@@ -66,14 +66,31 @@ class LedgerTests(unittest.TestCase):
                 with self.subTest(attrs=attrs), self.assertRaises(ca.AuditError):
                     ca.audit(draft, plan, rows, root, expected_ids={"R001", "R002"})
 
-    def test_repository_provisional_inventory(self):
+    def test_complete_rejects_missing_partial_and_omitted_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            draft, plan, rows = self.fixture(root)
+            rows[1] = dict(rows[0], id="R002")
+            for status in ["MISSING", "PARTIAL"]:
+                bad = [rows[0], dict(rows[1], status=status)]
+                with self.subTest(status=status), self.assertRaises(ca.AuditError):
+                    ca.audit(draft, plan, bad, root, complete=True, expected_ids={"R001", "R002"})
+            with self.assertRaises(ca.AuditError):
+                ca.audit(draft, plan, rows[:1], root, complete=True, expected_ids={"R001", "R002"})
+            (root / "tests/sample.rs").write_text("// deliberately deleted closure test\n")
+            with self.assertRaises(ca.AuditError):
+                ca.audit(draft, plan, rows, root, complete=True, expected_ids={"R001", "R002"})
+
+    def test_repository_complete_inventory(self):
         args = [sys.executable, str(ROOT / "scripts/conformance_audit.py")]
         p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("103", p.stdout)
         self.assertIn("112", p.stdout)
         p = subprocess.run(args + ["--require-complete"], cwd=ROOT, capture_output=True, text=True)
-        self.assertNotEqual(p.returncode, 0, "unfinished service rows must not pass final audit")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        p = subprocess.run(args + ["--matrix", "REVIEW.md", "--require-complete"], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
 
 class DependencyTests(unittest.TestCase):
