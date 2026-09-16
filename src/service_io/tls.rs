@@ -76,7 +76,7 @@ enum Phase {
     Failed,
 }
 pub struct Session {
-    connection: rustls::ServerConnection,
+    connection: rustls::Connection,
     started: u64,
     last: u64,
     phase: Phase,
@@ -86,7 +86,26 @@ pub struct Session {
 }
 impl Session {
     pub fn new(config: Arc<rustls::ServerConfig>, now: u64) -> io::Result<Self> {
-        let mut connection = rustls::ServerConnection::new(config).map_err(|_| invalid())?;
+        Self::with_connection(
+            rustls::Connection::Server(
+                rustls::ServerConnection::new(config).map_err(|_| invalid())?,
+            ),
+            now,
+        )
+    }
+    pub fn client(
+        config: Arc<rustls::ClientConfig>,
+        name: ServerName<'static>,
+        now: u64,
+    ) -> io::Result<Self> {
+        Self::with_connection(
+            rustls::Connection::Client(
+                rustls::ClientConnection::new(config, name).map_err(|_| invalid())?,
+            ),
+            now,
+        )
+    }
+    fn with_connection(mut connection: rustls::Connection, now: u64) -> io::Result<Self> {
         connection.set_buffer_limit(Some(8192));
         Ok(Self {
             connection,

@@ -1343,3 +1343,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   browsing with external SRP/DNS-SD clients, real listener/interface lifecycle
   and configured zone deployment. Infrastructure-provided browsing domains
   and upstream privacy follow in S17; RA announcement readiness closes in S22.
+
+### S17 — Infrastructure private DNS and browsing domains (in progress)
+
+- S17 TLS-client RED `bea2553` confirms the missing upstream TLS role.
+  GREEN passes **315 tests** and all-feature clippy. The existing bounded TLS
+  session now accepts a client connection with an explicit rustls policy;
+  handshake/idle/input/buffering limits apply to both roles. Self-signed
+  opportunistic DNS exchange succeeds, configured trust accepts the correct
+  hostname and rejects a different name, and malformed/stalled handshakes fail.
+  The connection enum records client/server role; no dependency. DDR policy,
+  native upstream integration and browsing-domain learning follow.
