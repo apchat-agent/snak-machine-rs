@@ -1754,3 +1754,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - Service inventory and two-entry resolver promise history implement PLAN2's
   readiness and withdrawal requirements; no field beyond the plan or dependency.
   Combined capacity, infrastructure/PD and transition coverage follow within S22.
+- Reservation RED `1027948` demonstrates optional mixed routes degrading a
+  working resolver/translator. GREEN passes **407 tests** and all-feature
+  clippy. Native stub exports reserve two RDNSS addresses, eight PREF64s and
+  their eight RIOs, plus the owned PIO envelope, before admitting learned
+  growth. Previously sent routes retain priority; omitted new routes produce
+  a capacity diagnostic. All options are encoded in one <=1280-byte RA.
+- Infrastructure PREF64 is exercised with a delegated OSNR and a resolved
+  next hop; lease revocation emits withdrawals. Shutdown emits zero RDNSS and
+  PREF64; AIL advertisements retain zero Router Lifetime and no stub services.
+  No dependency or new field. Admission-latch and churn checks follow.

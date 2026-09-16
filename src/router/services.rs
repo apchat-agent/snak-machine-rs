@@ -4,7 +4,7 @@ use crate::nat64::{Announcement, Readiness, Source};
 #[derive(Default)]
 pub(super) struct Services {
     // At most two installed resolver endpoints, and two outstanding promises.
-    resolvers: Vec<Ipv6Addr>,
+    pub(super) resolvers: Vec<Ipv6Addr>,
     dns_history: BTreeMap<Ipv6Addr, (Lifetime, u8)>,
     ipv4: Option<Time>,
     translator: bool,
@@ -147,13 +147,63 @@ impl Router {
                 .map(|(_, r)| deadline(r.valid))
                 .max()
         });
+        // Reserve future service withdrawals and the owned PIO envelope before
+        // admitting new learned routes. Existing successful promises always win.
+        let nat_prefixes: std::collections::BTreeSet<_> =
+            decision.routes.iter().map(|r| r.prefix).collect();
+        if !self.services.resolvers.is_empty() || !self.services.dns_history.is_empty() {
+            let reserved = 40
+                + 16
+                + usize::from(ad.mac.is_some()) * 8
+                + 8
+                + ad.pios.len().max(17) * 32
+                + 2 * 24
+                + 8 * (16 + 24);
+            let mut available = 1280usize.saturating_sub(reserved);
+            let mut admitted = vec![];
+            let mut candidates = vec![];
+            for r in ad
+                .rios
+                .drain(..)
+                .filter(|r| !nat_prefixes.contains(&r.prefix))
+            {
+                if self.advertised_routes.contains_key(&(Link::Stub, r.prefix)) {
+                    available = available
+                        .checked_sub(r.encode().len())
+                        .ok_or(WireError::Capacity)?;
+                    admitted.push(r);
+                } else {
+                    candidates.push(r);
+                }
+            }
+            let mut omitted = 0;
+            for r in candidates {
+                let size = r.encode().len();
+                if size <= available {
+                    available -= size;
+                    admitted.push(r);
+                } else {
+                    omitted += 1;
+                }
+            }
+            if omitted > 0 {
+                eprintln!(
+                    "{now}ms stub RA omits {omitted} new learned routes (service reservation)"
+                );
+            }
+            ad.rios = admitted;
+        }
         for route in decision.routes {
             ad.rios.retain(|r| r.prefix != route.prefix);
             ad.rios.push(route);
         }
         let dns: Vec<_> = dns.into_iter().collect();
         let pref64: Vec<_> = decision.announcements.iter().map(|a| a.pref64).collect();
-        ad.encode_services(&dns, &pref64)
+        let encoded = ad.encode_services(&dns, &pref64);
+        if encoded == Err(WireError::Capacity) {
+            self.nat64.announcement_failed(decision.mode, now);
+        }
+        encoded
     }
     pub(super) fn services_transmitted(
         &mut self,

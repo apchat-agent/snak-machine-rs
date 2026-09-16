@@ -677,8 +677,9 @@ impl Router {
             if self.state(link) != AilState::Unknown && self.links[link.index()].scheduler.due(now)
             {
                 let mut snap = self.snapshot(link, now);
-                if snap.rios.iter().map(|r| r.encode().len()).sum::<usize>()
-                    > Self::route_budget(link)
+                if (link == Link::Ail || self.services.resolvers.is_empty())
+                    && snap.rios.iter().map(|r| r.encode().len()).sum::<usize>()
+                        > Self::route_budget(link)
                 {
                     self.degrade(now, rng)?;
                     snap = self.snapshot(link, now);
