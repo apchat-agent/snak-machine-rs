@@ -231,12 +231,16 @@ fn s24_service_journal_rejects_invalid_local_domains_and_oversized_histories() {
         "N 2001:db8:: 96 0 1100 0\n".to_owned(),
         "N fd01:: 64 0 1100 0\n".into(),
         "E ::ffff:192.0.2.1 1100 3\n".into(),
-        (0..9)
-            .map(|i| format!("N fd01:{i:x}:0:ffff:: 96 0 1100 0\n"))
-            .collect(),
-        (0..3)
-            .map(|i| format!("E fd01::{:x} 1100 3\n", i + 1))
-            .collect(),
+        (0..9).fold(String::new(), |mut text, i| {
+            use std::fmt::Write;
+            writeln!(text, "N fd01:{i:x}:0:ffff:: 96 0 1100 0").unwrap();
+            text
+        }),
+        (0..3).fold(String::new(), |mut text, i| {
+            use std::fmt::Write;
+            writeln!(text, "E fd01::{:x} 1100 3", i + 1).unwrap();
+            text
+        }),
     ] {
         assert!(
             Router::restore(

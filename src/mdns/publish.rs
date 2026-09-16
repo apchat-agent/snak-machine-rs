@@ -511,7 +511,7 @@ impl Publisher {
         }))
     }
     pub fn sent(&mut self, token: u64, success: bool, now: Time) {
-        if !self.offered.as_ref().is_some_and(|(t, _)| *t == token) {
+        if self.offered.as_ref().is_none_or(|(t, _)| *t != token) {
             return;
         }
         match self.offered.take().unwrap().1 {

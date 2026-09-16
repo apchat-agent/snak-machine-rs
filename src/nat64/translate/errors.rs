@@ -231,7 +231,7 @@ impl<'a> Quote6<'a> {
             dest: Ipv6Addr::from(<[u8; 16]>::try_from(&b[24..40]).unwrap()),
             protocol,
             hop: b[7],
-            class: (b[0] & 15) << 4 | b[1] >> 4,
+            class: ((b[0] & 15) << 4) | (b[1] >> 4),
             len,
             payload: &b[offset..b.len().min(offset + len)],
             fragment,

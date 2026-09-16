@@ -178,7 +178,7 @@ impl Translator {
             };
             port
         };
-        let class = (packet[0] & 15) << 4 | packet[1] >> 4;
+        let class = ((packet[0] & 15) << 4) | (packet[1] >> 4);
         let mut payload = e.payload.to_vec();
         if protocol == 58 {
             payload[4..6].copy_from_slice(&assigned.to_be_bytes());

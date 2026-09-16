@@ -1870,3 +1870,16 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   native TLS/build lock entries are reported separately. No dependency added.
   S24 implementation/evidence is complete; final toolchain/platform verification
   and the required README/STATUS commit follow.
+
+### S24 — final toolchain compatibility refactor
+
+- Rust 1.85 clippy enables style diagnostics that the current toolchain no
+  longer reports. An isolated refactor adds explicit shift parentheses, uses
+  equivalent boolean expressions and writes hexadecimal/fixture strings
+  without collecting temporary formatted strings. No protocol behavior,
+  assertion, field, resource limit or dependency changes.
+- Rust 1.85 formatting and all-target/all-feature clippy with `-D warnings`
+  pass; both default and all-feature suites pass **432 Rust tests** plus
+  seven nested Python auditor cases. The focused conformance, hostile and
+  bounded suites also pass. All-feature build and all-target checks pass
+  for Linux, x86_64 macOS and aarch64 macOS with Rust 1.85.

@@ -623,7 +623,7 @@ impl Router {
                 && (!fresh
                     || (self.links[link.index()].scheduler.due(now)
                         && !self.confirmed_supplier(link, now)
-                        && !(link == Link::Stub && !self.pd.selected(now).is_empty())))
+                        && (link != Link::Stub || self.pd.selected(now).is_empty())))
             {
                 self.links[link.index()].state = AilState::BeginAdvertising;
                 self.links[link.index()].deprecate_at = None;

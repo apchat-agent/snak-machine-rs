@@ -104,7 +104,8 @@ fn cycle(d: &mut Driver<MemoryIo>, hosts: &mut [Stack; 2], now: u64, rng: &mut S
 fn registered(d: &Driver<MemoryIo>, relative: &str) -> String {
     let site: String = d.router.identity.site.address.octets()[1..6]
         .iter()
-        .map(|b| format!("{b:02x}"))
+        .flat_map(|b| [b >> 4, b & 15])
+        .map(|n| char::from(b"0123456789abcdef"[usize::from(n)]))
         .collect();
     format!("{relative}.srp.snac-{site}.home.arpa.")
 }

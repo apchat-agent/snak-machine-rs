@@ -430,8 +430,8 @@ impl<I: PacketIo> Driver<I> {
         {
             return Ok(false);
         }
-        if ![6, 17].contains(&t.protocol)
-            && !(t.protocol == 58 && t.bytes.first().is_some_and(|v| *v < 128))
+        if !([6, 17].contains(&t.protocol)
+            || t.protocol == 58 && t.bytes.first().is_some_and(|v| *v < 128))
         {
             return Ok(false);
         }

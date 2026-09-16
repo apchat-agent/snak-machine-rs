@@ -592,7 +592,10 @@ impl Router {
     }
 }
 pub(crate) fn hex(b: &[u8]) -> String {
-    b.iter().map(|v| format!("{v:02x}")).collect()
+    b.iter()
+        .flat_map(|v| [v >> 4, v & 15])
+        .map(|n| char::from(b"0123456789abcdef"[usize::from(n)]))
+        .collect()
 }
 pub(crate) fn unhex(s: &str) -> io::Result<Vec<u8>> {
     if s.len() % 2 != 0 || !s.is_ascii() {

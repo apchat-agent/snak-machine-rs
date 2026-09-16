@@ -19,7 +19,8 @@ impl Zones {
     pub fn for_identity(identity: &Identity) -> Self {
         let site: String = identity.site.address.octets()[1..6]
             .iter()
-            .map(|b| format!("{b:02x}"))
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|n| char::from(b"0123456789abcdef"[usize::from(n)]))
             .collect();
         let hostname: Name = format!("snac-{site}.home.arpa.").parse().unwrap();
         let mut labels = vec![b"srp".to_vec()];

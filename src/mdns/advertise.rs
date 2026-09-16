@@ -29,7 +29,8 @@ impl Mapping {
         }
         let label = dataset
             .iter()
-            .map(|b| format!("{b:02x}"))
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|n| char::from(b"0123456789abcdef"[usize::from(n)]))
             .collect::<String>()
             .into_bytes();
         let namespace = Name::from_labels(vec![label.clone(), b"local".to_vec()])?;

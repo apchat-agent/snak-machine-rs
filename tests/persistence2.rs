@@ -150,7 +150,8 @@ fn s03_journal_rejects_truncation_corruption_versions_and_excessive_bytes() {
             .encode()
             .unwrap()
             .iter()
-            .map(|b| format!("{b:02x}"))
+            .flat_map(|b| [b >> 4, b & 15])
+            .map(|n| char::from(b"0123456789abcdef"[usize::from(n)]))
             .collect::<String>()
     );
     assert!(Router::restore(legacy.as_bytes(), 0, 100000, &mut ScriptedRandom::new([])).is_ok());
