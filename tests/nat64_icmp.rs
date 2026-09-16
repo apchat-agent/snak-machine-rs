@@ -597,3 +597,179 @@ fn s21_hop_expiry_unsupported_protocol_and_pmtu_generate_bounded_errors_without_
     assert_eq!(packets::sum(&out[0].packet[20..]), 0);
     assert_eq!(t.bindings.next_deadline(), deadline);
 }
+#[test]
+fn s21_native_reassembles_out_of_order_fragments_and_refragments_with_original_ids() {
+    let mut d = native::driver(33, [192, 0, 2, 10].into());
+    d.router.links[0].mtu = 1280;
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, ip(7));
+    native::learn(&mut d, h, 20001);
+    d.io.output.clear();
+    let p = packets::udp6(h, target, 1234, 80, &[0x55; 2000]);
+    let first = packets::fragment6(&p, 0x12345678, 0, 1232, true);
+    let last = packets::fragment6(&p, 0x12345678, 1232, 776, false);
+    native::packet(&mut d, Link::Stub, &last, 20002);
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (0, 0, 0));
+    native::packet(&mut d, Link::Stub, &first, 20003);
+    native::arp(&mut d, [192, 0, 2, 1].into(), 20004);
+    let out = native::translated(&mut d, Link::Ail, 17);
+    assert_eq!(out.len(), 2);
+    let mut payload: Vec<u8> = vec![];
+    for (i, b) in out.iter().enumerate() {
+        assert!(b.len() <= 1280);
+        assert_eq!(&b[4..6], &[0x56, 0x78]);
+        assert_eq!(b[6] & 0x40, 0);
+        assert_eq!(b[8], 63);
+        assert_eq!(packets::sum(&b[..20]), 0);
+        assert_eq!(
+            usize::from(u16::from_be_bytes([b[6], b[7]]) & 0x1fff) * 8,
+            payload.len()
+        );
+        assert_eq!(b[6] & 0x20 != 0, i == 0);
+        payload.extend(&b[20..]);
+    }
+    assert_eq!(&payload[..6], &p[40..46]);
+    assert_eq!(&payload[8..], &p[48..]);
+    let reply = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, &[0x66; 2000]);
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::fragment4(&reply, 0x9876, 1232, 776, false),
+        20005,
+    );
+    d.step(20005, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 44).is_empty());
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::fragment4(&reply, 0x9876, 0, 1232, true),
+        20006,
+    );
+    d.step(20006, &mut ScriptedRandom::new([])).unwrap();
+    let out = native::translated(&mut d, Link::Stub, 44);
+    assert_eq!(out.len(), 2);
+    let mut complete = out[0][..40].to_vec();
+    complete[6] = 17;
+    complete[4..6].copy_from_slice(&2008u16.to_be_bytes());
+    for b in &out {
+        assert!(b.len() <= 1280);
+        assert_eq!(&b[44..48], &0x9876u32.to_be_bytes());
+        assert_eq!(b[7], 63);
+        complete.extend(&b[48..]);
+    }
+    assert!(packets::udp6_valid(&complete));
+    assert_eq!(&complete[48..], &[0x66; 2000]);
+    // An atomic IPv6 fragment still supplies IPv4 identification and clears DF.
+    let p = packets::udp6(h, target, 1234, 80, b"atomic");
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 0xffffabcd, 0, 14, false),
+        20007,
+    );
+    let out = native::translated(&mut d, Link::Ail, 17);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][4..8], &[0xab, 0xcd, 0, 0]);
+}
+#[test]
+fn s21_native_fragments_share_local_endpoint_capacity_reject_overlap_and_expire() {
+    let mut d = native::driver(34, [192, 0, 2, 10].into());
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, ip(7));
+    native::learn(&mut d, h, 20001);
+    d.io.output.clear();
+    let own = d.router.identity.link_local(Link::Stub);
+    let local = packets::udp6(h, own, 1234, 53, &[0; 24]);
+    for id in 0..64 {
+        native::packet(
+            &mut d,
+            Link::Stub,
+            &packets::fragment6(&local, id, 0, 8, true),
+            20002,
+        );
+    }
+    let p = packets::udp6(h, target, 1234, 80, &[0; 24]);
+    for (offset, length, more) in [(0, 16, true), (16, 16, false)] {
+        native::packet(
+            &mut d,
+            Link::Stub,
+            &packets::fragment6(&p, 100, offset, length, more),
+            20003,
+        );
+    }
+    assert_eq!(
+        d.nat64.as_ref().unwrap().bindings.counts(),
+        (0, 0, 0),
+        "translation shares the full endpoint pool"
+    );
+    // On timeout, a new fragmented flow succeeds through the same pool.
+    d.step(80003, &mut ScriptedRandom::new([])).unwrap();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 101, 0, 16, true),
+        80004,
+    );
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 101, 8, 24, false),
+        80005,
+    );
+    assert_eq!(
+        d.nat64.as_ref().unwrap().bindings.counts(),
+        (0, 0, 0),
+        "overlap invalidates whole datagram"
+    );
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 102, 16, 16, false),
+        80006,
+    );
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 102, 0, 16, true),
+        80007,
+    );
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (1, 1, 1));
+}
+#[test]
+fn s21_native_df_pmtu_errors_use_actual_link_mtus_without_refreshing_sessions() {
+    let mut d = native::driver(35, [192, 0, 2, 10].into());
+    d.router.links[0].mtu = 1280;
+    d.router.links[1].mtu = 1280;
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, ip(7));
+    native::learn(&mut d, h, 20001);
+    d.io.output.clear();
+    let big = packets::udp6(h, target, 1234, 80, &[0; 1300]);
+    native::packet(&mut d, Link::Stub, &big, 20002);
+    let out = native::translated(&mut d, Link::Stub, 58);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][40..42], &[2, 0]);
+    assert_eq!(&out[0][44..48], &1300u32.to_be_bytes());
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (0, 0, 0));
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(h, target, 1234, 80, b"open"),
+        20003,
+    );
+    native::arp(&mut d, [192, 0, 2, 1].into(), 20004);
+    d.io.output.clear();
+    let deadline = d.nat64.as_ref().unwrap().bindings.next_deadline();
+    let mut reply = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, &[0; 1300]);
+    reply[6] = 0x40;
+    reply[10..12].fill(0);
+    let c = packets::sum(&reply[..20]);
+    reply[10..12].copy_from_slice(&c.to_be_bytes());
+    native::packet(&mut d, Link::Ail, &reply, 20005);
+    d.step(20005, &mut ScriptedRandom::new([])).unwrap();
+    let out = native::translated(&mut d, Link::Ail, 1);
+    assert_eq!(out.len(), 1);
+    assert_eq!(&out[0][20..22], &[3, 4]);
+    assert_eq!(&out[0][26..28], &1260u16.to_be_bytes());
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.next_deadline(), deadline);
+}

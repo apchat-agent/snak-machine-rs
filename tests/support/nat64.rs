@@ -181,3 +181,24 @@ pub fn icmp6_valid(b: &[u8]) -> bool {
     p.extend(&b[40..]);
     sum(&p) == 0
 }
+pub fn fragment6(p: &[u8], id: u32, offset: usize, length: usize, more: bool) -> Vec<u8> {
+    let mut h = p[..40].to_vec();
+    h[6] = 44;
+    h[4..6].copy_from_slice(&((length + 8) as u16).to_be_bytes());
+    h.extend([p[6], 0]);
+    h.extend(((offset as u16) | u16::from(more)).to_be_bytes());
+    h.extend(id.to_be_bytes());
+    h.extend(&p[40 + offset..40 + offset + length]);
+    h
+}
+pub fn fragment4(p: &[u8], id: u16, offset: usize, length: usize, more: bool) -> Vec<u8> {
+    let mut h = p[..20].to_vec();
+    h[2..4].copy_from_slice(&((length + 20) as u16).to_be_bytes());
+    h[4..6].copy_from_slice(&id.to_be_bytes());
+    h[6..8].copy_from_slice(&((offset as u16 / 8) | if more { 0x2000 } else { 0 }).to_be_bytes());
+    h[10..12].fill(0);
+    let c = sum(&h);
+    h[10..12].copy_from_slice(&c.to_be_bytes());
+    h.extend(&p[20 + offset..20 + offset + length]);
+    h
+}
