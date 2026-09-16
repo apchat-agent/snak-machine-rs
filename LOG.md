@@ -1504,3 +1504,14 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   bounded successful-advertisement history and suppression fields implement
   PLAN2's reducer owner; no dependency. Retirement/history bounds and native
   configuration/reload follow before this step is complete.
+- S18 retirement RED `04beb8e` demonstrates a missing local route during
+  transition and over-admission against retained history. GREEN passes **351
+  tests** and all-feature clippy. Infrastructure selection retires the local
+  PREF64 with zero lifetime while retaining its still-backed explicit route
+  through the original promise. Acknowledging that withdrawal does not erase
+  the remaining service promise or renew its deadline. Disable stops it too.
+- New advertisements reserve history space before selection; combined live
+  selections and retirement history stay within eight slots, reject overflow
+  atomically and release at expiry. A per-promise withdrawal acknowledgment
+  bit distinguishes advertisement retirement from established-flow service;
+  it implements PLAN2's successful-output history. No dependency.

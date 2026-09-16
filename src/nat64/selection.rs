@@ -60,7 +60,7 @@ pub struct Selector {
     policy: Policy,
     observations: Observations,
     local: Prefix,
-    promised: BTreeMap<Prefix, (Source, u64)>,
+    promised: BTreeMap<Prefix, (Source, u64, bool)>,
     suppressed: bool,
 }
 impl Selector {
@@ -106,7 +106,7 @@ impl Selector {
         self.observations
             .next_deadline()
             .into_iter()
-            .chain(self.promised.values().map(|(_, t)| *t))
+            .chain(self.promised.values().map(|(_, t, _)| *t))
             .min()
     }
     pub fn advertised(&mut self, announcements: &[Announcement], now: u64) -> io::Result<()> {
@@ -114,19 +114,22 @@ impl Selector {
             return Err(invalid());
         }
         let mut next = self.promised.clone();
-        next.retain(|_, (_, t)| *t > now);
+        next.retain(|_, (_, t, _)| *t > now);
         for a in announcements {
             if !usable(a.pref64.prefix) {
                 return Err(invalid());
             }
             if a.pref64.lifetime == 0 {
-                next.remove(&a.pref64.prefix);
+                if let Some((_, _, withdrawn)) = next.get_mut(&a.pref64.prefix) {
+                    *withdrawn = true;
+                }
             } else {
                 next.insert(
                     a.pref64.prefix,
                     (
                         a.source,
-                        now.saturating_add(u64::from(a.pref64.lifetime.min(65528)) * 1000),
+                        now.saturating_add(u64::from(a.pref64.lifetime.min(65528) & !7) * 1000),
+                        false,
                     ),
                 );
             }
@@ -154,8 +157,50 @@ impl Selector {
         reachable: impl Fn(Link, Ipv6Addr) -> bool,
         route: impl Fn(Prefix) -> Option<u64>,
     ) -> Decision {
+        let mut decision = self.select_active(now, ready, reachable, route);
+        for (prefix, (source, until, withdrawn)) in &self.promised {
+            if decision
+                .announcements
+                .iter()
+                .any(|a| a.pref64.prefix == *prefix)
+            {
+                continue;
+            }
+            if !withdrawn {
+                decision.announcements.push(Announcement {
+                    pref64: Pref64 {
+                        prefix: *prefix,
+                        lifetime: 0,
+                    },
+                    source: *source,
+                });
+            }
+            let life = if self.policy.enabled && *source == Source::Local && ready.translator {
+                until
+                    .min(&ready.ipv4.unwrap_or(now))
+                    .min(&ready.stub.unwrap_or(now))
+                    .saturating_sub(now)
+                    / 1000
+            } else {
+                0
+            };
+            decision.routes.push(Rio {
+                prefix: *prefix,
+                preference: Preference::Medium,
+                lifetime: life.min(u64::from(u32::MAX)) as u32,
+            });
+        }
+        decision
+    }
+    fn select_active(
+        &mut self,
+        now: u64,
+        ready: Readiness,
+        reachable: impl Fn(Link, Ipv6Addr) -> bool,
+        route: impl Fn(Prefix) -> Option<u64>,
+    ) -> Decision {
         self.observations.expire(now);
-        self.promised.retain(|_, (_, t)| *t > now);
+        self.promised.retain(|_, (_, t, _)| *t > now);
         if self.observations.live(Link::Stub, now, |_| true).is_empty() {
             self.suppressed = false;
         }
@@ -192,6 +237,7 @@ impl Selector {
                     .map(|(p, t)| (p, t, Source::Infrastructure))
                     .collect()
             };
+            let mut slots = 8 - self.promised.len();
             let announcements: Vec<_> =
                 candidates
                     .into_iter()
@@ -204,12 +250,19 @@ impl Selector {
                             },
                         );
                         let lifetime = remaining(until, now);
-                        (lifetime > 0
-                            && (self.promised.contains_key(&prefix) || self.promised.len() < 8))
-                            .then_some(Announcement {
-                                pref64: Pref64 { prefix, lifetime },
-                                source,
-                            })
+                        if lifetime == 0 {
+                            return None;
+                        }
+                        if !self.promised.contains_key(&prefix) {
+                            if slots == 0 {
+                                return None;
+                            }
+                            slots -= 1;
+                        }
+                        Some(Announcement {
+                            pref64: Pref64 { prefix, lifetime },
+                            source,
+                        })
                     })
                     .take(8)
                     .collect();
@@ -233,7 +286,9 @@ impl Selector {
         let active = self
             .promised
             .get(&self.local)
-            .is_some_and(|(source, t)| *source == Source::Local && *t > now);
+            .is_some_and(|(source, t, withdrawn)| {
+                *source == Source::Local && *t > now && !withdrawn
+            });
         if peer && !active {
             return empty(Mode::Peer, "a reachable stub peer already provides NAT64");
         }
