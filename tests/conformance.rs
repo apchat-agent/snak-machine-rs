@@ -620,7 +620,10 @@ fn s23_no_pd_infrastructure_waits_for_ipv4_then_announces_local_mode_and_reason(
     native::dhcp(&mut d, 2, 0, [192, 0, 2, 10].into(), 20001);
     d.step(21001, &mut ScriptedRandom::new([])).unwrap();
     native::dhcp(&mut d, 5, 0, [192, 0, 2, 10].into(), 21002);
-    let emitted = service_ras(&mut d, 25000);
+    for now in (21100..=26000).step_by(100) {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    let emitted = service_ras(&mut d, 27000);
     assert!(emitted.iter().any(|b| service_options(b)
         .iter()
         .filter_map(|o| Pref64::decode(o))
@@ -782,4 +785,282 @@ fn s23_native_carrier_loss_withdraws_nat_while_dns_srp_and_durable_claims_contin
     )
     .unwrap();
     assert!(restored.key(&registered, 0).is_some());
+}
+#[test]
+fn s23_ipv4_only_full_service_path_uses_rdnss_dot_srp_mdns_and_host_side_nat_synthesis() {
+    use snac_rs::{
+        dns::wire::{Context, Message, Name, Question, Rdata, TcpFrames},
+        service_io::{identity::TlsIdentity, stack::Stack, tls::opportunistic_client},
+        wire::Pref64,
+    };
+    use std::{
+        io::{Read, Write},
+        net::IpAddr,
+    };
+    let mut d = native::driver(79, [192, 0, 2, 10].into());
+    let disk = common::srp::Store::default();
+    d.dns
+        .enable_srp(Box::new(disk.clone()), 20000, common::srp::NOW)
+        .unwrap();
+    let identity = TlsIdentity::load_or_create(
+        &mut MemoryStore::default(),
+        common::srp::NOW,
+        &mut ScriptedRandom::new(1..100),
+    )
+    .unwrap();
+    d.enable_dot(identity.server_config().unwrap().into())
+        .unwrap();
+    let emitted = service_ras(&mut d, 21000);
+    let opts: Vec<_> = emitted.iter().flat_map(|b| service_options(b)).collect();
+    let resolver = opts
+        .iter()
+        .find(|o| o[0] == 25 && o[4..8] != [0; 4])
+        .map(|o| Ipv6Addr::from(<[u8; 16]>::try_from(&o[8..24]).unwrap()))
+        .unwrap();
+    let prefix = opts
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .find(|p| p.lifetime > 0)
+        .unwrap()
+        .prefix;
+    let host = native::host(&d, 99);
+    let browse = native_dns(
+        &mut d,
+        host,
+        resolver,
+        &dns_question("lb._dns-sd._udp.local.", 12),
+        26000,
+    );
+    let zone = browse
+        .answers
+        .iter()
+        .find_map(|r| match &r.data {
+            Rdata::Name(n) if n.labels()[0] == b"srp" => Some(n.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut labels = vec![b"_dnssd-srp-tls".to_vec(), b"_tcp".to_vec()];
+    labels.extend_from_slice(zone.labels());
+    let mut query = Message::new(800, 0x100);
+    query.questions.push(Question {
+        name: Name::from_labels(labels).unwrap(),
+        kind: 33,
+        class: 1,
+    });
+    let discovery = native_dns(&mut d, host, resolver, &query.encode().unwrap(), 26100);
+    assert!(discovery
+        .answers
+        .iter()
+        .any(|r| matches!(r.data, Rdata::Srv { port: 853, .. })));
+    let mut client = Stack::new(27000, &mut ScriptedRandom::new([])).unwrap();
+    client.set_addresses(&[IpAddr::V6(host)]).unwrap();
+    let id = client
+        .connect(host.into(), 40400, resolver.into(), 853, 27000)
+        .unwrap();
+    let mut tls = rustls::ClientConnection::new(
+        opportunistic_client().unwrap().into(),
+        "stub.test".try_into().unwrap(),
+    )
+    .unwrap();
+    struct Sender<'a>(&'a mut Stack, usize);
+    impl Write for Sender<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.send_tcp(self.1, b)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut update = common::srp::update();
+    update.authority[2].kind = 1;
+    update.authority[2].data = Rdata::A([192, 0, 2, 99]);
+    let signed = common::srp::sign(update);
+    let mut sent = false;
+    let mut frames = TcpFrames::new(65535).unwrap();
+    let mut ack = false;
+    let mut published = false;
+    for now in (27000..34000).step_by(10) {
+        if !tls.is_handshaking() && !sent {
+            tls.writer()
+                .write_all(&TcpFrames::frame(&signed).unwrap())
+                .unwrap();
+            sent = true;
+        }
+        if let Err(error) = tls.write_tls(&mut Sender(&mut client, id)) {
+            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        }
+        client.poll(now).unwrap();
+        while let Some(p) = client.output() {
+            native::packet(&mut d, Link::Stub, &p, now);
+        }
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+        for (link, b) in std::mem::take(&mut d.io.output) {
+            if let Ok(e) = envelope(FrameKind::Ethernet, &b) {
+                if link == Link::Stub && e.destination == host && e.next_header == 6 {
+                    client.input(e.packet, now).unwrap();
+                }
+            }
+            if link == Link::Ail
+                && b.len() > 42
+                && b[12..14] == [8, 0]
+                && b[23] == 17
+                && b[36..38] == 5353u16.to_be_bytes()
+            {
+                if let Ok(m) = Message::parse(&b[42..], Context::Mdns) {
+                    published |= m.flags & 0x8000 != 0 && m.answers.iter().any(|r| r.kind == 33);
+                }
+            }
+        }
+        let bytes = client.receive_tcp(id);
+        let mut input = bytes.as_slice();
+        while !input.is_empty() {
+            assert!(tls.read_tls(&mut input).unwrap() > 0);
+            tls.process_new_packets().unwrap();
+        }
+        let mut buffer = [0; 4096];
+        while let Ok(n) = tls.reader().read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            frames.input(&buffer[..n]).unwrap();
+        }
+        while let Some(bytes) = frames.pop() {
+            assert_eq!(
+                Message::parse(&bytes, Context::Unicast).unwrap().flags & 15,
+                0
+            );
+            ack = true;
+        }
+    }
+    assert!(
+        ack && published,
+        "signed DoT registration must reach the AIL mDNS wire"
+    );
+    assert!(disk.bytes.borrow().is_some());
+    let registered = d.dns.registry().unwrap().hosts().next().unwrap().0.clone();
+    let mut q = Message::new(801, 0x100);
+    q.questions.push(Question {
+        name: registered,
+        kind: 28,
+        class: 1,
+    });
+    let answer = native_dns(&mut d, host, resolver, &q.encode().unwrap(), 34000);
+    assert!(answer.answers.is_empty());
+    let v4 = answer
+        .additional
+        .iter()
+        .find_map(|r| match r.data {
+            Rdata::A(a) => Some(a),
+            _ => None,
+        })
+        .unwrap();
+    let synthesized = (u128::from(prefix.address) | u128::from(u32::from_be_bytes(v4))).into();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::udp6(host, synthesized, 40501, 9000, b"discovered"),
+        35000,
+    );
+    native::arp(&mut d, v4.into(), 35001);
+    assert!(native::translated(&mut d, Link::Ail, 17)
+        .iter()
+        .any(|p| p[0] >> 4 == 4 && p[16..20] == v4 && p[28..] == *b"discovered"));
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::udp4(v4.into(), [192, 0, 2, 10].into(), 9000, 40501, b"reply"),
+        35002,
+    );
+    d.step(35002, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 17)
+        .iter()
+        .any(|p| p[48..] == *b"reply"));
+    // TCP and Echo use the same advertised prefix and shared address owner.
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::tcp6(host, synthesized, 40502, 9000, 2, &[]),
+        35003,
+    );
+    let syn = native::translated(&mut d, Link::Ail, 6).pop().unwrap();
+    assert!(packets::tcp_valid(&syn));
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::tcp4(v4.into(), [192, 0, 2, 10].into(), 9000, 40502, 0x12, &[]),
+        35004,
+    );
+    d.step(35004, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 6)
+        .iter()
+        .any(|p| p[53] == 0x12 && packets::tcp_valid(p)));
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::icmp6(host, synthesized, &[128, 0, 0, 0, 1, 2, 0, 1]),
+        35005,
+    );
+    assert!(native::translated(&mut d, Link::Ail, 1)
+        .iter()
+        .any(|p| p[20] == 8));
+    native::packet(
+        &mut d,
+        Link::Ail,
+        &packets::icmp4(v4.into(), [192, 0, 2, 10].into(), &[0, 0, 0, 0, 1, 2, 0, 1]),
+        35006,
+    );
+    d.step(35006, &mut ScriptedRandom::new([])).unwrap();
+    assert!(native::translated(&mut d, Link::Stub, 58)
+        .iter()
+        .any(|p| p[40] == 129 && packets::icmp6_valid(p)));
+}
+#[test]
+fn s23_two_native_routers_follow_peer_then_take_over_after_evidence_expires() {
+    use snac_rs::{nat64::Mode, wire::Pref64};
+    let mut leader = native::driver(80, [192, 0, 2, 10].into());
+    let leader_ra = service_ras(&mut leader, 21000).pop().unwrap();
+    let evidence_lifetime = service_options(&leader_ra)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .find(|p| p.lifetime > 0)
+        .unwrap()
+        .lifetime;
+    let mut follower = fresh_native(81);
+    native::dhcp(&mut follower, 2, 0, [192, 0, 2, 11].into(), 1001);
+    follower.step(2001, &mut ScriptedRandom::new([])).unwrap();
+    native::dhcp(&mut follower, 5, 0, [192, 0, 2, 11].into(), 2002);
+    let leader_source = leader.router.identity.link_local(Link::Stub);
+    native::packet(&mut follower, Link::Stub, &leader_ra, 3000);
+    let mut na = vec![136, 0, 0, 0, 0xe0, 0, 0, 0];
+    na.extend(leader_source.octets());
+    na.extend([2, 1]);
+    na.extend(leader.router.links[1].mac.unwrap());
+    let destination = follower.router.identity.link_local(Link::Stub);
+    native::packet(
+        &mut follower,
+        Link::Stub,
+        &nd_packet(&leader_source.to_string(), &destination.to_string(), na),
+        3001,
+    );
+    for t in (3100..=14000).step_by(100) {
+        follower.step(t, &mut ScriptedRandom::new([])).unwrap();
+    }
+    let emitted = service_ras(&mut follower, 15000);
+    assert_eq!(follower.router.nat64.status().0, Mode::Peer);
+    assert!(!emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.lifetime > 0)));
+    let expiry = 3000 + u64::from(evidence_lifetime) * 1000;
+    let emitted = service_ras(&mut follower, expiry + 1);
+    assert_eq!(follower.router.nat64.status().0, Mode::Local);
+    assert!(emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.prefix == follower.router.nat64.local_prefix() && p.lifetime > 0)));
+    assert_ne!(
+        leader.router.nat64.local_prefix(),
+        follower.router.nat64.local_prefix()
+    );
+    assert_ne!(leader.ipv4.address, follower.ipv4.address);
 }
