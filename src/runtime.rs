@@ -481,11 +481,23 @@ impl<I: PacketIo> Driver<I> {
             .map(|((_, p), _)| *p)
             .collect();
         self.dns.set_srp_sources(&sources)?;
-        let replies = self.dns.poll_discovery(&mut self.mdns, now, rng)?;
+        self.dns.sync_advertising(&mut self.mdns, now, rng)?;
+        let replies = self.dns.poll_discovery_with_source(
+            &mut self.mdns,
+            &|id, at, resolver| (self.mdns_source)(id, at, &self.router, resolver),
+            now,
+            rng,
+        )?;
         self.dns_service.queue(replies);
         self.dns_service
             .poll(&mut self.dns, self.stacks.as_mut().unwrap(), now, rng)?;
-        let replies = self.dns.poll_discovery(&mut self.mdns, now, rng)?;
+        self.dns.sync_advertising(&mut self.mdns, now, rng)?;
+        let replies = self.dns.poll_discovery_with_source(
+            &mut self.mdns,
+            &|id, at, resolver| (self.mdns_source)(id, at, &self.router, resolver),
+            now,
+            rng,
+        )?;
         self.dns_service.queue(replies);
         for link in [Link::Ail, Link::Stub] {
             let stack = &mut self.stacks.as_mut().unwrap()[link.index()];

@@ -87,10 +87,36 @@ impl Resolver {
         now: u64,
         rng: &mut impl RandomSource,
     ) -> io::Result<Vec<Action>> {
-        let Some(proxy) = &mut self.discovery else {
+        self.poll_discovery_with_source(engine, &|id, at, r| r.advertised(id, at), now, rng)
+    }
+    pub fn poll_discovery_with_source(
+        &mut self,
+        engine: &mut crate::mdns::Engine,
+        source: &impl Fn(u64, u64, &Self) -> Vec<Record>,
+        now: u64,
+        rng: &mut impl RandomSource,
+    ) -> io::Result<Vec<Action>> {
+        if self.discovery.is_none() {
             return Ok(vec![]);
-        };
-        let completed = proxy.poll(&mut engine.querier, now, rng)?;
+        }
+        let local = engine
+            .publisher
+            .all_ready(&|id, at| source(id, at, self), now)?;
+        let proxy = self.discovery.as_mut().unwrap();
+        let completed = proxy.poll_with_local(
+            &mut engine.querier,
+            &|q| {
+                local
+                    .iter()
+                    .filter(|(_, r)| {
+                        crate::mdns::cache::matches(q, r) || (r.name == q.name && r.kind == 47)
+                    })
+                    .map(|(_, r)| r.clone())
+                    .collect()
+            },
+            now,
+            rng,
+        )?;
         let mut out = vec![];
         for done in completed {
             let ids: Vec<_> = self

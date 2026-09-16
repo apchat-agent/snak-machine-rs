@@ -1246,3 +1246,10 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   acknowledged immediately. The test demonstrates both the rate boundary and
   publication progress during throttling. The counter/deadline and single
   continuation implement the required output limiter; no dependency.
+- S15 local-publication RED `4bc0e36` exposes discovery waiting for its own
+  ignored multicast egress. GREEN passes **296 tests** and all-feature clippy.
+  Discovery now reads ready, digest-validated publisher projections through
+  the authoritative owner's callback, including generated NSEC, without
+  copying them into the learned cache. Native synchronization handles source
+  expiry/change before reading that view. Withdrawn publications immediately
+  stop answering. This adds a callback seam, no table/field/dependency.
