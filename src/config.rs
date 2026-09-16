@@ -6,6 +6,8 @@ pub enum BackendKind {
 }
 #[derive(Debug)]
 pub struct Config {
+    pub nat64: crate::nat64::Policy,
+    pub nat64_config: Option<PathBuf>,
     pub srp_zone: Option<crate::dns::wire::Name>,
     pub discovery_zone: Option<crate::dns::wire::Name>,
     pub discovery_host_zone: Option<crate::dns::wire::Name>,
@@ -27,7 +29,7 @@ pub struct Config {
     pub no_additional_a: bool,
     pub fds: Option<(i32, i32, crate::io::NativeFraming)>,
 }
-pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --tsr-option-code CODE (experimental default 65002)\n  --srp-zone NAME  --discovery-zone NAME\n  --discovery-host-zone NAME  --discovery-reverse-zone NAME (repeat up to 64)\n  --dns-soa-rname NAME  --discovery-include-unusable\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 disabled (the only supported NAT64 setting)\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery and advertising proxies use AIL mDNS. NAT64 is not yet implemented.\nReal backends require root; --help opens no interfaces.";
+pub const HELP:&str="snac-router --backend tap|pcap --stub IF --infra IF [--state FILE]\n  --ula-policy rotate|fixed  --attachment-id ID\n  --no-stub-default  --always-advertise-ail-routes\n  --tsr-option-code CODE (experimental default 65002)\n  --srp-zone NAME  --discovery-zone NAME\n  --discovery-host-zone NAME  --discovery-reverse-zone NAME (repeat up to 64)\n  --dns-soa-rname NAME  --discovery-include-unusable\n  --srp-max-lease SECS  --srp-max-key-lease SECS\n  --srp-min-ttl SECS  --srp-max-ttl SECS\n  --dns-upstream IP:PORT (repeat up to 8)  --no-additional-a\n  --pcap-library PATH  (requires cargo feature pcap)\n  --infra-fd N --stub-fd N --framing ethernet|utun|raw (tap harness mode)\n  --nat64 enabled|disabled  --nat64-prefix PREFIX\n  --allow-infrastructure-nat64-without-pd  --nat64-config FILE\nDNS UDP/TCP and DoT use ports 53/853. Signed SRP uses the same listeners. Discovery and advertising proxies use AIL mDNS. NAT64 selection requires live route and translator readiness.\nReal backends require root; --help opens no interfaces.";
 impl Config {
     pub fn dns_zones(
         &self,
@@ -74,6 +76,8 @@ impl Config {
             (None, None, None, None);
         let mut discovery_reverse_zones = vec![];
         let mut discovery_include_unusable = false;
+        let mut nat64 = crate::nat64::Policy::default();
+        let mut nat64_config = None;
         let mut tsr_option_code = crate::mdns::tsr::OPTION_CODE;
         let mut srp_policy = crate::srp::registry::LeasePolicy::default();
         let mut dns_upstreams = vec![];
@@ -86,6 +90,10 @@ impl Config {
         let (mut no_stub_default, mut always_advertise_ail_routes) = (false, false);
         let (mut pcap_library, mut af, mut sf, mut framing) = (None, None, None, None);
         while let Some(key) = iter.next() {
+            if key == "--allow-infrastructure-nat64-without-pd" {
+                nat64.allow_without_pd = true;
+                continue;
+            }
             if key == "--discovery-include-unusable" {
                 discovery_include_unusable = true;
                 continue;
@@ -173,8 +181,17 @@ impl Config {
                     dns_upstreams.push(a);
                 }
                 "--pcap-library" => pcap_library = Some(value),
-                "--nat64" if value == "disabled" => {}
-                "--nat64" => return Err(io::Error::other("NAT64 is not implemented")),
+                "--nat64" => {
+                    nat64.enabled = match value.as_str() {
+                        "enabled" => true,
+                        "disabled" => false,
+                        _ => return Err(io::Error::other("expected enabled or disabled NAT64")),
+                    }
+                }
+                "--nat64-prefix" => {
+                    nat64.infrastructure = Some(crate::nat64::config::parse_prefix(&value)?)
+                }
+                "--nat64-config" => nat64_config = Some(PathBuf::from(value)),
                 "--infra-fd" => af = Some(value.parse::<i32>().map_err(io::Error::other)?),
                 "--stub-fd" => sf = Some(value.parse::<i32>().map_err(io::Error::other)?),
                 "--framing" => {
@@ -205,8 +222,11 @@ impl Config {
                 "FD mode requires two distinct descriptors and explicit framing with backend tap",
             )),
         };
+        nat64.validate()?;
         srp_policy.validate()?;
         Ok(Some(Self {
+            nat64,
+            nat64_config,
             srp_zone,
             discovery_zone,
             discovery_host_zone,

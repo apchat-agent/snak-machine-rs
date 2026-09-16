@@ -1515,3 +1515,19 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   atomically and release at expiry. A per-promise withdrawal acknowledgment
   bit distinguishes advertisement retirement from established-flow service;
   it implements PLAN2's successful-output history. No dependency.
+- S18 administration RED `42c6620` confirms missing CLI/reload seams; the
+  specific updated baseline assertion also fails executably under the old CLI.
+  GREEN passes **354 tests** and all-feature clippy. CLI defaults to enabled,
+  validates canonical supported prefixes, and exposes disable, explicit
+  infrastructure prefix, without-PD exception and a reload-file path. Strict
+  4 KiB file parsing rejects unknown/duplicate settings, invalid booleans and
+  prefixes. The one-second file edge applies complete valid policies atomically;
+  bad/oversized updates retain the last valid policy.
+- Authorized obsolete baseline change in this RED:
+  `cli_validates_backend_and_two_link_scope_without_opening_devices` formerly
+  required `--nat64 enabled` to fail because translation was absent; it now
+  requires acceptance. Every other assertion is retained. Basis: draft section
+  6's enabled default and administrative disable/re-enable recommendation,
+  implemented by PLAN2 section 4.2/S18. Config policy/path and reload deadline/
+  last validated bytes are planned administration state; no dependency.
+  Main/router wiring follows; selecting a mode alone does not claim readiness.
