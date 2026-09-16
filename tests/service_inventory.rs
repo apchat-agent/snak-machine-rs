@@ -425,3 +425,124 @@ fn s16_inventory_context_and_address_tables_are_bounded_and_reject_expanded_name
     bad.registrar = long;
     assert!(Inventory::new(bad).is_err());
 }
+
+#[test]
+fn s16_cli_configures_zones_host_mapping_reverse_zones_mailbox_and_filter_override() {
+    use snac_rs::config::Config;
+    let base = ["--backend", "tap", "--infra", "ail", "--stub", "stub"];
+    let defaults = Config::parse(base).unwrap().unwrap();
+    assert_eq!(
+        defaults.dns_zones(&identity()).unwrap(),
+        snac_rs::dns::inventory::Zones::for_identity(&identity())
+    );
+    let configured = Config::parse(base.into_iter().chain([
+        "--srp-zone",
+        "registered.example.",
+        "--discovery-zone",
+        "Floor 1.example.",
+        "--discovery-host-zone",
+        "floor-1.example.",
+        "--discovery-reverse-zone",
+        "2.0.192.in-addr.arpa.",
+        "--dns-soa-rname",
+        "admin.example.",
+        "--discovery-include-unusable",
+    ]))
+    .unwrap()
+    .unwrap();
+    let zones = configured.dns_zones(&identity()).unwrap();
+    assert_eq!(zones.registrar, name("registered.example."));
+    assert_eq!(zones.discovery, name("Floor 1.example."));
+    assert_eq!(zones.host, Some(name("floor-1.example.")));
+    assert_eq!(zones.reverse, [name("2.0.192.in-addr.arpa.")]);
+    assert_eq!(zones.mailbox, name("admin.example."));
+    assert!(configured.discovery_include_unusable);
+    for (key, value) in [
+        ("--srp-zone", "."),
+        ("--discovery-zone", "."),
+        ("--discovery-host-zone", "non LDH.example."),
+        ("--discovery-reverse-zone", "not-reverse.example."),
+    ] {
+        let config = Config::parse(base.into_iter().chain([key, value]));
+        assert!(config.is_err() || config.unwrap().unwrap().dns_zones(&identity()).is_err());
+    }
+    let mut args: Vec<String> = base.iter().map(|s| (*s).to_owned()).collect();
+    for n in 0..64 {
+        args.extend([
+            "--discovery-reverse-zone".to_owned(),
+            format!("{n}.0.192.in-addr.arpa."),
+        ]);
+    }
+    Config::parse(args.clone())
+        .unwrap()
+        .unwrap()
+        .dns_zones(&identity())
+        .unwrap();
+    args.extend([
+        "--discovery-reverse-zone".to_owned(),
+        "64.0.192.in-addr.arpa.".to_owned(),
+    ]);
+    assert!(Config::parse(args).is_err());
+}
+#[test]
+fn s16_inventory_answers_only_current_stub_network_reverse_enumeration() {
+    use snac_rs::{dns::inventory::Zones, wire::Prefix};
+    let mut r = Resolver::new(true);
+    r.configure_zones(Zones::for_identity(&identity())).unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let prefix = Prefix::new("fd11:22:33:44::".parse().unwrap(), 64).unwrap();
+    r.set_srp_sources(&[prefix]).unwrap();
+    let mut labels: Vec<Vec<u8>> = format!("{:032x}", u128::from(prefix.address))
+        .as_bytes()
+        .iter()
+        .rev()
+        .map(|b| vec![*b])
+        .collect();
+    labels.extend([b"ip6".to_vec(), b"arpa".to_vec()]);
+    let context = Name::from_labels(labels).unwrap();
+    let owner = prefix_name(&[b"lb", b"_dns-sd", b"_udp"], &context);
+    let answer = reply(r.submit(client(), &query(&owner, 12), 0, &mut rng).unwrap());
+    assert_eq!(answer.answers.len(), 2);
+    r.set_srp_sources(&[]).unwrap();
+    let answer = reply(r.submit(client(), &query(&owner, 12), 1, &mut rng).unwrap());
+    assert!(
+        answer.answers.is_empty(),
+        "old reverse network is no longer locally enumerated"
+    );
+}
+fn prefix_name(labels: &[&[u8]], zone: &Name) -> Name {
+    let mut out: Vec<_> = labels.iter().map(|l| l.to_vec()).collect();
+    out.extend_from_slice(zone.labels());
+    Name::from_labels(out).unwrap()
+}
+#[test]
+fn s16_nested_proxy_delegation_and_inventory_a_lookup_preserve_view_ownership() {
+    use snac_rs::{dns::inventory::Zones, mdns::Engine};
+    let mut zones = Zones::for_identity(&identity());
+    zones.discovery = in_zone("services", &zones.hostname);
+    let mut r = Resolver::new(true);
+    r.configure_zones(zones.clone()).unwrap();
+    r.set_service_ready(&["192.0.2.53".parse().unwrap()], Some(53), None)
+        .unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let query_name = in_zone("alias", &zones.discovery);
+    assert!(
+        r.submit(client(), &query(&query_name, 28), 0, &mut rng)
+            .unwrap()
+            .is_empty(),
+        "delegated proxy child is not an empty router-owned name"
+    );
+    let mut engine = Engine::default();
+    let mut answer = Message::new(0, 0x8400);
+    answer.answers.push(snac_rs::dns::wire::Record {
+        name: name("alias.local."),
+        kind: 5,
+        class: 0x8001,
+        ttl: 120,
+        data: Rdata::Name(zones.hostname.clone()),
+    });
+    engine.querier.cache.receive(&answer, 0, &mut rng).unwrap();
+    let answer = reply(r.poll_discovery(&mut engine, 1, &mut rng).unwrap());
+    assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 53]));
+    assert_eq!(answer.additional[0].name, zones.hostname);
+}
