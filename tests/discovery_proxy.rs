@@ -1,3 +1,4 @@
+mod common;
 use snac_rs::dns::wire::{Context, Message, Name, Question, Rdata, Record};
 fn name(s: &str) -> Name {
     s.parse().unwrap()
@@ -1231,4 +1232,107 @@ fn s15_discovery_ds_with_do_forwards_only_the_dnssec_exception_and_cycles_termin
     );
     assert!(a.additional.is_empty());
     assert_eq!(e.querier.counts().0, 0);
+}
+
+#[test]
+fn s15_canonical_a_alias_chains_are_followed_and_bounded_across_proxy_completions() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        mdns::Engine,
+        time::ScriptedRandom,
+    };
+    for (links, cycle, success) in [(16, false, true), (17, false, false), (3, true, false)] {
+        let mut r = Resolver::new(true);
+        r.enable_discovery(zone()).unwrap();
+        let mut e = Engine::default();
+        let mut rng = ScriptedRandom::new([]);
+        let mut data = vec![record("start.local.", 5, Rdata::Name(name("n0.local.")))];
+        for i in 0..links {
+            data.push(record(
+                &format!("n{i}.local."),
+                5,
+                Rdata::Name(name(&format!(
+                    "n{}.local.",
+                    if cycle && i + 1 == links { 0 } else { i + 1 }
+                ))),
+            ));
+        }
+        if !cycle {
+            data.push(record(
+                &format!("n{links}.local."),
+                1,
+                Rdata::A([192, 0, 2, 11]),
+            ));
+        }
+        cached(&mut e.querier, data, 0);
+        r.submit(
+            Client::udp("[fd11::1]:40000".parse().unwrap()),
+            &dns_query(108, q("start.floor-1.example.", 28)),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+        let mut results = vec![];
+        for now in 0..20 {
+            results.extend(r.poll_discovery(&mut e, now, &mut rng).unwrap());
+        }
+        assert_eq!(results.len(), 1);
+        let (_, answer) = response(results.pop().unwrap());
+        assert_eq!(
+            !answer.additional.is_empty(),
+            success,
+            "links={links}, cycle={cycle}"
+        );
+        if success {
+            assert_eq!(
+                answer.additional[0].name,
+                name(&format!("n{links}.floor-1.example."))
+            );
+        }
+        assert_eq!((r.pending_count(), e.querier.counts().0), (0, 0));
+    }
+}
+#[test]
+fn s15_srp_zone_empty_aaaa_uses_the_same_additional_a_wrapper() {
+    use snac_rs::{
+        dns::resolver::{Client, Resolver},
+        persist::MemoryStore,
+        time::ScriptedRandom,
+    };
+    let mut r = Resolver::new(true);
+    let mut rng = ScriptedRandom::new([]);
+    r.enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    let mut registration = common::srp::update();
+    for record in &mut registration.authority {
+        if record.kind == 28 {
+            record.kind = 1;
+            record.data = Rdata::A([192, 0, 2, 12]);
+        }
+    }
+    let client = Client::udp("[::1]:40000".parse().unwrap());
+    let ack = r
+        .submit(
+            client.clone(),
+            &common::srp::sign(registration),
+            0,
+            &mut rng,
+        )
+        .unwrap();
+    assert_eq!(response(ack.into_iter().next().unwrap()).1.flags & 15, 0);
+    let result = r
+        .submit(
+            client,
+            &dns_query(109, q("host.default.service.arpa.", 28)),
+            1,
+            &mut rng,
+        )
+        .unwrap();
+    let (_, answer) = response(result.into_iter().next().unwrap());
+    assert!(answer.answers.is_empty());
+    assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 12]));
+    assert_eq!(
+        answer.additional[0].name,
+        name("host.default.service.arpa.")
+    );
 }
