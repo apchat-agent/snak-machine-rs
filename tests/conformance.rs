@@ -410,3 +410,125 @@ fn s23_native_disable_blocks_known_infrastructure_prefix_but_preserves_other_ipv
         .iter()
         .any(|b| b[0] >> 4 == 6));
 }
+#[test]
+fn s23_attachment_rotation_retires_nat_prefix_and_preserves_both_return_tuples() {
+    use snac_rs::{router::attachment::UlaPolicy, wire::Pref64};
+    let mut d = native::driver(73, [192, 0, 2, 10].into());
+    let old = d.router.nat64.local_prefix();
+    let host = native::host(&d, 99);
+    native::learn(&mut d, host, 21000);
+    let request = |prefix: Prefix| {
+        packets::udp6(
+            host,
+            (u128::from(prefix.address) | u128::from(u32::from_be_bytes([192, 0, 2, 20]))).into(),
+            40000,
+            9000,
+            b"rotation",
+        )
+    };
+    native::packet(&mut d, Link::Stub, &request(old), 21002);
+    native::arp(&mut d, [192, 0, 2, 20].into(), 21003);
+    let first = native::translated(&mut d, Link::Ail, 17).pop().unwrap();
+    let first_port = u16::from_be_bytes([first[20], first[21]]);
+    d.router
+        .configure_attachment(
+            UlaPolicy::Rotate,
+            Some("moved"),
+            22000,
+            &mut ScriptedRandom::new([987654]),
+        )
+        .unwrap();
+    let new = d.router.nat64.local_prefix();
+    assert_ne!(
+        old, new,
+        "NAT /96 follows the newly allocated site identity"
+    );
+    assert_eq!(
+        Prefix::new(new.address, 48).unwrap(),
+        d.router.identity.site
+    );
+    let emitted = service_ras(&mut d, 23000);
+    assert!(emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.prefix == old && p.lifetime == 0)));
+    assert!(emitted.iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.prefix == new && p.lifetime > 0)));
+    native::packet(&mut d, Link::Stub, &request(new), 28000);
+    let second = native::translated(&mut d, Link::Ail, 17).pop().unwrap();
+    let second_port = u16::from_be_bytes([second[20], second[21]]);
+    assert_ne!(
+        first_port, second_port,
+        "distinct IPv6 destination prefixes must keep unambiguous reverse tuples"
+    );
+    for (prefix, port) in [(old, first_port), (new, second_port)] {
+        native::packet(
+            &mut d,
+            Link::Ail,
+            &packets::udp4(
+                [192, 0, 2, 20].into(),
+                [192, 0, 2, 10].into(),
+                9000,
+                port,
+                b"reply",
+            ),
+            28001,
+        );
+        let replies = native::translated(&mut d, Link::Stub, 17);
+        assert!(replies
+            .iter()
+            .any(|b| prefix.contains(Ipv6Addr::from(<[u8; 16]>::try_from(&b[8..24]).unwrap()))));
+    }
+    // The shared per-source BIB bound applies across both prefixes, not once per epoch.
+    for i in 0..200u16 {
+        let prefix = if i % 2 == 0 { old } else { new };
+        let destination =
+            (u128::from(prefix.address) | u128::from(u32::from_be_bytes([192, 0, 2, 20]))).into();
+        native::packet(
+            &mut d,
+            Link::Stub,
+            &packets::udp6(host, destination, 41000 + i, 9000, b"bound"),
+            29000,
+        );
+    }
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts().0, 128);
+}
+#[test]
+fn s23_shortened_pd_lease_caps_pref64_in_the_same_advertisement() {
+    use snac_rs::{router::pd::Association, wire::Pref64};
+    let mut d = native::driver(74, [192, 0, 2, 10].into());
+    let p = Prefix::new(ip("2001:db8:74::"), 64).unwrap();
+    d.router.pd.leases.insert(
+        (1, p),
+        Lease {
+            association: std::rc::Rc::new(Association {
+                iaid: 1,
+                server: vec![1],
+                t1: Lifetime::Until(60000),
+                t2: Lifetime::Until(90000),
+            }),
+            preferred: Lifetime::Until(120000),
+            valid: Lifetime::Until(120000),
+            used: true,
+        },
+    );
+    d.router.pd.state = PdState::Bound;
+    infrastructure(&mut d, 21000);
+    assert!(service_ras(&mut d, 22000).iter().any(|b| service_options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.prefix.address == ip("64:ff9b::") && p.lifetime > 0)));
+    d.router.pd.leases.get_mut(&(1, p)).unwrap().valid = Lifetime::Until(31000);
+    d.router.pd.leases.get_mut(&(1, p)).unwrap().preferred = Lifetime::Until(31000);
+    for b in service_ras(&mut d, 27000) {
+        assert!(
+            !service_options(&b)
+                .iter()
+                .filter_map(|o| Pref64::decode(o))
+                .any(|p| p.prefix.address == ip("64:ff9b::") && p.lifetime > 0),
+            "less than eight seconds of backing validity cannot encode a positive PREF64"
+        );
+    }
+}
