@@ -733,3 +733,56 @@ fn s14_ail_reconnect_reprobes_only_still_registered_hosts() {
     assert!(!probes.is_empty());
     assert!(probes.iter().all(|r| r.name.labels()[0] == b"survivor"));
 }
+
+#[test]
+fn s15_discovery_limits_actual_query_frames_across_both_families_without_starving_publication() {
+    let mut d = driver();
+    let mut rng = ScriptedRandom::new([]);
+    d.start(0, &mut rng).unwrap();
+    for now in (1000..=75000).step_by(1000) {
+        d.step(now, &mut rng).unwrap();
+    }
+    d.io.output.clear();
+    let records = response().answers;
+    let source = records.clone();
+    d.set_mdns_source(move |_, _, _, _| source.clone());
+
+    for i in 0..16 {
+        let mut q = question();
+        q.name = format!("host{i}.local.").parse().unwrap();
+        d.mdns.querier.start(q, 100000, 75000, &mut rng).unwrap();
+    }
+    for _ in 0..4 {
+        d.step(75020, &mut rng).unwrap();
+    }
+    let sent = |d: &Driver<MemoryIo>| {
+        d.io.output
+            .iter()
+            .filter_map(|(l, b)| Datagram::parse(*l, &b[14..]).ok())
+            .filter(|m| m.message.flags & 0x8000 == 0 && m.message.authority.is_empty())
+            .count()
+    };
+    assert_eq!(
+        sent(&d),
+        20,
+        "RFC 8766 9.3 counts actual multicast packets, not jobs"
+    );
+    d.mdns
+        .publisher
+        .replace(91, &[], &records, 75021, &mut rng)
+        .unwrap();
+    d.step(75021, &mut rng).unwrap();
+    assert!(
+        d.io.output
+            .iter()
+            .any(|(l, b)| Datagram::parse(*l, &b[14..])
+                .is_ok_and(|m| !m.message.authority.is_empty())),
+        "rate-limited query traffic cannot block a publication probe"
+    );
+    d.step(76019, &mut rng).unwrap();
+    assert_eq!(sent(&d), 20);
+    for _ in 0..4 {
+        d.step(76020, &mut rng).unwrap();
+    }
+    assert!(sent(&d) > 20 && sent(&d) <= 40);
+}
