@@ -858,3 +858,90 @@ fn s21_fragment_headers_reject_impossible_lengths_and_post_fragment_extensions()
         .is_err());
     assert_eq!(r.context_count(), 0);
 }
+#[test]
+fn s21_errors_translate_first_fragment_quotes_but_never_noninitial_ones() {
+    let mut t = translator();
+    let query = packets::udp6(host(1), synthetic(7), 1234, 80, &[0x55; 40]);
+    let out = send(&mut t, &query, 0).unwrap().remove(0).packet;
+    let first = packets::fragment4(&out, 0x1234, 0, 16, true);
+    let error = error4(ip(1), 3, 3, 0, &first);
+    let b = t.inbound(&error, 1).unwrap().remove(0).packet;
+    assert_eq!(b[54], 44, "quoted IPv6 Fragment header retained");
+    assert_eq!(&b[88..96], &[17, 0, 0, 1, 0, 0, 0x12, 0x34]);
+    assert_eq!(&b[96..112], &query[40..56]);
+    assert_eq!(&b[52..54], &24u16.to_be_bytes());
+    let nonfirst = packets::fragment4(&out, 0x1234, 16, 16, true);
+    assert!(t
+        .inbound(&error4(ip(1), 3, 3, 0, &nonfirst), 1)
+        .unwrap()
+        .is_empty());
+    let reply = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, &[0x66; 40]);
+    let received = t.inbound(&reply, 2).unwrap().remove(0).packet;
+    let first = packets::fragment6(&received, 0x12345678, 0, 16, true);
+    let b = send(
+        &mut t,
+        &error6(host(1), synthetic(7), 2, 0, 1400, &first),
+        3,
+    )
+    .unwrap()
+    .remove(0)
+    .packet;
+    assert_eq!(
+        &b[26..28],
+        &1372u16.to_be_bytes(),
+        "fragment header contributes eight bytes to MTU delta"
+    );
+    assert_eq!(&b[32..36], &[0x56, 0x78, 0x20, 0]);
+    assert_eq!(&b[30..32], &36u16.to_be_bytes());
+    assert_eq!(&b[48..54], &reply[20..26]);
+    let nonfirst = packets::fragment6(&received, 5, 16, 16, true);
+    assert!(send(
+        &mut t,
+        &error6(host(1), synthetic(7), 1, 4, 0, &nonfirst),
+        4
+    )
+    .unwrap()
+    .is_empty());
+    let quoted = with_ext(received, 60, vec![0; 8]);
+    let b = send(&mut t, &error6(host(1), synthetic(7), 1, 4, 0, &quoted), 4)
+        .unwrap()
+        .remove(0)
+        .packet;
+    assert_eq!(b[37], 17);
+    assert_eq!(&b[48..54], &reply[20..26]);
+}
+#[test]
+fn s21_ipv4_unexpired_source_route_generates_failure_and_other_options_are_removed() {
+    let mut t = translator();
+    send(
+        &mut t,
+        &packets::udp6(host(1), synthetic(7), 1234, 80, b"route"),
+        0,
+    )
+    .unwrap();
+    let original = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, b"route");
+    for kind in [131, 137] {
+        let deadline = t.bindings.next_deadline();
+        let mut p = original.clone();
+        p[0] = 0x47;
+        p.splice(20..20, [kind, 7, 4, 192, 0, 2, 99, 0]);
+        let n = p.len() as u16;
+        p[2..4].copy_from_slice(&n.to_be_bytes());
+        p[10..12].fill(0);
+        let c = packets::sum(&p[..28]);
+        p[10..12].copy_from_slice(&c.to_be_bytes());
+        let out = t.inbound(&p, 1).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].link, Link::Ail);
+        assert_eq!(&out[0].packet[20..22], &[3, 5]);
+        assert_eq!(t.bindings.next_deadline(), deadline);
+        p[22] = 8;
+        p[10..12].fill(0);
+        let c = packets::sum(&p[..28]);
+        p[10..12].copy_from_slice(&c.to_be_bytes());
+        let out = t.inbound(&p, 2).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].link, Link::Stub);
+        assert!(packets::udp6_valid(&out[0].packet));
+    }
+}
