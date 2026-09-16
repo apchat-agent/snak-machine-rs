@@ -312,3 +312,193 @@ fn s22_shutdown_withdraws_services_and_ail_never_exports_stub_service_options() 
         assert!(!options(&b).iter().any(|o| o[0] == 25 && o[4..8] != [0; 4]));
     }
 }
+#[test]
+fn s22_native_failed_infrastructure_admission_latches_until_all_peer_pref64_expire() {
+    use snac_rs::{
+        nat64::{Announcement, Policy, Source},
+        wire::Prefix,
+    };
+    let mut d = native::driver(57, [192, 0, 2, 10].into());
+    d.router
+        .configure_nat64(
+            Policy {
+                allow_without_pd: true,
+                ..Policy::default()
+            },
+            21000,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+    // The eighth slot is the native translator already announced by this Driver.
+    let promises: Vec<_> = (1..8)
+        .map(|i| Announcement {
+            source: Source::Infrastructure,
+            pref64: Pref64 {
+                prefix: Prefix::new(format!("2001:db8:{i:x}:64::").parse().unwrap(), 96).unwrap(),
+                lifetime: 16,
+            },
+        })
+        .collect();
+    d.router.nat64.advertised(&promises, 21000).unwrap();
+    peer(
+        &mut d,
+        Link::Stub,
+        "fe80::57",
+        &pref("64:ff9b::", 80),
+        0,
+        21000,
+    );
+    peer(
+        &mut d,
+        Link::Ail,
+        "fe80::58",
+        &pref("64:ff9b::", 120),
+        1800,
+        21002,
+    );
+    let emitted = force(&mut d, 22000);
+    assert!(
+        !emitted.iter().any(|b| options(b)
+            .iter()
+            .filter_map(|o| Pref64::decode(o))
+            .any(|p| p.lifetime > 0)),
+        "failed infrastructure admission must latch peer suppression"
+    );
+    // Expiring our history frees capacity, but the peer's advertisement still lives.
+    let emitted = force(&mut d, 38000);
+    assert!(!emitted.iter().any(|b| options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.lifetime > 0)));
+    peer(
+        &mut d,
+        Link::Ail,
+        "fe80::58",
+        &pref("64:ff9b::", 120),
+        1800,
+        101001,
+    );
+    let emitted = force(&mut d, 101100);
+    assert!(emitted.iter().any(|b| options(b)
+        .iter()
+        .filter_map(|o| Pref64::decode(o))
+        .any(|p| p.lifetime > 0)));
+}
+#[test]
+fn s22_mixed_service_builder_has_exact_1280_byte_boundary_and_explicit_option_caps() {
+    use snac_rs::wire::{Advertisement, Pio, Preference, Prefix, WireError};
+    let mut ad = Advertisement {
+        link: Link::Stub,
+        source: "fe80::1".parse().unwrap(),
+        destination: "ff02::1".parse().unwrap(),
+        mac: Some([2, 0, 0, 0, 0, 1]),
+        mtu: 1500,
+        mo: 0xc0,
+        default_lifetime: 1800,
+        pios: vec![],
+        rios: vec![],
+    };
+    for i in 0..17 {
+        ad.pios.push(Pio {
+            prefix: Prefix::new(format!("fd01:{i:x}::").parse().unwrap(), 64).unwrap(),
+            flags: 0xc0,
+            preferred: 0,
+            valid: 1800,
+        });
+    }
+    for i in 0..20 {
+        ad.rios.push(Rio {
+            prefix: Prefix::new(format!("2001:db8:{i:x}::").parse().unwrap(), 96).unwrap(),
+            preference: Preference::Low,
+            lifetime: 0,
+        });
+    }
+    ad.rios.push(Rio {
+        prefix: Prefix::new(Ipv6Addr::UNSPECIFIED, 0).unwrap(),
+        preference: Preference::Low,
+        lifetime: 0,
+    });
+    let dns = [
+        ("fd01::1".parse().unwrap(), 0),
+        ("fd02::1".parse().unwrap(), 1800),
+    ];
+    let pref64: Vec<_> = (0..8)
+        .map(|i| Pref64 {
+            prefix: Prefix::new(format!("fd03:{i:x}::").parse().unwrap(), 96).unwrap(),
+            lifetime: 8,
+        })
+        .collect();
+    assert_eq!(ad.encode_services(&dns, &pref64).unwrap().len(), 1280);
+    ad.rios.push(Rio {
+        prefix: Prefix::new("4000::".parse().unwrap(), 2).unwrap(),
+        preference: Preference::Low,
+        lifetime: 0,
+    });
+    assert_eq!(ad.encode_services(&dns, &pref64), Err(WireError::Capacity));
+    ad.rios.clear();
+    let mut too_many = pref64.clone();
+    too_many.push(pref64[0]);
+    assert_eq!(
+        ad.encode_services(&dns, &too_many),
+        Err(WireError::Capacity)
+    );
+    assert_eq!(
+        ad.encode_services(&[dns[0]; 3], &pref64),
+        Err(WireError::Capacity)
+    );
+    ad.link = Link::Ail;
+    assert_eq!(ad.encode_services(&dns, &pref64), Err(WireError::Invalid));
+}
+#[test]
+fn s22_local_explicit_route_survives_an_ipv6_default() {
+    let mut d = native::driver(58, [192, 0, 2, 10].into());
+    peer(&mut d, Link::Ail, "fe80::a", &[], 1800, 21000);
+    let emitted = force(&mut d, 22000);
+    for b in emitted {
+        assert_ne!(&b[46..48], &[0, 0]);
+        assert!(options(&b)
+            .iter()
+            .filter_map(|o| Rio::decode(o))
+            .any(|r| r.prefix == d.router.nat64.local_prefix() && r.lifetime > 0));
+    }
+}
+#[test]
+fn s22_resolver_renumbering_bounds_history_and_waits_for_dad() {
+    use snac_rs::{router::OnLink, time::Lifetime, wire::Prefix};
+    let mut d = native::driver(59, [192, 0, 2, 10].into());
+    let address = "2001:db8:59::1".parse().unwrap();
+    let p = Prefix::new(address, 64).unwrap();
+    d.router.on_link.insert(
+        (Link::Stub, p),
+        OnLink {
+            preferred: Lifetime::Until(120000),
+            valid: Lifetime::Until(120000),
+        },
+    );
+    let tx = d.router.begin_dad(Link::Stub, address, 21000);
+    d.router
+        .transmitted(&tx, 21000, true, &mut ScriptedRandom::new([]))
+        .unwrap();
+    let before = d.router.snapshot(Link::Stub, 21000).encode().unwrap();
+    assert!(!options(&before)
+        .iter()
+        .any(|o| o[0] == 25 && o[8..].chunks(16).any(|a| a == address.octets())));
+    let mut saw_new = false;
+    let mut saw_withdrawal = false;
+    for now in [21000, 26000, 31000, 36000] {
+        for b in force(&mut d, now) {
+            let dns: Vec<_> = options(&b).into_iter().filter(|o| o[0] == 25).collect();
+            assert!(dns.iter().map(|o| (o.len() - 8) / 16).sum::<usize>() <= 2);
+            for o in dns {
+                if o[4..8] == [0; 4] {
+                    saw_withdrawal = true;
+                }
+                if o[8..].chunks(16).any(|a| a == address.octets()) && o[4..8] != [0; 4] {
+                    assert!(d.router.address_ready(Link::Stub, address));
+                    saw_new = true;
+                }
+            }
+        }
+    }
+    assert!(saw_new && saw_withdrawal);
+}
