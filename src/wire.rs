@@ -357,7 +357,8 @@ pub struct Pref64 {
     pub lifetime: u32,
 }
 impl Pref64 {
-    /// Encode a remaining backing lifetime, rounding down to avoid over-promising.
+    /// Encode a remaining backing lifetime, rounding up per RFC 8781 §4.2 so
+    /// the advertisement never expires before the backing validity.
     pub fn encode(self) -> Result<Vec<u8>, WireError> {
         let plc = [96, 64, 56, 48, 40, 32]
             .iter()
@@ -366,7 +367,8 @@ impl Pref64 {
         if Prefix::new(self.prefix.address, self.prefix.length) != Some(self.prefix) {
             return Err(WireError::Invalid);
         }
-        let word = (self.lifetime.min(65528) as u16 & 0xfff8) | plc as u16;
+        let scaled = (self.lifetime.min(65528).div_ceil(8) as u16) << 3;
+        let word = scaled | plc as u16;
         let mut b = vec![38, 2];
         b.extend(word.to_be_bytes());
         b.extend(&self.prefix.address.octets()[..12]);

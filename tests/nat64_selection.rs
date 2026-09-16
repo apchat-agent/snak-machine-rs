@@ -13,8 +13,9 @@ fn option(a: &str, len: u8, life: u32) -> Vec<u8> {
         .iter()
         .position(|n| *n == len)
         .unwrap();
+    let scaled = (life.min(65528).div_ceil(8) * 8) as u16;
     let mut out = vec![38, 2];
-    out.extend(((life.min(65528) as u16 & 0xfff8) | plc as u16).to_be_bytes());
+    out.extend((scaled | plc as u16).to_be_bytes());
     out.extend(&a.parse::<Ipv6Addr>().unwrap().octets()[..12]);
     out
 }
@@ -26,7 +27,7 @@ fn ra(source: &str, snac: bool, opts: &[u8]) -> Vec<u8> {
     )
 }
 #[test]
-fn s18_pref64_wire_six_lengths_round_down_backing_lifetime_and_reject_invalid_encodings() {
+fn s18_pref64_wire_six_lengths_round_up_backing_lifetime_and_reject_invalid_encodings() {
     for (plc, len) in [96, 64, 56, 48, 40, 32].into_iter().enumerate() {
         for life in [0, 1, 7, 8, 9, 65528, 65535, u32::MAX] {
             let p = prefix("2001:db8:1234:5678:abcd:eeee::", len);
@@ -40,7 +41,7 @@ fn s18_pref64_wire_six_lengths_round_down_backing_lifetime_and_reject_invalid_en
             assert_eq!(wire[3] & 7, plc as u8);
             let decoded = Pref64::decode(&wire).unwrap();
             assert_eq!(decoded.prefix, p);
-            assert!(decoded.lifetime <= life && decoded.lifetime % 8 == 0);
+            assert_eq!(decoded.lifetime, life.min(65528).div_ceil(8) * 8);
         }
     }
     assert!(Pref64 {
