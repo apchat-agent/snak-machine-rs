@@ -997,3 +997,24 @@ fn s21_icmp_extensions_keep_opaque_objects_and_recompute_quote_length_units() {
             .is_err());
     }
 }
+#[test]
+fn s21_fragmentation_threshold_is_configurable_with_checked_bounds() {
+    let mut t = translator();
+    for mtu in [0, 1279, 65536, u32::MAX] {
+        assert!(t.set_lowest_ipv6_mtu(mtu).is_err());
+    }
+    t.set_lowest_ipv6_mtu(1500).unwrap();
+    send(
+        &mut t,
+        &packets::udp6(host(1), synthetic(7), 1234, 80, b"open"),
+        0,
+    )
+    .unwrap();
+    let p = packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, &[0; 1300]);
+    let out = t.inbound(&p, 1).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].packet[6], 17);
+    assert!(packets::udp6_valid(&out[0].packet));
+    t.set_lowest_ipv6_mtu(1280).unwrap();
+    assert_eq!(t.inbound(&p, 2).unwrap().len(), 2);
+}
