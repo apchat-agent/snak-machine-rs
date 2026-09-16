@@ -498,3 +498,130 @@ fn s17_privacy_bounds_endpoints_alias_chains_and_probe_deadlines() {
         .iter()
         .all(|a| !matches!(a, Probe::Ddr(_))));
 }
+
+#[test]
+fn s17_resolver_owns_ddr_transactions_and_selects_encrypted_client_queries() {
+    use snac_rs::{
+        dns::resolver::{Action, Client, Resolver},
+        time::ScriptedRandom,
+    };
+    let origin = "192.168.1.53:53".parse().unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let mut r = Resolver::new(true);
+    r.configure_upstream_privacy(&[origin], false, 0).unwrap();
+    let probes = r.poll_privacy(0, &mut rng).unwrap();
+    assert_eq!(probes.len(), 1);
+    let bootstrap = r.queries().next().unwrap().clone();
+    let mut answer = Message::parse(&bootstrap.bytes, Context::Unicast).unwrap();
+    assert_eq!(
+        answer.questions[0].name,
+        "_dns.resolver.arpa.".parse().unwrap()
+    );
+    assert!(bootstrap.tls.is_none());
+    r.cancel_connection(99);
+    assert_eq!(
+        r.queries().count(),
+        1,
+        "control transaction has no client waiter"
+    );
+    answer.flags = 0x8180;
+    answer.answers.push(designation(1, 8853));
+    assert!(r
+        .receive(
+            bootstrap.exchange,
+            origin,
+            bootstrap.source_port,
+            false,
+            &answer.encode().unwrap(),
+            1,
+            &mut rng
+        )
+        .unwrap()
+        .is_empty());
+    let next = r.poll_privacy(1, &mut rng).unwrap();
+    assert_eq!(next.len(), 1);
+    assert_eq!(next[0].endpoint.port(), 8853);
+    r.complete_tls_probe(next[0].id, true, 2);
+    let mut q = Message::new(17, 0x100);
+    q.questions.push(Question {
+        name: "external.example.".parse().unwrap(),
+        kind: 1,
+        class: 1,
+    });
+    let actions = r
+        .submit(
+            Client::udp("[::1]:40000".parse().unwrap()),
+            &q.encode().unwrap(),
+            3,
+            &mut rng,
+        )
+        .unwrap();
+    let Action::Upstream(query) = &actions[0] else {
+        panic!("forwarded query");
+    };
+    assert!(query.tcp);
+    assert_eq!(query.server.port(), 8853);
+    assert_eq!(query.origin, origin);
+    assert!(query.tls.is_some());
+    let mut answer = Message::parse(&query.bytes, Context::Unicast).unwrap();
+    answer.flags = 0x8180;
+    assert!(matches!(
+        r.receive(
+            query.exchange,
+            query.server,
+            query.source_port,
+            true,
+            &answer.encode().unwrap(),
+            4,
+            &mut rng
+        )
+        .unwrap()[0],
+        Action::Reply { .. }
+    ));
+    assert_eq!(r.pending_count(), 0);
+}
+#[test]
+fn s17_failed_encrypted_query_retries_plaintext_and_explicit_configuration_skips_probes() {
+    use snac_rs::{
+        dns::resolver::{Action, Client, Resolver},
+        time::ScriptedRandom,
+    };
+    let origin = "192.168.1.53:53".parse().unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let mut r = Resolver::new(true);
+    r.configure_upstream_privacy(&[origin], false, 0).unwrap();
+    let probes = r.poll_privacy(0, &mut rng).unwrap();
+    r.complete_tls_probe(probes[0].id, true, 1);
+    let mut q = Message::new(18, 0x100);
+    q.questions.push(Question {
+        name: "external.example.".parse().unwrap(),
+        kind: 1,
+        class: 1,
+    });
+    let actions = r
+        .submit(
+            Client::udp("[::1]:40000".parse().unwrap()),
+            &q.encode().unwrap(),
+            2,
+            &mut rng,
+        )
+        .unwrap();
+    let Action::Upstream(tls) = &actions[0] else {
+        panic!();
+    };
+    assert!(tls.tls.is_some());
+    let actions = r.fail_upstream(tls.exchange, 3, &mut rng).unwrap();
+    let Action::Upstream(plain) = &actions[0] else {
+        panic!("fallback retry");
+    };
+    assert!(plain.tls.is_none());
+    assert_eq!(plain.server, origin);
+    assert!(!plain.tcp);
+    assert_ne!(plain.exchange, tls.exchange);
+    let mut explicit = Resolver::new(true);
+    explicit
+        .configure_upstream_privacy(&[origin], true, 0)
+        .unwrap();
+    assert!(explicit.poll_privacy(0, &mut rng).unwrap().is_empty());
+    assert_eq!(explicit.queries().count(), 0);
+}
