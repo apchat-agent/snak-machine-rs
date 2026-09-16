@@ -773,3 +773,88 @@ fn s21_native_df_pmtu_errors_use_actual_link_mtus_without_refreshing_sessions() 
     assert_eq!(&out[0][26..28], &1260u16.to_be_bytes());
     assert_eq!(d.nat64.as_ref().unwrap().bindings.next_deadline(), deadline);
 }
+#[test]
+fn s21_reassembly_capacity_is_shared_across_both_links_and_nat() {
+    let mut d = native::driver(36, [192, 0, 2, 10].into());
+    let h = native::host(&d, 99);
+    let target = native::synth(&d, ip(7));
+    for link in [Link::Ail, Link::Stub] {
+        let own = d.router.identity.link_local(link);
+        let p = packets::udp6(h, own, 1234, 53, &[0; 24]);
+        for id in 0..32 {
+            native::packet(&mut d, link, &packets::fragment6(&p, id, 0, 8, true), 20001);
+        }
+    }
+    let p = packets::udp6(h, target, 1234, 80, &[0; 24]);
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 99, 0, 16, true),
+        20002,
+    );
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 99, 16, 16, false),
+        20003,
+    );
+    assert_eq!(
+        d.nat64.as_ref().unwrap().bindings.counts(),
+        (0, 0, 0),
+        "aggregate 64-context cap"
+    );
+    d.step(80002, &mut ScriptedRandom::new([])).unwrap();
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 100, 0, 16, true),
+        80003,
+    );
+    native::packet(
+        &mut d,
+        Link::Stub,
+        &packets::fragment6(&p, 100, 16, 16, false),
+        80004,
+    );
+    assert_eq!(d.nat64.as_ref().unwrap().bindings.counts(), (1, 1, 1));
+}
+#[test]
+fn s21_fragment_headers_reject_impossible_lengths_and_post_fragment_extensions() {
+    use snac_rs::ip_reassembly::Reassembler;
+    let mut r = Reassembler::default();
+    let p = packets::udp6(host(1), synthetic(7), 1234, 80, &[0; 24]);
+    let mut bad = packets::fragment6(&p, 1, 0, 16, true);
+    bad[40] = 60;
+    assert!(
+        r.input(&bad, 0).is_err(),
+        "post-fragment extension cannot bypass NAT validation"
+    );
+    for bit in [2, 4] {
+        let mut b = packets::fragment6(&p, 2, 0, 16, true);
+        b[43] |= bit;
+        assert!(r.input(&b, 0).is_err());
+    }
+    let mut duplicate = packets::fragment6(&p, 3, 0, 16, true);
+    duplicate[40] = 44;
+    assert!(r.input(&duplicate, 0).is_err());
+    let mut overflow = packets::fragment4(
+        &packets::udp4(ip(7), [192, 0, 2, 10].into(), 80, 1234, b"1234567"),
+        1,
+        8,
+        7,
+        false,
+    );
+    overflow[6..8].copy_from_slice(&8191u16.to_be_bytes());
+    overflow[10..12].fill(0);
+    let c = packets::sum(&overflow[..20]);
+    overflow[10..12].copy_from_slice(&c.to_be_bytes());
+    assert!(r.input(&overflow, 0).is_err(), "65535 includes IPv4 header");
+    assert_eq!(r.context_count(), 0);
+    // Last-fragment declarations cannot shrink past retained data.
+    r.input(&packets::fragment6(&p, 4, 24, 8, false), 1)
+        .unwrap();
+    assert!(r
+        .input(&packets::fragment6(&p, 4, 16, 8, false), 1)
+        .is_err());
+    assert_eq!(r.context_count(), 0);
+}
