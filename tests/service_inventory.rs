@@ -546,3 +546,204 @@ fn s16_nested_proxy_delegation_and_inventory_a_lookup_preserve_view_ownership() 
     assert_eq!(answer.additional[0].data, Rdata::A([192, 0, 2, 53]));
     assert_eq!(answer.additional[0].name, zones.hostname);
 }
+
+fn sign_in_zone(mut message: Message, zone: &Name) -> Vec<u8> {
+    let alias = name("default.service.arpa.");
+    let map = |n: &mut Name| {
+        if n.labels().ends_with(alias.labels()) {
+            let mut labels = n.labels()[..n.labels().len() - alias.labels().len()].to_vec();
+            labels.extend_from_slice(zone.labels());
+            *n = Name::from_labels(labels).unwrap();
+        }
+    };
+    map(&mut message.questions[0].name);
+    for r in message.authority.iter_mut().chain(&mut message.additional) {
+        map(&mut r.name);
+        match &mut r.data {
+            Rdata::Name(n) => map(n),
+            Rdata::Srv { target, .. } => map(target),
+            Rdata::Sig { signer, .. } => map(signer),
+            _ => {}
+        }
+    }
+    common::srp::sign(message)
+}
+#[test]
+fn s16_alias_and_canonical_keyless_deletions_use_the_correct_stored_key_even_in_nested_zones() {
+    use snac_rs::dns::inventory::Zones;
+    for canonical_request in [false, true] {
+        let mut zones = Zones::for_identity(&identity());
+        zones.registrar = name("registered.default.service.arpa.");
+        let mut r = Resolver::new(true);
+        r.configure_zones(zones.clone()).unwrap();
+        r.enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+            .unwrap();
+        let mut rng = ScriptedRandom::new([]);
+        assert_eq!(
+            reply(
+                r.submit(
+                    client(),
+                    &common::srp::sign(common::srp::update()),
+                    0,
+                    &mut rng
+                )
+                .unwrap()
+            )
+            .flags
+                & 15,
+            0
+        );
+        let mut removal = Message::parse(
+            include_bytes!("fixtures/srp/alg13-remove.bin"),
+            Context::Unicast,
+        )
+        .unwrap();
+        removal.additional[0].data = Rdata::Opt(vec![(2, vec![0; 8])]);
+        assert!(
+            removal.authority.iter().all(|r| r.kind != 25),
+            "key comes from authenticated ownership table"
+        );
+        let request = if canonical_request {
+            sign_in_zone(removal, &zones.registrar)
+        } else {
+            common::srp::sign(removal)
+        };
+        assert_eq!(
+            reply(r.submit(client(), &request, 1, &mut rng).unwrap()).flags & 15,
+            0,
+            "canonical request={canonical_request}"
+        );
+        assert!(r
+            .registry()
+            .unwrap()
+            .key(&in_zone("host", &zones.registrar), 1)
+            .is_none());
+    }
+}
+#[test]
+fn s16_alias_expansion_overflow_is_atomic_and_canonical_journal_survives_restart() {
+    use snac_rs::dns::inventory::Zones;
+    let mut zones = Zones::for_identity(&identity());
+    zones.registrar = Name::from_labels(vec![
+        vec![b'x'; 63],
+        vec![b'y'; 63],
+        vec![b'z'; 63],
+        b"example".to_vec(),
+    ])
+    .unwrap();
+    let disk = common::srp::Store::default();
+    let mut r = Resolver::new(true);
+    r.configure_zones(zones.clone()).unwrap();
+    r.enable_srp(Box::new(disk.clone()), 0, common::srp::NOW)
+        .unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    let original = common::srp::sign(common::srp::update());
+    assert_eq!(
+        reply(r.submit(client(), &original, 0, &mut rng).unwrap()).flags & 15,
+        0
+    );
+    let saved = disk.bytes.borrow().clone();
+    let mut large = common::srp::update();
+    large.authority.truncate(3);
+    let host = in_zone(&"h".repeat(63), &name("default.service.arpa."));
+    for r in &mut large.authority {
+        r.name = host.clone();
+    }
+    if let Rdata::Sig { signer, .. } = &mut large.additional.last_mut().unwrap().data {
+        *signer = host;
+    }
+    assert_eq!(
+        reply(
+            r.submit(client(), &common::srp::sign(large), 1, &mut rng)
+                .unwrap()
+        )
+        .flags
+            & 15,
+        2
+    );
+    assert_eq!(*disk.bytes.borrow(), saved);
+    drop(r);
+    let mut restored = Resolver::new(true);
+    restored.configure_zones(zones.clone()).unwrap();
+    restored
+        .enable_srp(Box::new(disk.clone()), 0, common::srp::NOW + 1)
+        .unwrap();
+    assert!(restored
+        .registry()
+        .unwrap()
+        .key(&in_zone("host", &zones.registrar), 0)
+        .is_some());
+    assert_eq!(
+        reply(restored.submit(client(), &original, 0, &mut rng).unwrap()).flags & 15,
+        0
+    );
+    zones.registrar = name("different.example.");
+    let mut wrong = Resolver::new(true);
+    wrong.configure_zones(zones).unwrap();
+    assert!(wrong
+        .enable_srp(Box::new(disk.clone()), 0, common::srp::NOW + 1)
+        .is_err());
+    assert_eq!(*disk.bytes.borrow(), saved);
+}
+
+#[test]
+fn s16_browsing_ptrs_deduplicate_equal_zones_and_expire_with_registration_leases() {
+    use snac_rs::{
+        dns::inventory::{Inventory, Zones},
+        srp::registry::LeasePolicy,
+    };
+    let mut same = Zones::for_identity(&identity());
+    same.registrar = same.discovery.clone();
+    let inventory = Inventory::new(same).unwrap();
+    assert_eq!(
+        inventory
+            .answer(&question("lb._dns-sd._udp.local.", 12), 0)
+            .unwrap()
+            .unwrap()
+            .answers
+            .len(),
+        1
+    );
+    let zones = Zones::for_identity(&identity());
+    let mut r = Resolver::new(true);
+    r.configure_zones(zones.clone()).unwrap();
+    r.enable_srp(Box::new(MemoryStore::default()), 0, common::srp::NOW)
+        .unwrap();
+    r.set_srp_policy(LeasePolicy {
+        max_lease: 1,
+        ..LeasePolicy::default()
+    })
+    .unwrap();
+    let mut rng = ScriptedRandom::new([]);
+    assert_eq!(
+        reply(
+            r.submit(
+                client(),
+                &common::srp::sign(common::srp::update()),
+                0,
+                &mut rng
+            )
+            .unwrap()
+        )
+        .flags
+            & 15,
+        0
+    );
+    let browse = prefix(&["_http", "_tcp"], &zones.registrar);
+    assert_eq!(
+        reply(
+            r.submit(client(), &query(&browse, 12), 1, &mut rng)
+                .unwrap()
+        )
+        .answers
+        .len(),
+        1
+    );
+    r.tick(1000, &mut rng).unwrap();
+    let expired = reply(
+        r.submit(client(), &query(&browse, 12), 1000, &mut rng)
+            .unwrap(),
+    );
+    assert!(expired.answers.is_empty());
+    assert_eq!(expired.authority[0].kind, 6);
+}
