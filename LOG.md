@@ -1388,3 +1388,13 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   configuration creates no probes. Query transport/provenance and transaction
   purpose fields implement the planned upstream owner; no dependency. Native
   transport execution follows.
+- S17 native TLS RED `2507e4c` confirms the missing transport execution.
+  GREEN passes **324 tests** and all-feature clippy. A bounded pool reuses
+  upstream TLS streams, assigns distinct wire IDs to pipelined queries, and
+  validates replies against the original resolver transaction. The packet-level
+  rootless test performs a self-signed handshake and two concurrent DNS queries
+  without ordinary plaintext forwarding. TLS output waits for TCP establishment;
+  writing before establishment initially exposed a false transport failure.
+  Pool keys, pending probe, monotonic stream IDs and inflight exchange indexes
+  implement the planned connection owner; inflight bookkeeping counts against
+  each stream's byte budget. No dependency. Lifecycle/bounds checks follow.

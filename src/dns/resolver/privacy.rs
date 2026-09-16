@@ -62,6 +62,11 @@ impl Resolver {
         }
         Ok(tls)
     }
+    pub(crate) fn tls_failed(&mut self, origin: SocketAddr, endpoint: SocketAddr, now: u64) {
+        if let Some(p) = &mut self.privacy {
+            p.failed(origin, endpoint, now);
+        }
+    }
     pub fn complete_tls_probe(&mut self, token: u64, success: bool, now: u64) {
         if let Some(p) = &mut self.privacy {
             p.complete_tls(token, success, now);

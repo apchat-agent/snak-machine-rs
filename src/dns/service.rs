@@ -1,4 +1,5 @@
 //! The production DNS byte handler uses the same resolver as loopback fixtures.
+mod upstream_tls;
 use super::{
     resolver::{Action, Client, Resolver},
     wire::TcpFrames,
@@ -11,6 +12,7 @@ use std::{
 };
 #[derive(Default)]
 pub struct Service {
+    upstream_tls: upstream_tls::Pool,
     udp: BTreeMap<u64, (u16, IpAddr)>,
     replies: VecDeque<(Client, Vec<u8>)>,
     bytes: usize,
@@ -28,7 +30,11 @@ impl Service {
     }
 
     pub fn counts(&self) -> (usize, usize, usize) {
-        (self.udp.len(), self.incoming.len(), self.outgoing.len())
+        (
+            self.udp.len(),
+            self.incoming.len(),
+            self.outgoing.len() + self.upstream_tls.count(),
+        )
     }
     pub fn queued_replies(&self) -> (usize, usize) {
         (self.replies.len(), self.bytes)
@@ -67,6 +73,7 @@ impl Service {
         (!self.replies.is_empty())
             .then_some(now)
             .into_iter()
+            .chain(self.upstream_tls.next_deadline())
             .chain(
                 self.incoming
                     .values()
@@ -83,6 +90,11 @@ impl Service {
     ) -> io::Result<()> {
         r.reset_crypto_budget();
         self.queue(r.tick(now, rng)?);
+        for probe in r.poll_privacy(now, rng)? {
+            self.upstream_tls.probe(probe, r, &mut stacks[0], now, rng);
+        }
+        let actions = self.upstream_tls.poll(r, &mut stacks[0], now, rng)?;
+        self.queue(actions);
         self.poll_tcp(r, stacks, now, rng)?;
         let old: Vec<_> = self
             .udp
@@ -107,6 +119,8 @@ impl Service {
                 self.queue(actions);
             }
         }
+        self.upstream_tls
+            .queue_queries(r, &mut stacks[0], now, rng)?;
         let bindings: Vec<_> = self
             .udp
             .iter()
@@ -264,7 +278,7 @@ impl Service {
         }
         let queries: Vec<_> = r
             .queries()
-            .filter(|q| q.tcp && !self.outgoing.contains_key(&q.exchange))
+            .filter(|q| q.tcp && q.tls.is_none() && !self.outgoing.contains_key(&q.exchange))
             .cloned()
             .collect();
         for q in queries {
@@ -285,6 +299,7 @@ impl Service {
         Ok(())
     }
     fn flush_tcp(&mut self, r: &mut Resolver, stacks: &mut [Stack; 2], now: u64) {
+        self.upstream_tls.flush(&mut stacks[0], now);
         for (id, stream) in &mut self.incoming {
             stream.flush(&mut stacks[1], *id, now);
             if stream.failed {
@@ -319,6 +334,7 @@ impl Service {
     }
 }
 struct Stream {
+    extra_budget: usize,
     frames: TcpFrames,
     tx: VecDeque<u8>,
     failed: bool,
@@ -327,6 +343,7 @@ struct Stream {
 impl Stream {
     fn new() -> Self {
         Self {
+            extra_budget: 0,
             frames: TcpFrames::new(65535).unwrap(),
             tx: VecDeque::new(),
             failed: false,
@@ -343,7 +360,8 @@ impl Stream {
         (128 * 1024usize).saturating_sub(
             (if self.tls.is_some() { 62 } else { 18 }) * 1024
                 + self.frames.allocated()
-                + self.tx.capacity(),
+                + self.tx.capacity()
+                + self.extra_budget,
         )
     }
     fn enqueue(&mut self, b: &[u8]) {
