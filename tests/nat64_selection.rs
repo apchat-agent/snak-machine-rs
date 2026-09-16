@@ -391,3 +391,130 @@ fn s18_admin_disable_discards_discovery_and_override_still_requires_a_route() {
         Mode::Infrastructure
     );
 }
+
+#[test]
+fn s18_local_retirement_keeps_the_promised_route_without_extending_its_lifetime() {
+    let mut s = selector();
+    let local = s.select(0, ready(false, true), |_, _| true, |_| None);
+    let p = local.announcements[0].pref64.prefix;
+    s.advertised(&local.announcements, 0).unwrap();
+    s.receive(
+        Link::Ail,
+        &ra("fe80::1", false, &option("64:ff9b::", 96, 80)),
+        1000,
+    )
+    .unwrap();
+    let d = s.select(1000, ready(true, true), |_, _| true, |_| Some(90000));
+    assert_eq!(d.mode, Mode::Infrastructure);
+    assert!(
+        d.routes
+            .iter()
+            .any(|r| r.prefix == p && r.lifetime > 0 && r.lifetime <= 79),
+        "a still-backed local promise needs a draining route"
+    );
+    assert!(
+        d.announcements
+            .iter()
+            .any(|a| a.pref64.prefix == p && a.pref64.lifetime == 0),
+        "retire the old selection for new synthesis"
+    );
+    s.advertised(&d.announcements, 1000).unwrap();
+    let later = s.select(10000, ready(true, true), |_, _| true, |_| Some(90000));
+    assert!(later
+        .routes
+        .iter()
+        .any(|r| r.prefix == p && r.lifetime <= 70));
+    assert!(
+        !later.announcements.iter().any(|a| a.pref64.prefix == p),
+        "an acknowledged retirement is not advertised anew"
+    );
+    s.configure(
+        Policy {
+            enabled: false,
+            ..Policy::default()
+        },
+        11000,
+    )
+    .unwrap();
+    let disabled = s.select(11000, ready(true, true), |_, _| true, |_| Some(90000));
+    assert!(disabled
+        .announcements
+        .iter()
+        .all(|a| a.pref64.lifetime == 0));
+    assert!(
+        disabled.routes.iter().all(|r| r.lifetime == 0),
+        "administrative disable stops the draining service too"
+    );
+}
+#[test]
+fn s18_eight_export_and_history_slots_are_reserved_together_and_release_on_expiry() {
+    use snac_rs::nat64::{Announcement, Source};
+    let mut s = selector();
+    let prior: Vec<_> = (0..7)
+        .map(|i| Announcement {
+            pref64: Pref64 {
+                prefix: prefix(&format!("fd10:{i:x}::"), 96),
+                lifetime: 80,
+            },
+            source: Source::Local,
+        })
+        .collect();
+    s.advertised(&prior, 0).unwrap();
+    for i in 0..9 {
+        s.receive(
+            Link::Ail,
+            &ra(
+                &format!("fe80::{:x}", i + 1),
+                false,
+                &option(&format!("2001:db8:{i:x}::"), 96, 160),
+            ),
+            0,
+        )
+        .unwrap();
+    }
+    let d = s.select(0, ready(true, false), |_, _| true, |_| Some(170000));
+    assert_eq!(
+        d.announcements
+            .iter()
+            .filter(|a| a.pref64.lifetime > 0)
+            .count(),
+        1,
+        "new selections must reserve room in history before advertising"
+    );
+    assert!(d.announcements.len() <= 8);
+    s.advertised(&d.announcements, 0).unwrap();
+    assert!(s
+        .advertised(
+            &[Announcement {
+                pref64: Pref64 {
+                    prefix: prefix("fd20::", 96),
+                    lifetime: 80
+                },
+                source: Source::Local
+            }],
+            0
+        )
+        .is_err());
+    let d = s.select(
+        80000,
+        Readiness {
+            pd: Some(170000),
+            stub: Some(180000),
+            ipv4: None,
+            translator: false,
+        },
+        |_, _| true,
+        |_| Some(170000),
+    );
+    assert_eq!(
+        d.announcements
+            .iter()
+            .filter(|a| a.pref64.lifetime > 0)
+            .count(),
+        8
+    );
+    s.advertised(&d.announcements, 80000).unwrap();
+    let mut excess = d.announcements.clone();
+    excess.push(excess[0]);
+    assert!(s.advertised(&excess, 80000).is_err());
+}
