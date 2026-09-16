@@ -61,6 +61,9 @@ impl Bindings {
             ..Self::default()
         }
     }
+    pub fn owns(&self, protocol: u8, port: u16) -> bool {
+        self.reverse.contains_key(&(protocol, port))
+    }
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.bindings.len(), self.sessions.len(), self.hosts.len())
     }

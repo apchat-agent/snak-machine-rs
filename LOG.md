@@ -1552,7 +1552,7 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   PREF64/RIO emission and disable withdrawals close in S22–S23. No advertisement
   claims a translator merely because administrative policy is enabled.
 
-### S19 — NAT64 UDP bindings, sessions and hairpin (in progress)
+### S19 — NAT64 UDP bindings, sessions and hairpin
 
 - S19 binding RED `370938c` confirms the missing transport state owner.
   GREEN passes **360 tests** and all-feature clippy. UDP mappings are endpoint
@@ -1589,3 +1589,22 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   invalid reconfiguration is atomic. Translator's IPv4 identification counter
   supplies RFC 7915 section 5.1 headers; its prefix/address and shared binding
   owner are planned state. No dependency. Native integration follows.
+- S19 native RED `eaf8688` and fixture correction RED `22f87e4` confirm
+  missing Driver translation. GREEN passes **369 tests** and all-feature
+  clippy. Literal DHCP acquisition, ARP gateway resolution and stub ND drive
+  translated datagrams in both directions. Two independent routers retain
+  separate /96s, IPv4 sources and bindings; native hairpin forwards once.
+- Driver reserves the three fixed DHCPv4/DHCPv6/mDNS ports in the shared
+  registry. Wrong interface, own-egress/invalid Ethernet source, foreign stub
+  source, directed broadcast and unrelated reply floods cannot claim state.
+  Carrier loss clears bindings/leases before reuse. The translator is a planned
+  Driver owner; three fixed control-port leases enforce existing reservations.
+  No dependency. Selection-dependent RA export/retirement follows S22–S23.
+- Fixture correction retained short IPv4 datagrams (minimum Ethernet+IPv4
+  header is 34 bytes); the original collector wrongly imposed IPv6's 54-byte
+  minimum. Production was removed before confirming the corrected RED test.
+  No baseline expectation changed. S19 is complete.
+- **needs privileged acceptance:** actual DHCP/ARP-backed UDP translation,
+  hairpin and independent-router replies through native TAP/pcap interfaces,
+  and live carrier/address changes. Memory Ethernet tests exercise production
+  dispatch, acquisition, address validation, port ownership and output logic.

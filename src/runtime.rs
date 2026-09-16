@@ -1,5 +1,6 @@
 mod dns;
 mod mdns;
+mod nat64;
 use crate::{
     io::{Direction, PacketIo},
     router::{Lifecycle, Router, Tx},
@@ -13,6 +14,8 @@ pub struct Driver<I> {
     pub ipv4: crate::ipv4::Ipv4,
     pub dns: crate::dns::resolver::Resolver,
     pub mdns: crate::mdns::Engine,
+    pub nat64: Option<crate::nat64::Translator>,
+    control_ports: Option<[crate::service_io::ports::Lease; 3]>,
     mdns_output: Option<mdns::Output>,
     mdns_query_output: Option<mdns::Output>,
     mdns_query_rate: (Time, u8),
@@ -53,6 +56,8 @@ impl<I: PacketIo> Driver<I> {
             dns,
             dns_discovery: Default::default(),
             mdns: Default::default(),
+            nat64: None,
+            control_ports: None,
             mdns_output: None,
             mdns_query_output: None,
             mdns_query_rate: (0, 0),
@@ -205,6 +210,13 @@ impl<I: PacketIo> Driver<I> {
             crate::service_io::stack::Stack::new(now, rng)?,
             crate::service_io::stack::Stack::new(now, rng)?,
         ]);
+        let ports = self.stacks.as_ref().unwrap()[0].ports();
+        use crate::service_io::ports::Owner;
+        self.control_ports = Some([
+            ports.claim(17, 68, Owner::Local)?,
+            ports.claim(17, 546, Owner::Local)?,
+            ports.claim(17, 5353, Owner::Local)?,
+        ]);
         self.stacks.as_mut().unwrap()[1].listen_udp(53)?;
         self.stacks.as_mut().unwrap()[1].listen_tcp(53)?;
         if self.dns_service.tls_enabled() {
@@ -242,6 +254,7 @@ impl<I: PacketIo> Driver<I> {
     }
     pub fn step(&mut self, now: Time, rng: &mut impl RandomSource) -> io::Result<()> {
         if self.router.lifecycle == Lifecycle::Stopped {
+            self.sync_nat64(now)?;
             return self.sync_groups();
         }
         if self.router.lifecycle != Lifecycle::Stopping {
@@ -310,6 +323,10 @@ impl<I: PacketIo> Driver<I> {
                 return Ok(());
             }
             if self.receive_dhcp(&rx, now, rng)? {
+                self.sync_nat64(now)?;
+                return Ok(());
+            }
+            if self.receive_nat64(&rx, now, rng)? {
                 return Ok(());
             }
             if self.receive_service(&rx, now)? {
@@ -355,6 +372,7 @@ impl<I: PacketIo> Driver<I> {
             self.dns_discovery.next_deadline(),
             self.dns_info.as_ref().map(|c| c.next_deadline()),
             self.dns_service.next_deadline(now),
+            self.nat64.as_ref().and_then(|n| n.bindings.next_deadline()),
         ]
         .into_iter()
         .flatten()
@@ -420,6 +438,7 @@ impl<I: PacketIo> Driver<I> {
         if self.stacks.is_none() {
             return Ok(());
         }
+        self.poll_nat64(now, rng)?;
         if !matches!(
             self.router.lifecycle,
             Lifecycle::Stopped | Lifecycle::Stopping | Lifecycle::Degraded
