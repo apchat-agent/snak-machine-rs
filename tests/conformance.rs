@@ -11,6 +11,7 @@ use snac_rs::{
     wire::{envelope, FrameKind, Prefix},
     Link,
 };
+use std::net::Ipv6Addr;
 fn router(seed: u64) -> Router {
     let mut rng = ScriptedRandom::new([seed, seed + 11, seed + 12, 13, 14, 15, 16, 17]);
     let id =
@@ -252,4 +253,160 @@ fn s02_fixed_policy_and_attachment_bounds() {
     assert_eq!(evidence.evidence_count(), MAX_ATTACHMENT_IDENTITIES);
     assert!(evidence.observe(&[]).is_err());
     assert!(evidence.observe(&[0; 129]).is_err());
+}
+
+#[path = "support/nat64_driver.rs"]
+mod native;
+#[path = "support/nat64.rs"]
+mod packets;
+fn service_ras(
+    d: &mut snac_rs::runtime::Driver<snac_rs::io::MemoryIo>,
+    start: u64,
+) -> Vec<Vec<u8>> {
+    d.router.links[1]
+        .scheduler
+        .changed(start, &mut ScriptedRandom::new([]))
+        .unwrap();
+    for now in (start..=start + 4000).step_by(100) {
+        d.step(now, &mut ScriptedRandom::new([])).unwrap();
+    }
+    std::mem::take(&mut d.io.output)
+        .into_iter()
+        .filter_map(|(l, b)| {
+            let e = envelope(FrameKind::Ethernet, &b).ok()?;
+            (l == Link::Stub && e.next_header == 58 && e.payload.first() == Some(&134))
+                .then(|| e.packet.to_vec())
+        })
+        .collect()
+}
+fn service_options(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let e = envelope(FrameKind::RawIpv6, bytes).unwrap();
+    snac_rs::wire::decode_nd(&e)
+        .unwrap()
+        .options
+        .into_iter()
+        .map(|o| o.bytes.to_vec())
+        .collect()
+}
+fn infrastructure(d: &mut snac_rs::runtime::Driver<snac_rs::io::MemoryIo>, now: u64) {
+    let mut opts = vec![38, 2, 0, 120];
+    opts.extend(&ip("64:ff9b::").octets()[..12]);
+    opts.extend([1, 1]);
+    opts.extend(native::PEER_MAC);
+    native::packet(
+        d,
+        Link::Ail,
+        &nd_packet("fe80::feed", "ff02::1", ra(0, 1800, &opts)),
+        now,
+    );
+    let mut na = vec![136, 0, 0, 0, 0xe0, 0, 0, 0];
+    na.extend(ip("fe80::feed").octets());
+    na.extend([2, 1]);
+    na.extend(native::PEER_MAC);
+    let to = d.router.identity.link_local(Link::Ail);
+    native::packet(
+        d,
+        Link::Ail,
+        &nd_packet("fe80::feed", &to.to_string(), na),
+        now + 1,
+    );
+}
+#[test]
+fn s23_restart_keeps_nat_and_resolver_withdrawals_without_restoring_ipv4_readiness() {
+    use snac_rs::{
+        io::{MemoryIo, PacketIo},
+        runtime::Driver,
+        wire::Pref64,
+    };
+    let mut d = native::driver(71, [192, 0, 2, 10].into());
+    let before = service_ras(&mut d, 21000);
+    let pref = before
+        .iter()
+        .flat_map(|b| service_options(b))
+        .find_map(|o| Pref64::decode(&o).filter(|p| p.lifetime > 0))
+        .unwrap();
+    let dns: Vec<_> = before
+        .iter()
+        .flat_map(|b| service_options(b))
+        .filter(|o| o[0] == 25)
+        .map(|o| Ipv6Addr::from(<[u8; 16]>::try_from(&o[8..24]).unwrap()))
+        .collect();
+    let saved = d.router.checkpoint(25000, 1000).unwrap();
+    let info = [d.io.info(Link::Ail).clone(), d.io.info(Link::Stub).clone()];
+    for wall in [990, 1010] {
+        let restored = Router::restore(&saved, 0, wall, &mut ScriptedRandom::new([])).unwrap();
+        assert!(restored.neighbors.is_empty());
+        let mut reboot = Driver::new(restored, MemoryIo::new(info.clone())).unwrap();
+        reboot.start(0, &mut ScriptedRandom::new([])).unwrap();
+        // Stop before DHCP fallback can acquire IPv4LL. Old resolver promises
+        // are withdrawn while endpoint DAD and normal RA discovery revalidate.
+        reboot.step(1000, &mut ScriptedRandom::new([])).unwrap();
+        reboot
+            .router
+            .shutdown(1001, &mut ScriptedRandom::new([]))
+            .unwrap();
+        let emitted = service_ras(&mut reboot, 1001);
+        assert!(reboot.ipv4.address.is_none());
+        let options: Vec<_> = emitted.iter().flat_map(|b| service_options(b)).collect();
+        assert!(
+            options
+                .iter()
+                .filter_map(|o| Pref64::decode(o))
+                .any(|p| p.prefix == pref.prefix && p.lifetime == 0),
+            "reboot must withdraw its outstanding PREF64 promise"
+        );
+        assert!(!options
+            .iter()
+            .filter_map(|o| Pref64::decode(o))
+            .any(|p| p.lifetime > 0));
+        assert!(
+            options.iter().any(|o| o[0] == 25
+                && o[4..8] == [0; 4]
+                && dns.contains(&Ipv6Addr::from(<[u8; 16]>::try_from(&o[8..24]).unwrap()))),
+            "reboot keeps resolver withdrawal history"
+        );
+    }
+}
+#[test]
+fn s23_native_disable_blocks_known_infrastructure_prefix_but_preserves_other_ipv6_routes() {
+    use snac_rs::nat64::Policy;
+    let mut d = native::driver(72, [192, 0, 2, 10].into());
+    infrastructure(&mut d, 21000);
+    let source = native::host(&d, 90);
+    native::learn(&mut d, source, 21002);
+    let nat_destination = ip("64:ff9b::c000:201");
+    let unrelated = ip("2001:db8:88::1");
+    let before = packets::udp6(source, nat_destination, 1234, 4321, b"before-disable");
+    d.io.output.clear();
+    native::packet(&mut d, Link::Stub, &before, 21003);
+    assert!(native::translated(&mut d, Link::Ail, 17)
+        .iter()
+        .any(|b| b[0] >> 4 == 6));
+    d.router
+        .configure_nat64(
+            Policy {
+                enabled: false,
+                ..Policy::default()
+            },
+            21004,
+            &mut ScriptedRandom::new([]),
+        )
+        .unwrap();
+    native::packet(&mut d, Link::Stub, &before, 21005);
+    assert!(
+        native::translated(&mut d, Link::Ail, 17).is_empty(),
+        "disabled known NAT64 must not escape via default forwarding"
+    );
+    let normal = packets::udp6(source, unrelated, 1234, 4321, b"ordinary");
+    native::packet(&mut d, Link::Stub, &normal, 21006);
+    assert!(native::translated(&mut d, Link::Ail, 17)
+        .iter()
+        .any(|b| b[0] >> 4 == 6));
+    d.router
+        .configure_nat64(Policy::default(), 21007, &mut ScriptedRandom::new([]))
+        .unwrap();
+    native::packet(&mut d, Link::Stub, &before, 21008);
+    assert!(native::translated(&mut d, Link::Ail, 17)
+        .iter()
+        .any(|b| b[0] >> 4 == 6));
 }
