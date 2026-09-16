@@ -886,8 +886,10 @@ fn s23_ipv4_only_full_service_path_uses_rdnss_dot_srp_mdns_and_host_side_nat_syn
                 .unwrap();
             sent = true;
         }
-        if let Err(error) = tls.write_tls(&mut Sender(&mut client, id)) {
-            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        if client.established(id) {
+            if let Err(error) = tls.write_tls(&mut Sender(&mut client, id)) {
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+            }
         }
         client.poll(now).unwrap();
         while let Some(p) = client.output() {
