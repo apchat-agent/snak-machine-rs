@@ -1848,3 +1848,25 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   Atomic discovery failures preserve prior evidence; rejected signature input
   creates no claims. No field or dependency added. Aggregate soak and current
   requirement-evidence matrix follow before S24 closure.
+- Audit/soak RED `dda5f8b` fails because the final auditor still sees 45
+  unfinished rows. GREEN passes **432 tests**, seven nested Python audit cases,
+  and all-feature clippy. The final inventory and REVIEW matrix now cover
+  **R001–R103/C01–C10, 112 keyword lines, zero unfinished rows** with current
+  code locations and compiled test names. N/A conditions are unchanged.
+- The S01 audit fixture's provisional expectation (complete audit must fail)
+  becomes the planned final expectation (both TSV and REVIEW complete audits
+  must pass). Negative fixtures still reject missing/partial rows and deleted
+  test evidence. No draft requirement or retained baseline assertion is relaxed.
+- Seeded owner churn exercises DNS/mDNS work/cache/publication, NAT bindings,
+  fragments, ARP and sockets with count/byte assertions and timer reclamation.
+  Registry/persistent records hit count and byte refusal; native rotation tests
+  the shared eight-PREF64/two-RDNSS histories. Disabled configuration hits 74
+  remembered prefixes and preserves prior policy on overflow. An interleaved
+  fragment flood still delivers a scheduled RA, signed registration ACK and
+  existing translated flow. Earlier exact-cap fixtures cover per-owner detail
+  (including DHCP offers, upstream evidence, TLS, ND and byte-only pressure).
+- The active pure-Rust dependency audit passes Linux and both macOS targets:
+  113/113/112 active package-version pairs, all approved exact pins; inactive
+  native TLS/build lock entries are reported separately. No dependency added.
+  S24 implementation/evidence is complete; final toolchain/platform verification
+  and the required README/STATUS commit follow.
