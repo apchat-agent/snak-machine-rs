@@ -1652,3 +1652,18 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
 - **needs privileged acceptance:** translated TCP establishment, half-close,
   idle probes/recovery and timeout errors on real native interfaces. Rootless
   tests exercise the same Driver packet and timer paths without a TCP proxy.
+
+### S21 — NAT64 ICMP, fragments and PMTU (in progress)
+
+- Echo RED `8368476` confirms missing ICMP query state/translation. GREEN
+  passes **384 tests** and all-feature clippy. Literal Echo/Echo Reply packets
+  verify type, identifier, sequence, hop count and checksum translation in
+  both directions, including identifier collisions and identifier zero.
+  Native DHCP/ARP/ND tests receive the translated reply and independently
+  verify that router-local IPv6 Echo still reaches its existing handler.
+- ICMP uses the shared global/per-source binding/session/byte limits, tested
+  at 4096 bindings and 8192 sessions; default address-dependent filtering
+  rejects unrelated replies without new state. Default timeout is 60 seconds,
+  configurable through 86400 with RFC 5508's 60-second minimum. Truncation,
+  invalid code/checksum and IPv4 loss are covered. The configurable ICMP
+  timer is planned state; no dependency. Error mapping/reassembly follows.

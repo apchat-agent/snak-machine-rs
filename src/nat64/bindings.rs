@@ -1,4 +1,5 @@
 //! Shared transport binding/session indexes. A live mapping is never evicted.
+mod icmp;
 mod tcp;
 use crate::{
     service_io::ports::{Lease, Owner, Ports},
@@ -37,6 +38,7 @@ pub struct Bindings {
     next: Option<u64>,
     udp_filtering: UdpFiltering,
     udp_seconds: u32,
+    icmp_seconds: u32,
     tcp_timeouts: VecDeque<Vec<u8>>,
     tcp_quote_bytes: usize,
 }
@@ -51,6 +53,7 @@ impl Default for Bindings {
             next: None,
             udp_filtering: UdpFiltering::default(),
             udp_seconds: 300,
+            icmp_seconds: 60,
             tcp_timeouts: VecDeque::new(),
             tcp_quote_bytes: 0,
         }
@@ -259,7 +262,7 @@ impl Bindings {
                 && !self.ports.occupied(protocol, p)
                 && !occupied(p)
         };
-        if port != 0 && free(port) {
+        if (port != 0 || protocol == 1) && free(port) {
             return Ok(port);
         }
         for high in [port >= 1024, port < 1024] {
