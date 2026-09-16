@@ -242,6 +242,7 @@ impl Selector {
                     .collect()
             };
             let mut slots = 8 - self.promised.len();
+            let mut admission_failed = false;
             let announcements: Vec<_> =
                 candidates
                     .into_iter()
@@ -259,6 +260,7 @@ impl Selector {
                         }
                         if !self.promised.contains_key(&prefix) {
                             if slots == 0 {
+                                admission_failed = true;
                                 return None;
                             }
                             slots -= 1;
@@ -270,6 +272,15 @@ impl Selector {
                     })
                     .take(8)
                     .collect();
+            if announcements.is_empty() && admission_failed {
+                self.announcement_failed(Mode::Infrastructure, now);
+                if self.suppressed {
+                    return empty(
+                        Mode::Peer,
+                        "infrastructure advertisement history is full; waiting for peers to expire",
+                    );
+                }
+            }
             if !announcements.is_empty() {
                 let routes = announcements
                     .iter()

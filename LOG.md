@@ -1764,3 +1764,17 @@ Test counts are named Rust tests (table rows are additional assertions). RED com
   next hop; lease revocation emits withdrawals. Shutdown emits zero RDNSS and
   PREF64; AIL advertisements retain zero Router Lifetime and no stub services.
   No dependency or new field. Admission-latch and churn checks follow.
+- Admission RED `95e206c` fails on native fallback to local NAT despite full
+  infrastructure advertisement history and a live peer. GREEN passes **411
+  tests** and all-feature clippy. The selector now reports that admission
+  failure to its suppression latch; freeing history or losing NUD confirmation
+  cannot restart advertisement until peer PREF64 evidence expires/withdraws.
+- Exact mixed-option fixtures fill a 1280-byte RA and reject one more route,
+  a ninth PREF64 and a third resolver. Native renumbering waits for DAD, keeps
+  the resolver history at two addresses and sends withdrawals before replacing
+  slots. Local /96 RIO remains explicit alongside an IPv6 default.
+- S22 is complete. **needs privileged acceptance:** real host RDNSS/PREF64
+  discovery, mixed-option RA acceptance, PD return routing and paced service
+  withdrawal on physical interfaces. Native memory Ethernet exercises the
+  production encoder, readiness and success feedback. No dependency or field
+  beyond PLAN2 was added in this slice.
