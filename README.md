@@ -1,5 +1,15 @@
 # snak-machine-rs
 
+> **NOTICE: fully machine-generated, not human-reviewed.**
+> Every line in this repository (code, tests, scripts, documentation) was
+> produced by an automatic LLM code generator. No human has reviewed it.
+> It exists as a test mechanism for checking the completeness of
+> [draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt): can the
+> specification be implemented as written, and where does it leave gaps?
+> Treat it as that completeness test rather than as a prototype or as
+> software to deploy: the proverbial "first version that you have to throw
+> away".
+
 A userspace router for one IPv6 stub network and one adjacent infrastructure
 link (AIL), implementing [draft-ietf-snac-simple-12](draft-ietf-snac-simple-12.txt).
 The runtime provides IPv6 routing, DNS/DNS-SD, signed SRP, DNS-over-TLS,
@@ -13,6 +23,36 @@ ten supplemental commitments to current code and runnable tests. The
 independent review returned COMPLETE and both of its MINOR findings are fixed;
 physical interoperability acceptance remains outstanding; see
 [STATUS.md](STATUS.md).
+
+## What is supported
+
+Implemented and covered by rootless tests (details in the service table
+below and in [STATUS.md](STATUS.md)):
+
+- IPv6 routing between one stub link and one AIL: ND, RA with OSNR/route/
+  RDNSS/PREF64 options, DHCPv6-PD client on the AIL, ULA generation and
+  rotation.
+- DNS resolver (UDP/TCP 53), DNS-over-TLS (853) with a persistent self-signed
+  identity, signed SRP registrar, SRP persistence and recovery.
+- mDNS Advertising Proxy and Discovery Proxy over the AIL, DNS-SD browsing
+  inventory and domain enumeration.
+- IPv4 acquisition on an Ethernet AIL (DHCPv4, ACD, ARP, IPv4LL fallback).
+- Stateful NAT64 (UDP/TCP/ICMP, hairpinning, fragmentation, PMTU), local /96
+  or infrastructure PREF64 selection.
+- Backends: Linux TAP, macOS utun (IPv6 L3 only), and libpcap on both.
+
+Not supported or never exercised:
+
+- Multiple AILs or multiple stub links, generic ND proxying, multicast
+  relaying, IPv6 jumbograms.
+- No run against real interfaces or independent implementations has been
+  done; all evidence comes from in-process fixtures run by the same
+  generator (Linux, and a 2026-09-16 macOS `cargo test` pass).
+- No cryptographic audit; the pure Rust TLS provider is experimental.
+
+The conformance matrix in [tests/requirements.tsv](tests/requirements.tsv) is
+the generator's own claim of coverage, produced and checked by the same
+process, and should be read as such.
 
 ## Build and verify
 
